@@ -68,7 +68,9 @@ public static class BytecodeCompiler
             functions[i] = CompileFunction(module.Functions[i]);
         }
 
-        return new BytecodeModule(module.Name, functions);
+        var bytecode = new BytecodeModule(module.Name, functions);
+        BytecodeVerifier.Verify(bytecode);
+        return bytecode;
     }
 
     public static BytecodeFunction CompileFunction(FunctionIR function)

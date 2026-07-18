@@ -691,6 +691,52 @@ public class BytecodeTests
         Assert.Equal("add", module.Functions[0].Name);
         Assert.True(module.Functions[0].Instructions.Length > 0);
     }
+
+    [Fact]
+    public void VerifierRejectsBranchIntoOperand()
+    {
+        var code = new byte[] { Opcodes.Branch, 1, 0, 0, 0, Opcodes.ReturnVoid };
+        var function = new BytecodeFunction("test", code, 0, 0, false,
+            Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>());
+        var module = new BytecodeModule("test", new[] { function });
+
+        Assert.Throws<BytecodeVerificationException>(() => BytecodeVerifier.Verify(module));
+    }
+
+    [Fact]
+    public void SerializerRoundTripsVerifiedModule()
+    {
+        var code = new byte[] { Opcodes.LoadConstI32, 42, 0, 0, 0, Opcodes.Return };
+        var function = new BytecodeFunction("main", code, 0, 0, false,
+            new[] { "unused" }, Array.Empty<long>(), Array.Empty<double>(), new[] { 12.5m });
+        var module = new BytecodeModule("roundtrip", new[] { function });
+
+        using var stream = new MemoryStream();
+        BytecodeSerializer.Serialize(stream, module);
+        stream.Position = 0;
+        var restored = BytecodeSerializer.Deserialize(stream);
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(restored, "main");
+        Assert.Equal(42, ((TsInt32Value)result!).Value);
+        Assert.Equal(12.5m, restored.Functions[0].DecimalConstants[0]);
+    }
+
+    [Fact]
+    public void ProfileCountsHotFunctions()
+    {
+        var code = new byte[] { Opcodes.ReturnVoid };
+        var module = new BytecodeModule("profile", new[]
+        {
+            new BytecodeFunction("main", code, 0, 0, false,
+                Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>())
+        });
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+
+        interpreter.Execute(module, "main");
+        interpreter.Execute(module, "main");
+
+        Assert.Equal(2, interpreter.Profile.GetCallCount("profile", "main"));
+    }
 }
 
 public class HeapTests

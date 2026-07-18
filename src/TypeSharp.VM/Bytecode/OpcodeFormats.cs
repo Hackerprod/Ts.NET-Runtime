@@ -207,6 +207,8 @@ public static class OpcodeFormats
     public static OpcodeFormat Get(byte opcode) =>
         _table.TryGetValue(opcode, out var fmt) ? fmt : new OpcodeFormat(opcode, OperandKind.None);
 
+    public static bool TryGet(byte opcode, out OpcodeFormat format) => _table.TryGetValue(opcode, out format);
+
     public static int InstructionSize(byte opcode) => 1 + Get(opcode).OperandBytes;
 
     private static Dictionary<byte, OpcodeFormat> BuildTable()

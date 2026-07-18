@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using TypeSharp.VM.Bytecode;
 using TypeSharp.VM.Memory;
 
@@ -88,8 +90,11 @@ public sealed class Interpreter
     private readonly TsHeap _heap;
     private readonly VMRuntimeLimits _limits;
     private readonly Dictionary<string, HostFunctionDelegate> _hostFunctions = new();
+    private readonly ExecutionProfile _profile = new();
+    private readonly ConditionalWeakTable<BytecodeFunction, ConcurrentDictionary<int, int>> _callInlineCaches = new();
 
     public TsHeap Heap => _heap;
+    public ExecutionProfile Profile => _profile;
 
     public Interpreter(VMRuntimeLimits? limits = null)
     {
@@ -109,6 +114,7 @@ public sealed class Interpreter
 
     public TsValue? Execute(BytecodeModule module, string entryPoint, TsValue[]? args = null, ExecutionContext? context = null)
     {
+        BytecodeVerifier.Verify(module);
         bool ownsContext = context == null;
         var ctx = context ?? CreateContext();
 
@@ -118,6 +124,7 @@ public sealed class Interpreter
                 throw new InvalidOperationException($"Entry point '{entryPoint}' not found");
 
             var func = module.Functions[funcIdx];
+            _profile.RecordCall(module.Name, func.Name);
             var frame = new CallFrame(func);
 
             if (args != null)
@@ -148,6 +155,7 @@ public sealed class Interpreter
             ctx.CheckMemory();
             ctx.CheckCancellation();
 
+            int instructionOffset = frame.InstructionPointer;
             byte op = bytecode[frame.InstructionPointer++];
 
             switch (op)
@@ -835,9 +843,10 @@ public sealed class Interpreter
                         var result = hostFunc(calleeName, hostArgs);
                         frame.Push(result ?? TsValue.Null);
                     }
-                    else if (module.FunctionIndex.TryGetValue(calleeName, out int calleeIdx))
+                    else if (TryResolveCachedCallee(frame.Function, instructionOffset, calleeName, module, out int calleeIdx))
                     {
                         var calleeFunc = module.Functions[calleeIdx];
+                        _profile.RecordCall(module.Name, calleeFunc.Name);
                         var newFrame = new CallFrame(calleeFunc, frame);
 
                         for (int i = argCount - 1; i >= 0; i--)
@@ -900,9 +909,10 @@ public sealed class Interpreter
                         var result = hostFunc(calleeName, hostArgs);
                         frame.Push(result ?? TsValue.Null);
                     }
-                    else if (module.FunctionIndex.TryGetValue(calleeName, out int calleeIdx))
+                    else if (TryResolveCachedCallee(frame.Function, instructionOffset, calleeName, module, out int calleeIdx))
                     {
                         var calleeFunc = module.Functions[calleeIdx];
+                        _profile.RecordCall(module.Name, calleeFunc.Name);
                         var newFrame = new CallFrame(calleeFunc, frame);
                         for (int i = argCount - 1; i >= 0; i--)
                             newFrame.Locals[i] = frame.Pop();
@@ -1310,6 +1320,18 @@ public sealed class Interpreter
     // ────────────────────────────────────────────────────────
     //  Bytecode readers
     // ────────────────────────────────────────────────────────
+
+    private bool TryResolveCachedCallee(BytecodeFunction caller, int instructionOffset, string calleeName,
+        BytecodeModule module, out int calleeIndex)
+    {
+        var cache = _callInlineCaches.GetValue(caller, static _ => new ConcurrentDictionary<int, int>());
+        if (cache.TryGetValue(instructionOffset, out calleeIndex))
+            return true;
+        if (!module.FunctionIndex.TryGetValue(calleeName, out calleeIndex))
+            return false;
+        cache.TryAdd(instructionOffset, calleeIndex);
+        return true;
+    }
 
     private static int ReadInt32(byte[] bytecode, ref int ip)
     {
