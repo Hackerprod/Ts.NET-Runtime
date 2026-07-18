@@ -322,6 +322,9 @@ public sealed class IRGenerator
             case BoundThisExpression:
                 EmitLoadThis();
                 break;
+            case BoundSuperExpression:
+                EmitLoadThis();
+                break;
             case BoundMemberAccessExpression member:
                 GenerateMemberAccess(member);
                 break;
@@ -441,6 +444,17 @@ public sealed class IRGenerator
             else if (memberAccess.Member is PropertySymbol propSym)
                 funcName = $"{className}::{propSym.Name}";
 
+            int totalArgs = 1 + call.Arguments.Count;
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, totalArgs, funcName));
+        }
+        else if (call.Callee is BoundSuperExpression superExpr)
+        {
+            EmitLoadThis();
+            for (int i = 0; i < call.Arguments.Count; i++)
+                GenerateExpression(call.Arguments[i]);
+
+            string baseClassName = superExpr.BaseClass.Name;
+            string funcName = $"{baseClassName}::.ctor";
             int totalArgs = 1 + call.Arguments.Count;
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, totalArgs, funcName));
         }

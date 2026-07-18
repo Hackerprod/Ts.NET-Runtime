@@ -304,6 +304,12 @@ public sealed class ThisExpressionSyntax : ExpressionSyntax
     public override IEnumerable<SyntaxNode> GetChildren() => Enumerable.Empty<SyntaxNode>();
 }
 
+public sealed class SuperExpressionSyntax : ExpressionSyntax
+{
+    public SuperExpressionSyntax(SourceRange range) : base(SyntaxNodeType.SuperExpression, range) { }
+    public override IEnumerable<SyntaxNode> GetChildren() => Enumerable.Empty<SyntaxNode>();
+}
+
 public sealed class LambdaExpressionSyntax : ExpressionSyntax
 {
     public List<ParameterSyntax> Parameters { get; }

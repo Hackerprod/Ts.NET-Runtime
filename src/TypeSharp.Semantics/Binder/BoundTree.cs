@@ -30,6 +30,7 @@ public enum BoundNodeKind
     ConditionalExpression,
     NewExpression,
     ThisExpression,
+    SuperExpression,
     AwaitExpression,
     ArrayLiteralExpression,
     ObjectLiteralExpression,
@@ -176,6 +177,17 @@ public sealed class BoundNewExpression : BoundNode
 public sealed class BoundThisExpression : BoundNode
 {
     public BoundThisExpression(TsType type) : base(BoundNodeKind.ThisExpression, type) { }
+}
+
+public sealed class BoundSuperExpression : BoundNode
+{
+    public TsClassType BaseClass { get; }
+
+    public BoundSuperExpression(TsClassType baseClass)
+        : base(BoundNodeKind.SuperExpression, baseClass)
+    {
+        BaseClass = baseClass;
+    }
 }
 
 public sealed class BoundAwaitExpression : BoundNode
@@ -430,6 +442,19 @@ public sealed class BoundEnumDeclaration : BoundNode
         : base(BoundNodeKind.EnumDeclaration, TsType.Void)
     {
         Symbol = symbol;
+    }
+}
+
+public sealed class BoundImportDeclaration : BoundNode
+{
+    public string ModulePath { get; }
+    public List<string> ImportedNames { get; }
+
+    public BoundImportDeclaration(string modulePath, List<string> importedNames)
+        : base(BoundNodeKind.ImportDeclaration, TsType.Void)
+    {
+        ModulePath = modulePath;
+        ImportedNames = importedNames;
     }
 }
 

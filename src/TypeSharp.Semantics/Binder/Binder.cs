@@ -13,8 +13,10 @@ public sealed class Binder
     private readonly Dictionary<string, TsClassType> _classTypes = new();
     private readonly Dictionary<string, TsInterfaceType> _interfaceTypes = new();
     private readonly Dictionary<string, TsEnumType> _enumTypes = new();
+    private readonly Dictionary<string, Dictionary<string, Symbol>> _importedSymbols = new();
     private TsClassType? _currentClassType;
     private TsType? _currentFunctionReturnType;
+    private bool _inConstructor;
 
     public DiagnosticBag Diagnostics => _diagnostics;
 
@@ -23,6 +25,11 @@ public sealed class Binder
         _symbolTable = new SymbolTable();
         _diagnostics = new DiagnosticBag();
         RegisterBuiltins();
+    }
+
+    public void AddImportedSymbols(string moduleId, Dictionary<string, Symbol> symbols)
+    {
+        _importedSymbols[moduleId] = symbols;
     }
 
     private void RegisterBuiltins()
@@ -177,7 +184,13 @@ public sealed class Binder
                 _symbolTable.PushScope();
                 foreach (var p in ctorSym.Parameters)
                     _symbolTable.Define(p);
+                var prevReturnType = _currentFunctionReturnType;
+                var prevInConstructor = _inConstructor;
+                _currentFunctionReturnType = TsType.Void;
+                _inConstructor = true;
                 var body = BindNode(ctor.Body);
+                _inConstructor = prevInConstructor;
+                _currentFunctionReturnType = prevReturnType;
                 _symbolTable.PopScope();
 
                 return new BoundConstructorDeclaration(classType.Name, ctorSym, body!);
@@ -210,6 +223,7 @@ public sealed class Binder
 
                 var tsMethod = new TsMethod(method.Name, methodType,
                     methodSym.Parameters.Select(p => new TsParameter(p.Name, p.Type)).ToList());
+                ValidateOverride(classType, methodSym, method.Range.Start);
                 classType.Methods[method.Name] = tsMethod;
 
                 _symbolTable.Define(methodSym);
@@ -219,7 +233,13 @@ public sealed class Binder
                     _symbolTable.PushScope();
                     foreach (var p in methodSym.Parameters)
                         _symbolTable.Define(p);
+                    var prevReturnType = _currentFunctionReturnType;
+                    var prevInConstructor = _inConstructor;
+                    _currentFunctionReturnType = methodType;
+                    _inConstructor = false;
                     var body = BindNode(method.Body);
+                    _inConstructor = prevInConstructor;
+                    _currentFunctionReturnType = prevReturnType;
                     _symbolTable.PopScope();
                     return new BoundMethodDeclaration(classType.Name, methodSym, body!);
                 }
@@ -238,6 +258,42 @@ public sealed class Binder
 
             default:
                 return null;
+        }
+    }
+
+    private void ValidateOverride(TsClassType classType, MethodSymbol method, SourceLocation location)
+    {
+        for (var baseType = classType.BaseType; baseType != null; baseType = baseType.BaseType)
+        {
+            if (!baseType.Methods.TryGetValue(method.Name, out var inherited))
+                continue;
+
+            if (!method.Type.Equals(inherited.ReturnType))
+            {
+                _diagnostics.Error(
+                    $"Method '{method.Name}' must return '{inherited.ReturnType}' to override inherited method",
+                    location, DiagnosticCode.TS2013);
+            }
+
+            if (method.Parameters.Count != inherited.Parameters.Count)
+            {
+                _diagnostics.Error(
+                    $"Method '{method.Name}' must have {inherited.Parameters.Count} parameter(s) to override inherited method",
+                    location, DiagnosticCode.TS2014);
+                return;
+            }
+
+            for (int i = 0; i < method.Parameters.Count; i++)
+            {
+                if (!method.Parameters[i].Type.Equals(inherited.Parameters[i].Type))
+                {
+                    _diagnostics.Error(
+                        $"Parameter {i + 1} of method '{method.Name}' must have type '{inherited.Parameters[i].Type}' to override inherited method",
+                        location, DiagnosticCode.TS2015);
+                }
+            }
+
+            return;
         }
     }
 
@@ -297,7 +353,88 @@ public sealed class Binder
 
     private BoundNode? BindImport(ImportDeclarationSyntax import)
     {
-        return null;
+        if (!_importedSymbols.TryGetValue(import.ModulePath, out var symbols))
+        {
+            _diagnostics.Warning(
+                $"Imported module '{import.ModulePath}' not available for type checking",
+                import.Range.Start, DiagnosticCode.TS3002);
+            return new BoundImportDeclaration(import.ModulePath, import.NamedImports.Select(n => n.Name).ToList());
+        }
+
+        if (import.IsWildcard)
+        {
+            var wildcardName = import.NamedImports.FirstOrDefault()?.Alias;
+            if (wildcardName != null)
+            {
+                foreach (var (name, symbol) in symbols)
+                {
+                    var alias = CreateImportAlias(symbol, $"{wildcardName}.{name}", import.Range);
+                    _symbolTable.Define(alias);
+                }
+            }
+            return new BoundImportDeclaration(import.ModulePath, import.NamedImports.Select(n => n.Name).ToList());
+        }
+
+        foreach (var namedImport in import.NamedImports)
+        {
+            var importedName = namedImport.Alias ?? namedImport.Name;
+            if (symbols.TryGetValue(namedImport.Name, out var importedSymbol))
+            {
+                var sym = importedName == importedSymbol.Name
+                    ? importedSymbol
+                    : CreateImportAlias(importedSymbol, importedName, namedImport.Range);
+                _symbolTable.Define(sym);
+                RegisterImportedType(sym);
+            }
+            else
+            {
+                _diagnostics.Error(
+                    $"'{namedImport.Name}' is not exported from module '{import.ModulePath}'",
+                    namedImport.Range.Start, DiagnosticCode.TS2012);
+            }
+        }
+
+        return new BoundImportDeclaration(import.ModulePath, import.NamedImports.Select(n => n.Name).ToList());
+    }
+
+    private void RegisterImportedType(Symbol symbol)
+    {
+        switch (symbol)
+        {
+            case ClassSymbol cls:
+                _classTypes[cls.Name] = cls.ClassType;
+                break;
+            case InterfaceSymbol iface:
+                _interfaceTypes[iface.Name] = iface.InterfaceType;
+                break;
+            case EnumSymbol en:
+                _enumTypes[en.Name] = en.EnumType;
+                break;
+        }
+    }
+
+    private static Symbol CreateImportAlias(Symbol symbol, string alias, SourceRange location)
+    {
+        return symbol switch
+        {
+            FunctionSymbol function => CopyFunction(function, alias, location),
+            ClassSymbol cls => new ClassSymbol(alias, cls.ClassType, location) { IsExported = cls.IsExported },
+            InterfaceSymbol iface => new InterfaceSymbol(alias, iface.InterfaceType, location) { IsExported = iface.IsExported },
+            EnumSymbol en => new EnumSymbol(alias, en.EnumType, location) { IsExported = en.IsExported },
+            _ => new LocalSymbol(alias, symbol.Type, location)
+        };
+    }
+
+    private static FunctionSymbol CopyFunction(FunctionSymbol source, string name, SourceRange location)
+    {
+        var copy = new FunctionSymbol(name, source.Type, location)
+        {
+            IsAsync = source.IsAsync,
+            IsExported = source.IsExported
+        };
+        foreach (var parameter in source.Parameters)
+            copy.Parameters.Add(new ParameterSymbol(parameter.Name, parameter.Type, parameter.Location));
+        return copy;
     }
 
     // Statements
@@ -500,6 +637,7 @@ public sealed class Binder
             ConditionalExpressionSyntax cond => BindConditional(cond),
             NewExpressionSyntax newExpr => BindNew(newExpr),
             ThisExpressionSyntax thisExpr => BindThis(thisExpr),
+            SuperExpressionSyntax superExpr => BindSuper(superExpr),
             AwaitExpressionSyntax awaitExpr => BindAwait(awaitExpr),
             ObjectLiteralExpressionSyntax objLit => BindObjectLiteral(objLit),
             IndexExpressionSyntax indexExpr => BindIndexExpression(indexExpr),
@@ -649,6 +787,34 @@ public sealed class Binder
                 ? methodSym.Parameters
                 : null;
         }
+        else if (callee is BoundSuperExpression superExpr)
+        {
+            var baseClass = superExpr.BaseClass;
+            if (baseClass.Constructor != null)
+            {
+                returnType = TsType.Void;
+                var ctorParams = baseClass.Constructor.Parameters;
+                if (args.Count != ctorParams.Count)
+                {
+                    _diagnostics.Error(
+                        $"Expected {ctorParams.Count} argument(s) but got {args.Count}",
+                        call.Range.Start);
+                }
+                else
+                {
+                    for (int i = 0; i < args.Count; i++)
+                    {
+                        if (!TsType.IsCompatibleWith(args[i].Type, ctorParams[i].Type))
+                        {
+                            _diagnostics.Error(
+                                $"Argument {i + 1}: cannot assign '{args[i].Type}' to parameter '{ctorParams[i].Name}' of type '{ctorParams[i].Type}'",
+                                call.Range.Start);
+                        }
+                    }
+                }
+            }
+            return new BoundCallExpression(callee, args, returnType);
+        }
 
         if (expectedParams != null)
         {
@@ -687,21 +853,33 @@ public sealed class Binder
         if (objType is TsNullableType nullable)
             objType = nullable.ElementType;
         if (objType is TsGenericType generic)
+        {
+            if (generic.Definition is TsClassType { Name: "Map" } &&
+                member.MemberName == "get" && generic.TypeArguments.Count == 2)
+            {
+                var getSymbol = new MethodSymbol("get", new TsNullableType(generic.TypeArguments[1]), member.Range);
+                getSymbol.Parameters.Add(new ParameterSymbol("key", generic.TypeArguments[0], member.Range));
+                return new BoundMemberAccessExpression(obj, getSymbol);
+            }
             objType = generic.Definition;
+        }
 
         if (objType is TsClassType classType)
         {
-            if (classType.Fields.TryGetValue(member.MemberName, out var field))
+            for (var current = classType; current != null && memberSym == null; current = current.BaseType)
             {
-                memberSym = new FieldSymbol(member.MemberName, field.Type, member.Range);
-            }
-            else if (classType.Methods.TryGetValue(member.MemberName, out var method))
-            {
-                memberSym = new MethodSymbol(member.MemberName, method.ReturnType, member.Range);
-            }
-            else if (classType.Properties.TryGetValue(member.MemberName, out var prop))
-            {
-                memberSym = new PropertySymbol(member.MemberName, prop.Type, member.Range);
+                if (current.Fields.TryGetValue(member.MemberName, out var field))
+                {
+                    memberSym = new FieldSymbol(member.MemberName, field.Type, member.Range);
+                }
+                else if (current.Methods.TryGetValue(member.MemberName, out var method))
+                {
+                    memberSym = new MethodSymbol(member.MemberName, method.ReturnType, member.Range);
+                }
+                else if (current.Properties.TryGetValue(member.MemberName, out var prop))
+                {
+                    memberSym = new PropertySymbol(member.MemberName, prop.Type, member.Range);
+                }
             }
         }
         else if (objType is TsInterfaceType ifaceType)
@@ -775,6 +953,17 @@ public sealed class Binder
     {
         var type = _currentClassType ?? new TsClassType("Unknown");
         return new BoundThisExpression(type);
+    }
+
+    private BoundSuperExpression BindSuper(SuperExpressionSyntax superExpr)
+    {
+        if (!_inConstructor || _currentClassType == null || _currentClassType.BaseType == null || _currentClassType.BaseType is not TsClassType baseClass)
+        {
+            _diagnostics.Error("'super' can only be used in a derived class constructor",
+                superExpr.Range.Start, DiagnosticCode.TS2001);
+            return new BoundSuperExpression(new TsClassType("Unknown"));
+        }
+        return new BoundSuperExpression(baseClass);
     }
 
     private BoundAwaitExpression BindAwait(AwaitExpressionSyntax awaitExpr)

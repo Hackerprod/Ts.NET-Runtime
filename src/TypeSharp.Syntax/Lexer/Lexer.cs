@@ -39,6 +39,7 @@ public sealed class Lexer
         ["as"] = TokenKind.AsKeyword,
         ["default"] = TokenKind.DefaultKeyword,
         ["class"] = TokenKind.ClassKeyword,
+        ["extends"] = TokenKind.ExtendsKeyword,
         ["interface"] = TokenKind.InterfaceKeyword,
         ["enum"] = TokenKind.EnumKeyword,
         ["type"] = TokenKind.TypeKeyword,

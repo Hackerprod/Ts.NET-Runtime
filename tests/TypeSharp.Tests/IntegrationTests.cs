@@ -197,6 +197,174 @@ function main(): int32 {
         }
         finally { Directory.Delete(dir, true); }
     }
+
+    [Fact]
+    public void Compilation_ImportBinding_CrossModule()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "math.ts"), @"
+export function add(a: int32, b: int32): int32 {
+    return a + b;
+}
+export function multiply(a: int32, b: int32): int32 {
+    return a * b;
+}
+");
+            File.WriteAllText(Path.Combine(dir, "app.ts"), @"
+import { add, multiply } from './math';
+
+function main(): int32 {
+    const x = add(3, 4);
+    const y = multiply(5, 6);
+    return x + y;
+}
+");
+
+            var comp = new TypeScriptCompilation(dir);
+            comp.AddSourceFile(Path.Combine(dir, "math.ts"));
+            comp.AddSourceFile(Path.Combine(dir, "app.ts"));
+            comp.Compile();
+
+            var errors = comp.Diagnostics.GetErrors().ToList();
+            Assert.False(comp.Diagnostics.HasErrors, "Errors: " + string.Join("; ", errors.Select(e => e.Message)));
+            Assert.Equal(2, comp.CompiledModules.Count);
+            Assert.Contains("math", comp.CompiledModules.Keys);
+            Assert.Contains("app", comp.CompiledModules.Keys);
+            Assert.Contains("add", comp.CompiledModules["math"].Bytecode.FunctionIndex);
+            Assert.Contains("multiply", comp.CompiledModules["math"].Bytecode.FunctionIndex);
+            Assert.Contains("main", comp.CompiledModules["app"].Bytecode.FunctionIndex);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void Compilation_ImportBinding_SecondModule()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "utils.ts"), @"
+export function greet(name: string): string {
+    return 'Hello ' + name;
+}
+");
+            File.WriteAllText(Path.Combine(dir, "app.ts"), @"
+import { greet } from './utils';
+
+function main(): string {
+    return greet('TypeSharp');
+}
+");
+
+            var comp = new TypeScriptCompilation(dir);
+            comp.AddSourceFile(Path.Combine(dir, "utils.ts"));
+            comp.AddSourceFile(Path.Combine(dir, "app.ts"));
+            comp.Compile();
+
+            var errors = comp.Diagnostics.GetErrors().ToList();
+            Assert.False(comp.Diagnostics.HasErrors, "Errors: " + string.Join("; ", errors.Select(e => e.Message)));
+            Assert.Contains("greet", comp.CompiledModules["utils"].Bytecode.FunctionIndex);
+            Assert.Contains("main", comp.CompiledModules["app"].Bytecode.FunctionIndex);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void Compilation_ClassHierarchy_BaseConstructor()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), @"
+class Animal {
+    name: string;
+    constructor(name: string) {
+        this.name = name;
+    }
+    speak(): string {
+        return this.name + ' makes a noise';
+    }
+}
+
+class Dog extends Animal {
+    breed: string;
+    constructor(name: string, breed: string) {
+        super(name);
+        this.breed = breed;
+    }
+    speak(): string {
+        return this.name + ' barks';
+    }
+}
+
+function main(): string {
+    const d = new Dog('Rex', 'Labrador');
+    return d.speak();
+}
+");
+
+            var comp = new TypeScriptCompilation(dir);
+            comp.AddSourceFile(Path.Combine(dir, "app.ts"));
+            comp.Compile();
+
+            Assert.False(comp.Diagnostics.HasErrors, "Errors: " + string.Join("; ", comp.Diagnostics.GetErrors().Select(e => e.Message)));
+            Assert.Contains("Animal::.ctor", comp.CompiledModules["app"].Bytecode.FunctionIndex);
+            Assert.Contains("Dog::.ctor", comp.CompiledModules["app"].Bytecode.FunctionIndex);
+            Assert.Contains("Animal::speak", comp.CompiledModules["app"].Bytecode.FunctionIndex);
+            Assert.Contains("Dog::speak", comp.CompiledModules["app"].Bytecode.FunctionIndex);
+            Assert.Contains("main", comp.CompiledModules["app"].Bytecode.FunctionIndex);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void Compilation_ClassHierarchy_RejectsIncompatibleOverride()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), @"
+class Base {
+    describe(value: int32): string { return 'base'; }
+}
+class Derived extends Base {
+    describe(value: string): int32 { return 1; }
+}
+");
+
+            var comp = new TypeScriptCompilation(dir);
+            comp.AddSourceFile(Path.Combine(dir, "app.ts"));
+            comp.Compile();
+
+            Assert.Contains(comp.Diagnostics.GetErrors(), d => d.Code == TypeSharp.Syntax.Diagnostics.DiagnosticCode.TS2013);
+            Assert.Contains(comp.Diagnostics.GetErrors(), d => d.Code == TypeSharp.Syntax.Diagnostics.DiagnosticCode.TS2015);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void Compilation_ClassHierarchy_RejectsSuperOutsideConstructor()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), @"
+class Base { }
+class Derived extends Base {
+    initialize(): void { super(); }
+}
+");
+
+            var comp = new TypeScriptCompilation(dir);
+            comp.AddSourceFile(Path.Combine(dir, "app.ts"));
+            comp.Compile();
+
+            Assert.Contains(comp.Diagnostics.GetErrors(), d => d.Code == TypeSharp.Syntax.Diagnostics.DiagnosticCode.TS2001);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
 }
 
 public class MathHostService

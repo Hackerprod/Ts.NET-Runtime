@@ -112,7 +112,12 @@ public sealed class Parser
         var genericParams = ParseGenericParameters();
 
         TypeSyntax? baseType = null;
-        if (Check(TokenKind.Colon))
+        if (Check(TokenKind.ExtendsKeyword))
+        {
+            Advance();
+            baseType = ParseType();
+        }
+        else if (Check(TokenKind.Colon))
         {
             Advance();
             baseType = ParseType();
@@ -187,24 +192,37 @@ public sealed class Parser
     private ImportDeclarationSyntax ParseImportDeclaration()
     {
         var importKw = Advance();
-        Expect(TokenKind.OpenBrace);
 
+        bool isWildcard = false;
         var imports = new List<NamedImportSyntax>();
-        while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
+
+        if (Check(TokenKind.Star))
         {
-            var impName = ExpectIdentifier();
-            string? alias = null;
-            if (Check(TokenKind.AsKeyword))
+            Advance();
+            Expect(TokenKind.AsKeyword);
+            var alias = ExpectIdentifier();
+            imports.Add(new NamedImportSyntax("*", alias, new SourceRange(Peek(-1).Location, Peek(-1).Location)));
+            isWildcard = true;
+        }
+        else
+        {
+            Expect(TokenKind.OpenBrace);
+            while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
             {
-                Advance();
-                alias = ExpectIdentifier();
+                var impName = ExpectIdentifier();
+                string? alias = null;
+                if (Check(TokenKind.AsKeyword))
+                {
+                    Advance();
+                    alias = ExpectIdentifier();
+                }
+                imports.Add(new NamedImportSyntax(impName, alias,
+                    new SourceRange(Peek(-1).Location, Peek().Location)));
+                if (Check(TokenKind.Comma)) Advance();
             }
-            imports.Add(new NamedImportSyntax(impName, alias,
-                new SourceRange(Peek(-1).Location, Peek().Location)));
-            if (Check(TokenKind.Comma)) Advance();
+            Expect(TokenKind.CloseBrace);
         }
 
-        Expect(TokenKind.CloseBrace);
         Expect(TokenKind.FromKeyword);
         var modulePath = ExpectStringLiteral();
 
@@ -212,6 +230,7 @@ public sealed class Parser
             new SourceRange(importKw.Location, Peek(-1).Location))
         {
             NamedImports = imports,
+            IsWildcard = isWildcard,
         };
     }
 
@@ -901,6 +920,12 @@ public sealed class Parser
         {
             var token = Advance();
             return new ThisExpressionSyntax(new SourceRange(token.Location, Peek(-1).Location));
+        }
+
+        if (Check(TokenKind.SuperKeyword))
+        {
+            var token = Advance();
+            return new SuperExpressionSyntax(new SourceRange(token.Location, Peek(-1).Location));
         }
 
         if (Check(TokenKind.Identifier))

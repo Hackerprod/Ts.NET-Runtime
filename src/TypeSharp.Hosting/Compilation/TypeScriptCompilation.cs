@@ -1,5 +1,6 @@
 using TypeSharp.IR;
 using TypeSharp.Semantics.Binder;
+using TypeSharp.Semantics.Symbols;
 using TypeSharp.Syntax;
 using TypeSharp.Syntax.Diagnostics;
 using TypeSharp.Syntax.SyntaxTree;
@@ -33,6 +34,7 @@ public sealed class CompilationUnit
     public SourceFileSyntax SyntaxTree { get; }
     public List<string> Imports { get; } = new();
     public List<string> Exports { get; } = new();
+    public Dictionary<string, string> ImportMap { get; } = new();
     public SourceLocation GetLocation() => new(FilePath, 1, 1, 0);
 
     public CompilationUnit(string filePath, string moduleId, SourceFileSyntax syntaxTree)
@@ -132,6 +134,7 @@ public sealed class TypeScriptCompilation
                 string importPath = ResolveImportPath(unit.FilePath, import.ModulePath);
                 string importModuleId = ComputeModuleId(importPath, _sourceRoot);
                 unit.Imports.Add(importModuleId);
+                unit.ImportMap[import.ModulePath] = importModuleId;
             }
 
             if (member is DeclarationSyntax decl && decl.Modifiers.Any(m => m.Token.Kind == Syntax.TokenKind.ExportKeyword))
@@ -217,12 +220,24 @@ public sealed class TypeScriptCompilation
     public Dictionary<string, BoundSourceFile> Bind()
     {
         var boundFiles = new Dictionary<string, BoundSourceFile>();
+        var moduleExports = new Dictionary<string, Dictionary<string, Symbol>>();
+        var sortedModules = TopologicalSort();
 
-        foreach (var (moduleId, unit) in _units)
+        foreach (var moduleId in sortedModules)
         {
+            if (!_units.TryGetValue(moduleId, out var unit))
+                continue;
+
             try
             {
                 var binder = new Binder();
+
+                foreach (var (rawPath, modId) in unit.ImportMap)
+                {
+                    if (moduleExports.TryGetValue(modId, out var exports))
+                        binder.AddImportedSymbols(rawPath, exports);
+                }
+
                 var boundTree = binder.Bind(unit.SyntaxTree);
 
                 if (binder.Diagnostics.HasErrors)
@@ -247,6 +262,7 @@ public sealed class TypeScriptCompilation
                     _diagnostics.Add(diag);
                 }
 
+                moduleExports[moduleId] = ExtractExports(boundTree);
                 boundFiles[moduleId] = boundTree;
             }
             catch (Exception ex)
@@ -257,6 +273,54 @@ public sealed class TypeScriptCompilation
         }
 
         return boundFiles;
+    }
+
+    private List<string> TopologicalSort()
+    {
+        var visited = new HashSet<string>();
+        var result = new List<string>();
+
+        foreach (var moduleId in _units.Keys)
+            Visit(moduleId, visited, result);
+
+        return result;
+
+        void Visit(string id, HashSet<string> vis, List<string> res)
+        {
+            if (!vis.Add(id)) return;
+            if (_units.TryGetValue(id, out var unit))
+            {
+                foreach (var imp in unit.Imports)
+                    Visit(imp, vis, res);
+            }
+            res.Add(id);
+        }
+    }
+
+    private static Dictionary<string, Symbol> ExtractExports(BoundSourceFile boundTree)
+    {
+        var exports = new Dictionary<string, Symbol>();
+
+        foreach (var member in boundTree.Members)
+        {
+            switch (member)
+            {
+                case BoundFunctionDeclaration func when func.Symbol.IsExported:
+                    exports[func.Symbol.Name] = func.Symbol;
+                    break;
+                case BoundClassDeclaration cls when cls.Symbol.IsExported:
+                    exports[cls.Symbol.Name] = cls.Symbol;
+                    break;
+                case BoundInterfaceDeclaration iface when iface.Symbol.IsExported:
+                    exports[iface.Symbol.Name] = iface.Symbol;
+                    break;
+                case BoundEnumDeclaration en when en.Symbol.IsExported:
+                    exports[en.Symbol.Name] = en.Symbol;
+                    break;
+            }
+        }
+
+        return exports;
     }
 
     public Dictionary<string, CompiledModule> Compile()
