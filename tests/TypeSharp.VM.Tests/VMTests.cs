@@ -329,6 +329,43 @@ public class InterpreterTests
         Assert.IsType<TsInt32Value>(result);
         Assert.Equal(13, ((TsInt32Value)result).Value);
     }
+
+    [Fact]
+    public void ExecuteSubtractFunction()
+    {
+        var code = @"
+            function subtract(a: int32, b: int32): int32 {
+                return a - b;
+            }
+            function main(): int32 {
+                return subtract(10, 3);
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(7, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
+    public void ExecuteUInt64Arithmetic()
+    {
+        var code = @"
+            function main(): uint64 {
+                const a: uint64 = 100u64;
+                const b: uint64 = 200u64;
+                return a + b;
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsUInt64Value>(result);
+        Assert.Equal(300UL, ((TsUInt64Value)result).Value);
+    }
 }
 
 public class BytecodeTests

@@ -54,6 +54,7 @@ public static class BytecodeCompiler
     private const byte OP_LOAD_CONST_STRING = 0x05;
     private const byte OP_LOAD_CONST_BOOL = 0x06;
     private const byte OP_LOAD_CONST_NULL = 0x07;
+    private const byte OP_LOAD_CONST_U64 = 0x08;
     private const byte OP_LOAD_LOCAL = 0x10;
     private const byte OP_STORE_LOCAL = 0x11;
     private const byte OP_LOAD_ARG = 0x12;
@@ -74,10 +75,6 @@ public static class BytecodeCompiler
     private const byte OP_SUB_F64 = 0x2B;
     private const byte OP_MUL_F64 = 0x2C;
     private const byte OP_DIV_F64 = 0x2D;
-    private const byte OP_ADD_F32 = 0x2E;
-    private const byte OP_SUB_F32 = 0x2F;
-    private const byte OP_MUL_F32 = 0x30;
-    private const byte OP_DIV_F32 = 0x31;
     private const byte OP_MOD_F64 = 0x32;
     private const byte OP_NEG_F64 = 0x33;
     private const byte OP_AND_I32 = 0x34;
@@ -88,6 +85,11 @@ public static class BytecodeCompiler
     private const byte OP_SHR_I32 = 0x39;
     private const byte OP_AND_I64 = 0x3A;
     private const byte OP_OR_I64 = 0x3B;
+    private const byte OP_ADD_U64 = 0x3C;
+    private const byte OP_SUB_U64 = 0x3D;
+    private const byte OP_MUL_U64 = 0x3E;
+    private const byte OP_DIV_U64 = 0x3F;
+    private const byte OP_MOD_U64 = 0x31;
     private const byte OP_CMP_EQ_I32 = 0x40;
     private const byte OP_CMP_NE_I32 = 0x41;
     private const byte OP_CMP_LT_I32 = 0x42;
@@ -102,6 +104,8 @@ public static class BytecodeCompiler
     private const byte OP_CMP_LE_F64 = 0x4B;
     private const byte OP_CMP_GT_F64 = 0x4C;
     private const byte OP_CMP_GE_F64 = 0x4D;
+    private const byte OP_CMP_EQ_U64 = 0x4E;
+    private const byte OP_CMP_NE_U64 = 0x4F;
     private const byte OP_AND_BOOL = 0x50;
     private const byte OP_OR_BOOL = 0x51;
     private const byte OP_NOT_BOOL = 0x52;
@@ -122,6 +126,10 @@ public static class BytecodeCompiler
     private const byte OP_CONV_I64_I32 = 0xE1;
     private const byte OP_CONV_I32_F64 = 0xE2;
     private const byte OP_CONV_F64_I32 = 0xE3;
+    private const byte OP_CONV_U64_I64 = 0xE4;
+    private const byte OP_CONV_I64_U64 = 0xE5;
+    private const byte OP_CONV_U64_F64 = 0xE6;
+    private const byte OP_CONV_F64_U64 = 0xE7;
 
     public static BytecodeModule Compile(TypeSharp.IR.ModuleIR module)
     {
@@ -180,7 +188,11 @@ public static class BytecodeCompiler
                 break;
             case TypeSharp.IR.Opcode.LoadConst_I64:
                 writer.Write(OP_LOAD_CONST_I64);
-                writer.WriteInt64(instr.Operand0);
+                writer.WriteInt64(Convert.ToInt64(instr.OperandObject ?? instr.Operand0));
+                break;
+            case TypeSharp.IR.Opcode.LoadConst_U64:
+                writer.Write(OP_LOAD_CONST_U64);
+                writer.WriteUInt64(Convert.ToUInt64(instr.OperandObject ?? 0UL));
                 break;
             case TypeSharp.IR.Opcode.LoadConst_F32:
                 writer.Write(OP_LOAD_CONST_F32);
@@ -238,6 +250,11 @@ public static class BytecodeCompiler
             case TypeSharp.IR.Opcode.Sub_I64: writer.Write(OP_SUB_I64); break;
             case TypeSharp.IR.Opcode.Mul_I64: writer.Write(OP_MUL_I64); break;
             case TypeSharp.IR.Opcode.Div_I64: writer.Write(OP_DIV_I64); break;
+            case TypeSharp.IR.Opcode.Add_U64: writer.Write(OP_ADD_U64); break;
+            case TypeSharp.IR.Opcode.Sub_U64: writer.Write(OP_SUB_U64); break;
+            case TypeSharp.IR.Opcode.Mul_U64: writer.Write(OP_MUL_U64); break;
+            case TypeSharp.IR.Opcode.Div_U64: writer.Write(OP_DIV_U64); break;
+            case TypeSharp.IR.Opcode.Mod_U64: writer.Write(OP_MOD_U64); break;
             case TypeSharp.IR.Opcode.Add_F64: writer.Write(OP_ADD_F64); break;
             case TypeSharp.IR.Opcode.Sub_F64: writer.Write(OP_SUB_F64); break;
             case TypeSharp.IR.Opcode.Mul_F64: writer.Write(OP_MUL_F64); break;
@@ -255,6 +272,8 @@ public static class BytecodeCompiler
             case TypeSharp.IR.Opcode.CmpGe_I32: writer.Write(OP_CMP_GE_I32); break;
             case TypeSharp.IR.Opcode.CmpEq_I64: writer.Write(OP_CMP_EQ_I64); break;
             case TypeSharp.IR.Opcode.CmpNe_I64: writer.Write(OP_CMP_NE_I64); break;
+            case TypeSharp.IR.Opcode.CmpEq_U64: writer.Write(OP_CMP_EQ_U64); break;
+            case TypeSharp.IR.Opcode.CmpNe_U64: writer.Write(OP_CMP_NE_U64); break;
             case TypeSharp.IR.Opcode.CmpEq_F64: writer.Write(OP_CMP_EQ_F64); break;
             case TypeSharp.IR.Opcode.CmpNe_F64: writer.Write(OP_CMP_NE_F64); break;
             case TypeSharp.IR.Opcode.CmpLt_F64: writer.Write(OP_CMP_LT_F64); break;
@@ -301,6 +320,10 @@ public static class BytecodeCompiler
             case TypeSharp.IR.Opcode.Dup:
                 writer.Write(OP_DUP);
                 break;
+            case TypeSharp.IR.Opcode.Conv_U64_I64: writer.Write(OP_CONV_U64_I64); break;
+            case TypeSharp.IR.Opcode.Conv_I64_U64: writer.Write(OP_CONV_I64_U64); break;
+            case TypeSharp.IR.Opcode.Conv_U64_F64: writer.Write(OP_CONV_U64_F64); break;
+            case TypeSharp.IR.Opcode.Conv_F64_U64: writer.Write(OP_CONV_F64_U64); break;
             default:
                 writer.Write(OP_NOP);
                 break;
@@ -368,6 +391,7 @@ public static class BytecodeCompiler
                 }
                 case OP_LOAD_CONST_I32:
                 case OP_LOAD_CONST_I64:
+                case OP_LOAD_CONST_U64:
                 case OP_LOAD_LOCAL:
                 case OP_STORE_LOCAL:
                 case OP_LOAD_ARG:
@@ -414,6 +438,7 @@ public static class BytecodeCompiler
         public void Write(byte b) => _writer.Write(b);
         public void WriteInt32(int value) => _writer.Write(value);
         public void WriteInt64(long value) => _writer.Write(value);
+        public void WriteUInt64(ulong value) => _writer.Write(value);
         public void WriteFloat(float value) => _writer.Write(value);
         public void WriteDouble(double value) => _writer.Write(value);
 

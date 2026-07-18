@@ -175,6 +175,27 @@ public sealed class Lexer
         }
 
         string text = sb.ToString();
+
+        if (Peek() == 'u' && Peek(1) == '6' && Peek(2) == '4')
+        {
+            _position += 3;
+            _column += 3;
+            string u64Text = text;
+            ulong u64Value = ulong.Parse(u64Text);
+            var tok64 = new Token(TokenKind.IntegerLiteral, u64Text + "u64", start, u64Value);
+            return tok64;
+        }
+
+        if (Peek() == 'i' && Peek(1) == '6' && Peek(2) == '4')
+        {
+            _position += 3;
+            _column += 3;
+            string i64Text = text;
+            long i64Value = long.Parse(i64Text);
+            var tokI64 = new Token(TokenKind.IntegerLiteral, i64Text + "i64", start, i64Value);
+            return tokI64;
+        }
+
         _column += text.Length;
 
         object value;

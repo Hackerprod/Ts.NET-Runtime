@@ -13,6 +13,7 @@ public abstract class TsValue
 
     public static TsValue FromInt32(int value) => new TsInt32Value(value);
     public static TsValue FromInt64(long value) => new TsInt64Value(value);
+    public static TsValue FromUInt64(ulong value) => new TsUInt64Value(value);
     public static TsValue FromFloat32(float value) => new TsFloat32Value(value);
     public static TsValue FromFloat64(double value) => new TsFloat64Value(value);
     public static TsValue FromString(string value) => new TsStringValue(value);
@@ -25,7 +26,7 @@ public abstract class TsValue
 
 public enum TsValueType
 {
-    Void, Null, Bool, Int32, Int64, Float32, Float64, String, Object, Array, Map
+    Void, Null, Bool, Int32, Int64, UInt64, Float32, Float64, String, Object, Array, Map
 }
 
 public sealed class TsVoid : TsValue
@@ -62,6 +63,14 @@ public sealed class TsInt64Value : TsValue
     public override TsValueType ValueType => TsValueType.Int64;
     public override object? RawValue => Value;
     public TsInt64Value(long value) => Value = value;
+}
+
+public sealed class TsUInt64Value : TsValue
+{
+    public ulong Value { get; }
+    public override TsValueType ValueType => TsValueType.UInt64;
+    public override object? RawValue => Value;
+    public TsUInt64Value(ulong value) => Value = value;
 }
 
 public sealed class TsFloat32Value : TsValue

@@ -5,11 +5,11 @@ namespace TypeSharp.IR;
 public enum Opcode
 {
     // Arithmetic
-    Add_I32, Add_I64, Add_F32, Add_F64, Add_Decimal,
-    Sub_I32, Sub_I64, Sub_F32, Sub_F64, Sub_Decimal,
-    Mul_I32, Mul_I64, Mul_F32, Mul_F64, Mul_Decimal,
-    Div_I32, Div_I64, Div_F32, Div_F64, Div_Decimal,
-    Mod_I32, Mod_I64, Mod_F32, Mod_F64, Mod_Decimal,
+    Add_I32, Add_I64, Add_U64, Add_F32, Add_F64, Add_Decimal,
+    Sub_I32, Sub_I64, Sub_U64, Sub_F32, Sub_F64, Sub_Decimal,
+    Mul_I32, Mul_I64, Mul_U64, Mul_F32, Mul_F64, Mul_Decimal,
+    Div_I32, Div_I64, Div_U64, Div_F32, Div_F64, Div_Decimal,
+    Mod_I32, Mod_I64, Mod_U64, Mod_F32, Mod_F64, Mod_Decimal,
     Neg_I32, Neg_I64, Neg_F32, Neg_F64, Neg_Decimal,
 
     // Bitwise
@@ -21,12 +21,12 @@ public enum Opcode
     Shr_I32, Shr_I64,
 
     // Comparison
-    CmpEq_I32, CmpEq_I64, CmpEq_F32, CmpEq_F64,
-    CmpNe_I32, CmpNe_I64, CmpNe_F32, CmpNe_F64,
-    CmpLt_I32, CmpLt_I64, CmpLt_F32, CmpLt_F64,
-    CmpLe_I32, CmpLe_I64, CmpLe_F32, CmpLe_F64,
-    CmpGt_I32, CmpGt_I64, CmpGt_F32, CmpGt_F64,
-    CmpGe_I32, CmpGe_I64, CmpGe_F32, CmpGe_F64,
+    CmpEq_I32, CmpEq_I64, CmpEq_U64, CmpEq_F32, CmpEq_F64,
+    CmpNe_I32, CmpNe_I64, CmpNe_U64, CmpNe_F32, CmpNe_F64,
+    CmpLt_I32, CmpLt_I64, CmpLt_U64, CmpLt_F32, CmpLt_F64,
+    CmpLe_I32, CmpLe_I64, CmpLe_U64, CmpLe_F32, CmpLe_F64,
+    CmpGt_I32, CmpGt_I64, CmpGt_U64, CmpGt_F32, CmpGt_F64,
+    CmpGe_I32, CmpGe_I64, CmpGe_U64, CmpGe_F32, CmpGe_F64,
 
     // Logical
     And_Bool, Or_Bool, Not_Bool,
@@ -34,6 +34,7 @@ public enum Opcode
     // Loads
     LoadConst_I32,
     LoadConst_I64,
+    LoadConst_U64,
     LoadConst_F32,
     LoadConst_F64,
     LoadConst_String,
@@ -71,6 +72,12 @@ public enum Opcode
     Conv_F64_I32,
     Conv_I32_F32,
     Conv_F32_I32,
+    Conv_U64_I64,
+    Conv_I64_U64,
+    Conv_U64_F64,
+    Conv_F64_U64,
+    Conv_U64_I32,
+    Conv_I32_U64,
 
     // Async
     Await,

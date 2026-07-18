@@ -13,7 +13,7 @@ public static class Marshaller
             bool b => new TsBoolValue(b),
             int i => TsValue.FromInt32(i),
             long l => TsValue.FromInt64(l),
-            ulong ul => TsValue.FromInt64((long)ul),
+            ulong ul => TsValue.FromUInt64(ul),
             uint ui => TsValue.FromInt32((int)ui),
             ushort us => TsValue.FromInt32(us),
             short s => TsValue.FromInt32(s),
@@ -47,7 +47,8 @@ public static class Marshaller
                    value is TsInt32Value iv2 ? iv2.Value : 0L;
 
         if (targetType == typeof(ulong) || targetType == typeof(ulong?))
-            return value is TsInt64Value lv ? (ulong)lv.Value : 0UL;
+            return value is TsUInt64Value uv ? uv.Value :
+                   value is TsInt64Value lv ? (ulong)lv.Value : 0UL;
 
         if (targetType == typeof(uint) || targetType == typeof(uint?))
             return value is TsInt32Value iv ? (uint)iv.Value : 0U;

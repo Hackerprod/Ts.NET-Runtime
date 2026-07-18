@@ -340,9 +340,13 @@ public sealed class IRGenerator
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_I32, Convert.ToInt32(lit.Value)));
                 }
-                else if (lit.Type == TsType.Int64 || lit.Type == TsType.UInt64)
+                else if (lit.Type == TsType.Int64)
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_I64, 0, 0, Convert.ToInt64(lit.Value)));
+                }
+                else if (lit.Type == TsType.UInt64)
+                {
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_U64, 0, 0, Convert.ToUInt64(lit.Value)));
                 }
                 else if (lit.Type == TsType.Float32)
                 {
@@ -411,7 +415,7 @@ public sealed class IRGenerator
         if (call.Callee is BoundMemberAccessExpression memberAccess)
         {
             GenerateExpression(memberAccess.Object);
-            for (int i = call.Arguments.Count - 1; i >= 0; i--)
+            for (int i = 0; i < call.Arguments.Count; i++)
                 GenerateExpression(call.Arguments[i]);
 
             string funcName = "";
@@ -427,7 +431,7 @@ public sealed class IRGenerator
         }
         else
         {
-            for (int i = call.Arguments.Count - 1; i >= 0; i--)
+            for (int i = 0; i < call.Arguments.Count; i++)
                 GenerateExpression(call.Arguments[i]);
 
             string funcName = "";
@@ -445,7 +449,7 @@ public sealed class IRGenerator
     {
         var className = GetClassName(newExpr.ConstructedType);
 
-        for (int i = newExpr.Arguments.Count - 1; i >= 0; i--)
+        for (int i = 0; i < newExpr.Arguments.Count; i++)
             GenerateExpression(newExpr.Arguments[i]);
 
         _currentBlock!.Instructions.Add(new Instruction(Opcode.NewObject, 0, newExpr.Arguments.Count, className));
@@ -590,6 +594,16 @@ public sealed class IRGenerator
             TokenKind.Star => Opcode.Mul_I64,
             TokenKind.Slash => Opcode.Div_I64,
             TokenKind.Percent => Opcode.Mod_I64,
+            _ => Opcode.Nop
+        };
+
+        if (type == TsType.UInt64) return op switch
+        {
+            TokenKind.Plus => Opcode.Add_U64,
+            TokenKind.Minus => Opcode.Sub_U64,
+            TokenKind.Star => Opcode.Mul_U64,
+            TokenKind.Slash => Opcode.Div_U64,
+            TokenKind.Percent => Opcode.Mod_U64,
             _ => Opcode.Nop
         };
 

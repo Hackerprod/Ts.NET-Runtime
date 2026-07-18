@@ -187,6 +187,10 @@ public sealed class Interpreter
                     frame.Push(TsValue.Null);
                     break;
 
+                case 0x08: // LOAD_CONST_U64
+                    frame.Push(TsValue.FromUInt64(ReadUInt64(bytecode, ref frame.InstructionPointer)));
+                    break;
+
                 case 0x10: // LOAD_LOCAL
                 {
                     int idx = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -314,6 +318,47 @@ public sealed class Interpreter
                     break;
                 }
 
+                // Arithmetic - U64
+                case 0x3C: // ADD_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(TsValue.FromUInt64(AsUInt64(left) + AsUInt64(right)));
+                    break;
+                }
+                case 0x3D: // SUB_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(TsValue.FromUInt64(AsUInt64(left) - AsUInt64(right)));
+                    break;
+                }
+                case 0x3E: // MUL_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(TsValue.FromUInt64(AsUInt64(left) * AsUInt64(right)));
+                    break;
+                }
+                case 0x3F: // DIV_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    ulong r = AsUInt64(right);
+                    if (r == 0) throw new InvalidOperationException("Division by zero");
+                    frame.Push(TsValue.FromUInt64(AsUInt64(left) / r));
+                    break;
+                }
+                case 0x31: // MOD_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    ulong r = AsUInt64(right);
+                    if (r == 0) throw new InvalidOperationException("Division by zero");
+                    frame.Push(TsValue.FromUInt64(AsUInt64(left) % r));
+                    break;
+                }
+
                 // Arithmetic - F64
                 case 0x2A: // ADD_F64
                 {
@@ -398,6 +443,22 @@ public sealed class Interpreter
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt32(left) >= AsInt32(right)));
+                    break;
+                }
+
+                // Comparison - U64
+                case 0x4E: // CMP_EQ_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsUInt64(left) == AsUInt64(right)));
+                    break;
+                }
+                case 0x4F: // CMP_NE_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsUInt64(left) != AsUInt64(right)));
                     break;
                 }
 
@@ -592,6 +653,32 @@ public sealed class Interpreter
                     frame.Pop();
                     break;
 
+                // Convert U64
+                case 0xE4: // CONV_U64_I64
+                {
+                    var val = frame.Pop();
+                    frame.Push(TsValue.FromInt64(unchecked((long)AsUInt64(val))));
+                    break;
+                }
+                case 0xE5: // CONV_I64_U64
+                {
+                    var val = frame.Pop();
+                    frame.Push(TsValue.FromUInt64(unchecked((ulong)AsInt64(val))));
+                    break;
+                }
+                case 0xE6: // CONV_U64_F64
+                {
+                    var val = frame.Pop();
+                    frame.Push(TsValue.FromFloat64(AsUInt64(val)));
+                    break;
+                }
+                case 0xE7: // CONV_F64_U64
+                {
+                    var val = frame.Pop();
+                    frame.Push(TsValue.FromUInt64(Convert.ToUInt64(AsFloat64(val))));
+                    break;
+                }
+
                 default:
                     throw new InvalidOperationException($"Unknown opcode: 0x{op:X2}");
             }
@@ -604,6 +691,7 @@ public sealed class Interpreter
     {
         TsInt32Value v => v.Value,
         TsInt64Value v => (int)v.Value,
+        TsUInt64Value v => unchecked((int)v.Value),
         TsFloat64Value v => (int)v.Value,
         TsBoolValue v => v.Value ? 1 : 0,
         _ => 0
@@ -613,7 +701,17 @@ public sealed class Interpreter
     {
         TsInt32Value v => v.Value,
         TsInt64Value v => v.Value,
+        TsUInt64Value v => unchecked((long)v.Value),
         TsFloat64Value v => (long)v.Value,
+        _ => 0
+    };
+
+    private static ulong AsUInt64(TsValue value) => value switch
+    {
+        TsInt32Value v => unchecked((ulong)v.Value),
+        TsInt64Value v => unchecked((ulong)v.Value),
+        TsUInt64Value v => v.Value,
+        TsFloat64Value v => Convert.ToUInt64(v.Value),
         _ => 0
     };
 
@@ -643,6 +741,13 @@ public sealed class Interpreter
     private static long ReadInt64(byte[] bytecode, ref int ip)
     {
         long value = BitConverter.ToInt64(bytecode, ip);
+        ip += 8;
+        return value;
+    }
+
+    private static ulong ReadUInt64(byte[] bytecode, ref int ip)
+    {
+        ulong value = BitConverter.ToUInt64(bytecode, ip);
         ip += 8;
         return value;
     }

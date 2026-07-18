@@ -476,7 +476,12 @@ public sealed class Binder
         switch (lit.Token.Kind)
         {
             case TokenKind.IntegerLiteral:
-                if (lit.Token.Value is long l)
+                if (lit.Token.Value is ulong ul)
+                {
+                    type = TsType.UInt64;
+                    value = ul;
+                }
+                else if (lit.Token.Value is long l)
                 {
                     if (l >= int.MinValue && l <= int.MaxValue)
                     {
