@@ -963,3 +963,367 @@ public class InteropTests
         Assert.Equal(ulong.MaxValue, ((TsUInt64Value)result!).Value);
     }
 }
+
+public class NegativeTests
+{
+    private static BytecodeFunction MakeFunc(byte[] instructions, string[] strings)
+    {
+        return new BytecodeFunction("test", instructions, 0, 0, false, strings, Array.Empty<long>(), Array.Empty<double>());
+    }
+
+    private static BytecodeModule MakeModule(BytecodeFunction func)
+    {
+        return new BytecodeModule("test", new[] { func });
+    }
+
+    [Fact]
+    public void DivisionByZero_I32_Throws()
+    {
+        var code = @"
+            function main(): int32 {
+                const a: int32 = 10;
+                const b: int32 = 0;
+                return a / b;
+            }
+        ";
+        var ex = Record.Exception(() => Run(code, "main"));
+        Assert.NotNull(ex);
+        Assert.Contains("Division by zero", ex.Message);
+    }
+
+    [Fact]
+    public void DivisionByZero_I64_Throws()
+    {
+        var code = @"
+            function main(): int64 {
+                const a: int64 = 10i64;
+                const b: int64 = 0i64;
+                return a / b;
+            }
+        ";
+        var ex = Record.Exception(() => Run(code, "main"));
+        Assert.NotNull(ex);
+        Assert.Contains("Division by zero", ex.Message);
+    }
+
+    [Fact]
+    public void DivisionByZero_F64_NoThrow_ThrowsInf()
+    {
+        var code = @"
+            function main(): float64 {
+                const a: float64 = 10.0;
+                const b: float64 = 0.0;
+                return a / b;
+            }
+        ";
+        var result = Run(code, "main");
+        Assert.NotNull(result);
+        Assert.IsType<TsFloat64Value>(result);
+        Assert.True(double.IsInfinity(((TsFloat64Value)result).Value));
+    }
+
+    [Fact]
+    public void StackOverflow_OnPush_Throws()
+    {
+        var ms = new System.IO.MemoryStream();
+        var w = new System.IO.BinaryWriter(ms);
+        w.Write(Opcodes.LoadConstI32);
+        w.Write(0);
+        for (int i = 0; i < 256; i++)
+        {
+            w.Write(Opcodes.Dup);
+        }
+        var func = new BytecodeFunction("test", ms.ToArray(), 0, 0, false,
+            Array.Empty<string>(), new long[] { 42 }, Array.Empty<double>());
+        var module = new BytecodeModule("test", new[] { func });
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+
+        var ex = Record.Exception(() => interpreter.Execute(module, "test"));
+        Assert.NotNull(ex);
+        Assert.Contains("Stack overflow", ex.Message);
+    }
+
+    [Fact]
+    public void InstructionLimit_Exceeded()
+    {
+        var ms = new System.IO.MemoryStream();
+        var w = new System.IO.BinaryWriter(ms);
+        w.Write(Opcodes.Branch);
+        w.Write(0);
+        var func = new BytecodeFunction("test", ms.ToArray(), 0, 0, false,
+            Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>());
+        var module = new BytecodeModule("test", new[] { func });
+
+        var limits = new VMRuntimeLimits { MaximumInstructions = 5 };
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter(limits);
+
+        var ex = Record.Exception(() => interpreter.Execute(module, "test"));
+        Assert.NotNull(ex);
+        Assert.Contains("Execution limit exceeded", ex.Message);
+    }
+
+    [Fact]
+    public void MemoryLimit_Exceeded()
+    {
+        var heap = new TsHeap(100);
+        var limits = new VMRuntimeLimits { MaximumMemoryBytes = 100 };
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter(limits);
+
+        interpreter.RegisterHostFunction("test.alloc", (name, args) =>
+        {
+            interpreter.Heap.AllocateObject("BigObject");
+            interpreter.Heap.AllocateObject("BigObject");
+            interpreter.Heap.AllocateObject("BigObject");
+            return TsValue.Null;
+        });
+
+        var instructions = new byte[]
+        {
+            Opcodes.LoadConstNull,
+            Opcodes.LoadConstI32, 0, 0, 0, 0,
+            Opcodes.CallHost, 0, 0, 0, 0, 1, 0, 0, 0,
+            Opcodes.ReturnVoid
+        };
+
+        var func = new BytecodeFunction("test", instructions, 0, 0, false,
+            new[] { "test.alloc" }, new long[] { 0 }, Array.Empty<double>());
+        var module = new BytecodeModule("test", new[] { func });
+
+        var limits2 = new VMRuntimeLimits { MaximumMemoryBytes = 1 };
+        var interpreter2 = new TypeSharp.VM.Interpreter.Interpreter(limits2);
+
+        interpreter2.RegisterHostFunction("test.alloc", (name, args) =>
+        {
+            interpreter2.Heap.AllocateObject("BigObject");
+            return TsValue.Null;
+        });
+
+        var ex = Record.Exception(() => interpreter2.Execute(module, "test"));
+        Assert.NotNull(ex);
+    }
+
+    [Fact]
+    public void RecursionLimit_Exceeded()
+    {
+        var code = @"
+            function recurse(n: int32): int32 {
+                return recurse(n + 1);
+            }
+            function main(): int32 {
+                return recurse(0);
+            }
+        ";
+
+        var limits = new VMRuntimeLimits { MaximumRecursionDepth = 4 };
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(syntaxTree);
+        var irGen = new IRGenerator();
+        var moduleIR = irGen.Generate(boundTree);
+        var bytecodeModule = BytecodeCompiler.Compile(moduleIR);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter(limits);
+        var ex = Record.Exception(() => interpreter.Execute(bytecodeModule, "main"));
+        Assert.NotNull(ex);
+        Assert.Contains("recursion depth", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Timeout_ThrowsOperationCanceled()
+    {
+        var ms = new System.IO.MemoryStream();
+        var w = new System.IO.BinaryWriter(ms);
+        w.Write(Opcodes.Branch);
+        w.Write(0);
+        var func = new BytecodeFunction("test", ms.ToArray(), 0, 0, false,
+            Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>());
+        var module = new BytecodeModule("test", new[] { func });
+
+        var limits = new VMRuntimeLimits { ExecutionTimeout = TimeSpan.FromMilliseconds(1) };
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter(limits);
+
+        var ex = Record.Exception(() => interpreter.Execute(module, "test"));
+        Assert.NotNull(ex);
+    }
+
+    [Fact]
+    public void UnknownOpcode_Throws()
+    {
+        var instructions = new byte[] { 0xFF };
+        var func = new BytecodeFunction("test", instructions, 0, 0, false,
+            Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>());
+        var module = new BytecodeModule("test", new[] { func });
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+
+        var ex = Record.Exception(() => interpreter.Execute(module, "test"));
+        Assert.NotNull(ex);
+        Assert.Contains("Unknown opcode", ex.Message);
+    }
+
+    [Fact]
+    public void NullFieldAccess_ReturnsNull()
+    {
+        var code = @"
+            function main(): int32 {
+                const x: int32 = 0;
+                return x;
+            }
+        ";
+        var result = Run(code, "main");
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(0, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
+    public void StackUnderflow_Throws()
+    {
+        var instructions = new byte[] { Opcodes.Pop };
+        var func = new BytecodeFunction("test", instructions, 0, 0, false,
+            Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>());
+        var module = new BytecodeModule("test", new[] { func });
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+
+        var ex = Record.Exception(() => interpreter.Execute(module, "test"));
+        Assert.NotNull(ex);
+        Assert.Contains("Stack underflow", ex.Message);
+    }
+
+    private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)
+    {
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(syntaxTree);
+        var irGen = new IRGenerator();
+        var moduleIR = irGen.Generate(boundTree);
+        var bytecodeModule = BytecodeCompiler.Compile(moduleIR);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        return interpreter.Execute(bytecodeModule, entryPoint, args);
+    }
+}
+
+public class ConcurrencyTests
+{
+    [Fact]
+    public void ParallelExecute_DoesNotCorruptState()
+    {
+        var code = @"
+            function main(): int32 {
+                const x: int32 = 0;
+                const y: int32 = 1;
+                return x + y;
+            }
+        ";
+
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(syntaxTree);
+        var irGen = new IRGenerator();
+        var moduleIR = irGen.Generate(boundTree);
+        var bytecodeModule = BytecodeCompiler.Compile(moduleIR);
+
+        var results = new TsValue?[10];
+        var tasks = new Task[10];
+
+        for (int i = 0; i < 10; i++)
+        {
+            int idx = i;
+            tasks[idx] = Task.Run(() =>
+            {
+                var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+                results[idx] = interpreter.Execute(bytecodeModule, "main");
+            });
+        }
+
+        Task.WaitAll(tasks);
+
+        foreach (var r in results)
+        {
+            Assert.NotNull(r);
+            Assert.IsType<TsInt32Value>(r);
+            Assert.Equal(1, ((TsInt32Value)r).Value);
+        }
+    }
+
+    [Fact]
+    public void RepeatedExecute_IsStateless()
+    {
+        var code = @"
+            function main(): int32 {
+                const x: int32 = 5;
+                return x;
+            }
+        ";
+
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(syntaxTree);
+        var irGen = new IRGenerator();
+        var moduleIR = irGen.Generate(boundTree);
+        var bytecodeModule = BytecodeCompiler.Compile(moduleIR);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+
+        for (int i = 0; i < 100; i++)
+        {
+            var result = interpreter.Execute(bytecodeModule, "main");
+            Assert.NotNull(result);
+            Assert.Equal(5, ((TsInt32Value)result).Value);
+        }
+    }
+
+    [Fact]
+    public void SharedInterpreter_NoCrossContamination()
+    {
+        var addCode = @"
+            function main(a: int32, b: int32): int32 {
+                return a + b;
+            }
+        ";
+
+        var mulCode = @"
+            function main(a: int32, b: int32): int32 {
+                return a * b;
+            }
+        ";
+
+        var addModule = Compile(addCode);
+        var mulModule = Compile(mulCode);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+
+        var r1 = interpreter.Execute(addModule, "main", new[] { TsValue.FromInt32(3), TsValue.FromInt32(4) });
+        Assert.Equal(7, ((TsInt32Value)r1!).Value);
+
+        var r2 = interpreter.Execute(mulModule, "main", new[] { TsValue.FromInt32(3), TsValue.FromInt32(4) });
+        Assert.Equal(12, ((TsInt32Value)r2!).Value);
+
+        var r3 = interpreter.Execute(addModule, "main", new[] { TsValue.FromInt32(10), TsValue.FromInt32(20) });
+        Assert.Equal(30, ((TsInt32Value)r3!).Value);
+    }
+
+    private static BytecodeModule Compile(string code)
+    {
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(syntaxTree);
+        var irGen = new IRGenerator();
+        var moduleIR = irGen.Generate(boundTree);
+        return BytecodeCompiler.Compile(moduleIR);
+    }
+}

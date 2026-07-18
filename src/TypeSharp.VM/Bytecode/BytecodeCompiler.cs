@@ -55,191 +55,6 @@ public sealed class BytecodeCompilationException : Exception
 
 public static class BytecodeCompiler
 {
-    // ── Load constants ──
-    private const byte OP_NOP = 0x00;
-    private const byte OP_LOAD_CONST_I32 = 0x01;
-    private const byte OP_LOAD_CONST_I64 = 0x02;
-    private const byte OP_LOAD_CONST_F32 = 0x03;
-    private const byte OP_LOAD_CONST_F64 = 0x04;
-    private const byte OP_LOAD_CONST_STRING = 0x05;
-    private const byte OP_LOAD_CONST_BOOL = 0x06;
-    private const byte OP_LOAD_CONST_NULL = 0x07;
-    private const byte OP_LOAD_CONST_U64 = 0x08;
-    private const byte OP_LOAD_CONST_DECIMAL = 0x09;
-
-    // ── Variables ──
-    private const byte OP_LOAD_LOCAL = 0x10;
-    private const byte OP_STORE_LOCAL = 0x11;
-    private const byte OP_LOAD_ARG = 0x12;
-    private const byte OP_LOAD_THIS = 0x13;
-    private const byte OP_LOAD_FIELD = 0x14;
-    private const byte OP_STORE_FIELD = 0x15;
-
-    // ── I32 arithmetic ──
-    private const byte OP_ADD_I32 = 0x20;
-    private const byte OP_SUB_I32 = 0x21;
-    private const byte OP_MUL_I32 = 0x22;
-    private const byte OP_DIV_I32 = 0x23;
-    private const byte OP_MOD_I32 = 0x24;
-    private const byte OP_NEG_I32 = 0x25;
-
-    // ── I64 arithmetic ──
-    private const byte OP_ADD_I64 = 0x26;
-    private const byte OP_SUB_I64 = 0x27;
-    private const byte OP_MUL_I64 = 0x28;
-    private const byte OP_DIV_I64 = 0x29;
-    private const byte OP_MOD_I64 = 0x2A;
-    private const byte OP_NEG_I64 = 0x2B;
-
-    // ── U64 arithmetic ──
-    private const byte OP_ADD_U64 = 0x2C;
-    private const byte OP_SUB_U64 = 0x2D;
-    private const byte OP_MUL_U64 = 0x2E;
-    private const byte OP_DIV_U64 = 0x2F;
-    private const byte OP_MOD_U64 = 0x30;
-
-    // ── F64 arithmetic ──
-    private const byte OP_ADD_F64 = 0x31;
-    private const byte OP_SUB_F64 = 0x32;
-    private const byte OP_MUL_F64 = 0x33;
-    private const byte OP_DIV_F64 = 0x34;
-    private const byte OP_MOD_F64 = 0x35;
-    private const byte OP_NEG_F64 = 0x36;
-
-    // ── F32 arithmetic ──
-    private const byte OP_ADD_F32 = 0x37;
-    private const byte OP_SUB_F32 = 0x38;
-    private const byte OP_MUL_F32 = 0x39;
-    private const byte OP_DIV_F32 = 0x3A;
-    private const byte OP_NEG_F32 = 0x3B;
-
-    // ── I32 bitwise ──
-    private const byte OP_AND_I32 = 0x3C;
-    private const byte OP_OR_I32 = 0x3D;
-    private const byte OP_XOR_I32 = 0x3E;
-    private const byte OP_NOT_I32 = 0x3F;
-
-    // ── I32 comparison ──
-    private const byte OP_CMP_EQ_I32 = 0x40;
-    private const byte OP_CMP_NE_I32 = 0x41;
-    private const byte OP_CMP_LT_I32 = 0x42;
-    private const byte OP_CMP_LE_I32 = 0x43;
-    private const byte OP_CMP_GT_I32 = 0x44;
-    private const byte OP_CMP_GE_I32 = 0x45;
-
-    // ── I64 comparison ──
-    private const byte OP_CMP_EQ_I64 = 0x46;
-    private const byte OP_CMP_NE_I64 = 0x47;
-    private const byte OP_CMP_LT_I64 = 0x48;
-    private const byte OP_CMP_LE_I64 = 0x49;
-    private const byte OP_CMP_GT_I64 = 0x4A;
-    private const byte OP_CMP_GE_I64 = 0x4B;
-
-    // ── U64 comparison ──
-    private const byte OP_CMP_EQ_U64 = 0x4C;
-    private const byte OP_CMP_NE_U64 = 0x4D;
-    private const byte OP_CMP_LT_U64 = 0x4E;
-    private const byte OP_CMP_LE_U64 = 0x4F;
-
-    // ── F64 comparison ──
-    private const byte OP_CMP_EQ_F64 = 0x50;
-    private const byte OP_CMP_NE_F64 = 0x51;
-    private const byte OP_CMP_LT_F64 = 0x52;
-    private const byte OP_CMP_LE_F64 = 0x53;
-    private const byte OP_CMP_GT_F64 = 0x54;
-    private const byte OP_CMP_GE_F64 = 0x55;
-
-    // ── F32 comparison ──
-    private const byte OP_CMP_EQ_F32 = 0x56;
-    private const byte OP_CMP_NE_F32 = 0x57;
-    private const byte OP_CMP_LT_F32 = 0x58;
-    private const byte OP_CMP_LE_F32 = 0x59;
-    private const byte OP_CMP_GT_F32 = 0x5A;
-    private const byte OP_CMP_GE_F32 = 0x5B;
-
-    // ── Logical ──
-    private const byte OP_AND_BOOL = 0x5C;
-    private const byte OP_OR_BOOL = 0x5D;
-    private const byte OP_NOT_BOOL = 0x5E;
-
-    // ── I64 bitwise ──
-    private const byte OP_AND_I64 = 0x60;
-    private const byte OP_OR_I64 = 0x61;
-    private const byte OP_XOR_I64 = 0x62;
-    private const byte OP_NOT_I64 = 0x63;
-    private const byte OP_SHL_I32 = 0x64;
-    private const byte OP_SHR_I32 = 0x65;
-    private const byte OP_SHL_I64 = 0x66;
-    private const byte OP_SHR_I64 = 0x67;
-
-    // ── Control flow ──
-    private const byte OP_BRANCH = 0x70;
-    private const byte OP_BRANCH_TRUE = 0x71;
-    private const byte OP_BRANCH_FALSE = 0x72;
-
-    // ── Functions ──
-    private const byte OP_CALL = 0x73;
-    private const byte OP_CALL_HOST = 0x74;
-    private const byte OP_RETURN = 0x75;
-    private const byte OP_RETURN_VOID = 0x76;
-    private const byte OP_CALL_VIRT = 0x77;
-
-    // ── Object ──
-    private const byte OP_NEW_OBJECT = 0x80;
-    private const byte OP_NEW_ARRAY = 0x81;
-    private const byte OP_NEW_MAP = 0x82;
-    private const byte OP_DUP = 0x83;
-    private const byte OP_POP = 0x84;
-
-    // ── String ──
-    private const byte OP_CONCAT_STRING = 0x85;
-
-    // ── Async ──
-    private const byte OP_AWAIT = 0x86;
-
-    // ── Exception ──
-    private const byte OP_THROW = 0x87;
-
-    // ── Convert (I32 ↔ I64, I32 ↔ F64, I32 ↔ F32) ──
-    private const byte OP_CONV_I32_I64 = 0x90;
-    private const byte OP_CONV_I64_I32 = 0x91;
-    private const byte OP_CONV_I32_F64 = 0x92;
-    private const byte OP_CONV_F64_I32 = 0x93;
-    private const byte OP_CONV_I32_F32 = 0x94;
-    private const byte OP_CONV_F32_I32 = 0x95;
-
-    // ── Convert (U64) ──
-    private const byte OP_CONV_U64_I64 = 0x96;
-    private const byte OP_CONV_I64_U64 = 0x97;
-    private const byte OP_CONV_U64_F64 = 0x98;
-    private const byte OP_CONV_F64_U64 = 0x99;
-    private const byte OP_CONV_U64_I32 = 0x9A;
-    private const byte OP_CONV_I32_U64 = 0x9B;
-
-    // ── Convert (F32 ↔ F64) ──
-    private const byte OP_CONV_F32_F64 = 0x9C;
-    private const byte OP_CONV_F64_F32 = 0x9D;
-
-    // ── Utilities ──
-    private const byte OP_TYPE_CHECK = 0xA0;
-    private const byte OP_NULL_CHECK = 0xA1;
-
-    // ── Decimal arithmetic ──
-    private const byte OP_ADD_DECIMAL = 0xB0;
-    private const byte OP_SUB_DECIMAL = 0xB1;
-    private const byte OP_MUL_DECIMAL = 0xB2;
-    private const byte OP_DIV_DECIMAL = 0xB3;
-    private const byte OP_MOD_DECIMAL = 0xB4;
-    private const byte OP_NEG_DECIMAL = 0xB5;
-
-    // ── Decimal comparison ──
-    private const byte OP_CMP_EQ_DECIMAL = 0xB6;
-    private const byte OP_CMP_NE_DECIMAL = 0xB7;
-    private const byte OP_CMP_LT_DECIMAL = 0xB8;
-    private const byte OP_CMP_LE_DECIMAL = 0xB9;
-    private const byte OP_CMP_GT_DECIMAL = 0xBA;
-    private const byte OP_CMP_GE_DECIMAL = 0xBB;
-
     // ────────────────────────────────────────────────────────
     //  Compile entry point
     // ────────────────────────────────────────────────────────
@@ -301,256 +116,256 @@ public static class BytecodeCompiler
         {
             // ── Nop ──
             case Opcode.Nop:
-                writer.Write(OP_NOP);
+                writer.Write(Opcodes.Nop);
                 break;
 
             // ── Load constants ──
             case Opcode.LoadConst_I32:
-                writer.Write(OP_LOAD_CONST_I32);
+                writer.Write(Opcodes.LoadConstI32);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.LoadConst_I64:
-                writer.Write(OP_LOAD_CONST_I64);
+                writer.Write(Opcodes.LoadConstI64);
                 writer.WriteInt64(Convert.ToInt64(instr.OperandObject ?? instr.Operand0));
                 break;
             case Opcode.LoadConst_U64:
-                writer.Write(OP_LOAD_CONST_U64);
+                writer.Write(Opcodes.LoadConstU64);
                 writer.WriteUInt64(Convert.ToUInt64(instr.OperandObject ?? 0UL));
                 break;
             case Opcode.LoadConst_F32:
-                writer.Write(OP_LOAD_CONST_F32);
+                writer.Write(Opcodes.LoadConstF32);
                 writer.WriteFloat(Convert.ToSingle(instr.OperandObject ?? 0f));
                 break;
             case Opcode.LoadConst_F64:
-                writer.Write(OP_LOAD_CONST_F64);
+                writer.Write(Opcodes.LoadConstF64);
                 writer.WriteDouble(Convert.ToDouble(instr.OperandObject ?? 0.0));
                 break;
             case Opcode.LoadConst_String:
-                writer.Write(OP_LOAD_CONST_STRING);
+                writer.Write(Opcodes.LoadConstString);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.LoadConst_Bool:
-                writer.Write(OP_LOAD_CONST_BOOL);
+                writer.Write(Opcodes.LoadConstBool);
                 writer.Write(instr.Operand0 != 0 ? (byte)1 : (byte)0);
                 break;
             case Opcode.LoadConst_Null:
-                writer.Write(OP_LOAD_CONST_NULL);
+                writer.Write(Opcodes.LoadConstNull);
                 break;
 
             // ── Variables ──
             case Opcode.LoadLocal:
-                writer.Write(OP_LOAD_LOCAL);
+                writer.Write(Opcodes.LoadLocal);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.StoreLocal:
-                writer.Write(OP_STORE_LOCAL);
+                writer.Write(Opcodes.StoreLocal);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.LoadArg:
-                writer.Write(OP_LOAD_ARG);
+                writer.Write(Opcodes.LoadArg);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.LoadThis:
-                writer.Write(OP_LOAD_THIS);
+                writer.Write(Opcodes.LoadThis);
                 break;
             case Opcode.LoadField:
-                writer.Write(OP_LOAD_FIELD);
+                writer.Write(Opcodes.LoadField);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.StoreField:
-                writer.Write(OP_STORE_FIELD);
+                writer.Write(Opcodes.StoreField);
                 writer.WriteInt32(instr.Operand0);
                 break;
 
             // ── I32 arithmetic ──
-            case Opcode.Add_I32: writer.Write(OP_ADD_I32); break;
-            case Opcode.Sub_I32: writer.Write(OP_SUB_I32); break;
-            case Opcode.Mul_I32: writer.Write(OP_MUL_I32); break;
-            case Opcode.Div_I32: writer.Write(OP_DIV_I32); break;
-            case Opcode.Mod_I32: writer.Write(OP_MOD_I32); break;
-            case Opcode.Neg_I32: writer.Write(OP_NEG_I32); break;
+            case Opcode.Add_I32: writer.Write(Opcodes.AddI32); break;
+            case Opcode.Sub_I32: writer.Write(Opcodes.SubI32); break;
+            case Opcode.Mul_I32: writer.Write(Opcodes.MulI32); break;
+            case Opcode.Div_I32: writer.Write(Opcodes.DivI32); break;
+            case Opcode.Mod_I32: writer.Write(Opcodes.ModI32); break;
+            case Opcode.Neg_I32: writer.Write(Opcodes.NegI32); break;
 
             // ── I64 arithmetic ──
-            case Opcode.Add_I64: writer.Write(OP_ADD_I64); break;
-            case Opcode.Sub_I64: writer.Write(OP_SUB_I64); break;
-            case Opcode.Mul_I64: writer.Write(OP_MUL_I64); break;
-            case Opcode.Div_I64: writer.Write(OP_DIV_I64); break;
-            case Opcode.Mod_I64: writer.Write(OP_MOD_I64); break;
-            case Opcode.Neg_I64: writer.Write(OP_NEG_I64); break;
+            case Opcode.Add_I64: writer.Write(Opcodes.AddI64); break;
+            case Opcode.Sub_I64: writer.Write(Opcodes.SubI64); break;
+            case Opcode.Mul_I64: writer.Write(Opcodes.MulI64); break;
+            case Opcode.Div_I64: writer.Write(Opcodes.DivI64); break;
+            case Opcode.Mod_I64: writer.Write(Opcodes.ModI64); break;
+            case Opcode.Neg_I64: writer.Write(Opcodes.NegI64); break;
 
             // ── U64 arithmetic ──
-            case Opcode.Add_U64: writer.Write(OP_ADD_U64); break;
-            case Opcode.Sub_U64: writer.Write(OP_SUB_U64); break;
-            case Opcode.Mul_U64: writer.Write(OP_MUL_U64); break;
-            case Opcode.Div_U64: writer.Write(OP_DIV_U64); break;
-            case Opcode.Mod_U64: writer.Write(OP_MOD_U64); break;
+            case Opcode.Add_U64: writer.Write(Opcodes.AddU64); break;
+            case Opcode.Sub_U64: writer.Write(Opcodes.SubU64); break;
+            case Opcode.Mul_U64: writer.Write(Opcodes.MulU64); break;
+            case Opcode.Div_U64: writer.Write(Opcodes.DivU64); break;
+            case Opcode.Mod_U64: writer.Write(Opcodes.ModU64); break;
 
             // ── F64 arithmetic ──
-            case Opcode.Add_F64: writer.Write(OP_ADD_F64); break;
-            case Opcode.Sub_F64: writer.Write(OP_SUB_F64); break;
-            case Opcode.Mul_F64: writer.Write(OP_MUL_F64); break;
-            case Opcode.Div_F64: writer.Write(OP_DIV_F64); break;
-            case Opcode.Mod_F64: writer.Write(OP_MOD_F64); break;
-            case Opcode.Neg_F64: writer.Write(OP_NEG_F64); break;
+            case Opcode.Add_F64: writer.Write(Opcodes.AddF64); break;
+            case Opcode.Sub_F64: writer.Write(Opcodes.SubF64); break;
+            case Opcode.Mul_F64: writer.Write(Opcodes.MulF64); break;
+            case Opcode.Div_F64: writer.Write(Opcodes.DivF64); break;
+            case Opcode.Mod_F64: writer.Write(Opcodes.ModF64); break;
+            case Opcode.Neg_F64: writer.Write(Opcodes.NegF64); break;
 
             // ── F32 arithmetic ──
-            case Opcode.Add_F32: writer.Write(OP_ADD_F32); break;
-            case Opcode.Sub_F32: writer.Write(OP_SUB_F32); break;
-            case Opcode.Mul_F32: writer.Write(OP_MUL_F32); break;
-            case Opcode.Div_F32: writer.Write(OP_DIV_F32); break;
-            case Opcode.Neg_F32: writer.Write(OP_NEG_F32); break;
+            case Opcode.Add_F32: writer.Write(Opcodes.AddF32); break;
+            case Opcode.Sub_F32: writer.Write(Opcodes.SubF32); break;
+            case Opcode.Mul_F32: writer.Write(Opcodes.MulF32); break;
+            case Opcode.Div_F32: writer.Write(Opcodes.DivF32); break;
+            case Opcode.Neg_F32: writer.Write(Opcodes.NegF32); break;
 
             // ── I32 bitwise ──
-            case Opcode.And_I32: writer.Write(OP_AND_I32); break;
-            case Opcode.Or_I32: writer.Write(OP_OR_I32); break;
-            case Opcode.Xor_I32: writer.Write(OP_XOR_I32); break;
-            case Opcode.Not_I32: writer.Write(OP_NOT_I32); break;
-            case Opcode.Shl_I32: writer.Write(OP_SHL_I32); break;
-            case Opcode.Shr_I32: writer.Write(OP_SHR_I32); break;
+            case Opcode.And_I32: writer.Write(Opcodes.AndI32); break;
+            case Opcode.Or_I32: writer.Write(Opcodes.OrI32); break;
+            case Opcode.Xor_I32: writer.Write(Opcodes.XorI32); break;
+            case Opcode.Not_I32: writer.Write(Opcodes.NotI32); break;
+            case Opcode.Shl_I32: writer.Write(Opcodes.ShlI32); break;
+            case Opcode.Shr_I32: writer.Write(Opcodes.ShrI32); break;
 
             // ── I64 bitwise ──
-            case Opcode.And_I64: writer.Write(OP_AND_I64); break;
-            case Opcode.Or_I64: writer.Write(OP_OR_I64); break;
-            case Opcode.Xor_I64: writer.Write(OP_XOR_I64); break;
-            case Opcode.Not_I64: writer.Write(OP_NOT_I64); break;
-            case Opcode.Shl_I64: writer.Write(OP_SHL_I64); break;
-            case Opcode.Shr_I64: writer.Write(OP_SHR_I64); break;
+            case Opcode.And_I64: writer.Write(Opcodes.AndI64); break;
+            case Opcode.Or_I64: writer.Write(Opcodes.OrI64); break;
+            case Opcode.Xor_I64: writer.Write(Opcodes.XorI64); break;
+            case Opcode.Not_I64: writer.Write(Opcodes.NotI64); break;
+            case Opcode.Shl_I64: writer.Write(Opcodes.ShlI64); break;
+            case Opcode.Shr_I64: writer.Write(Opcodes.ShrI64); break;
 
             // ── I32 comparison ──
-            case Opcode.CmpEq_I32: writer.Write(OP_CMP_EQ_I32); break;
-            case Opcode.CmpNe_I32: writer.Write(OP_CMP_NE_I32); break;
-            case Opcode.CmpLt_I32: writer.Write(OP_CMP_LT_I32); break;
-            case Opcode.CmpLe_I32: writer.Write(OP_CMP_LE_I32); break;
-            case Opcode.CmpGt_I32: writer.Write(OP_CMP_GT_I32); break;
-            case Opcode.CmpGe_I32: writer.Write(OP_CMP_GE_I32); break;
+            case Opcode.CmpEq_I32: writer.Write(Opcodes.CmpEqI32); break;
+            case Opcode.CmpNe_I32: writer.Write(Opcodes.CmpNeI32); break;
+            case Opcode.CmpLt_I32: writer.Write(Opcodes.CmpLtI32); break;
+            case Opcode.CmpLe_I32: writer.Write(Opcodes.CmpLeI32); break;
+            case Opcode.CmpGt_I32: writer.Write(Opcodes.CmpGtI32); break;
+            case Opcode.CmpGe_I32: writer.Write(Opcodes.CmpGeI32); break;
 
             // ── I64 comparison ──
-            case Opcode.CmpEq_I64: writer.Write(OP_CMP_EQ_I64); break;
-            case Opcode.CmpNe_I64: writer.Write(OP_CMP_NE_I64); break;
-            case Opcode.CmpLt_I64: writer.Write(OP_CMP_LT_I64); break;
-            case Opcode.CmpLe_I64: writer.Write(OP_CMP_LE_I64); break;
-            case Opcode.CmpGt_I64: writer.Write(OP_CMP_GT_I64); break;
-            case Opcode.CmpGe_I64: writer.Write(OP_CMP_GE_I64); break;
+            case Opcode.CmpEq_I64: writer.Write(Opcodes.CmpEqI64); break;
+            case Opcode.CmpNe_I64: writer.Write(Opcodes.CmpNeI64); break;
+            case Opcode.CmpLt_I64: writer.Write(Opcodes.CmpLtI64); break;
+            case Opcode.CmpLe_I64: writer.Write(Opcodes.CmpLeI64); break;
+            case Opcode.CmpGt_I64: writer.Write(Opcodes.CmpGtI64); break;
+            case Opcode.CmpGe_I64: writer.Write(Opcodes.CmpGeI64); break;
 
             // ── U64 comparison ──
-            case Opcode.CmpEq_U64: writer.Write(OP_CMP_EQ_U64); break;
-            case Opcode.CmpNe_U64: writer.Write(OP_CMP_NE_U64); break;
-            case Opcode.CmpLt_U64: writer.Write(OP_CMP_LT_U64); break;
-            case Opcode.CmpLe_U64: writer.Write(OP_CMP_LE_U64); break;
+            case Opcode.CmpEq_U64: writer.Write(Opcodes.CmpEqU64); break;
+            case Opcode.CmpNe_U64: writer.Write(Opcodes.CmpNeU64); break;
+            case Opcode.CmpLt_U64: writer.Write(Opcodes.CmpLtU64); break;
+            case Opcode.CmpLe_U64: writer.Write(Opcodes.CmpLeU64); break;
 
             // ── F64 comparison ──
-            case Opcode.CmpEq_F64: writer.Write(OP_CMP_EQ_F64); break;
-            case Opcode.CmpNe_F64: writer.Write(OP_CMP_NE_F64); break;
-            case Opcode.CmpLt_F64: writer.Write(OP_CMP_LT_F64); break;
-            case Opcode.CmpLe_F64: writer.Write(OP_CMP_LE_F64); break;
-            case Opcode.CmpGt_F64: writer.Write(OP_CMP_GT_F64); break;
-            case Opcode.CmpGe_F64: writer.Write(OP_CMP_GE_F64); break;
+            case Opcode.CmpEq_F64: writer.Write(Opcodes.CmpEqF64); break;
+            case Opcode.CmpNe_F64: writer.Write(Opcodes.CmpNeF64); break;
+            case Opcode.CmpLt_F64: writer.Write(Opcodes.CmpLtF64); break;
+            case Opcode.CmpLe_F64: writer.Write(Opcodes.CmpLeF64); break;
+            case Opcode.CmpGt_F64: writer.Write(Opcodes.CmpGtF64); break;
+            case Opcode.CmpGe_F64: writer.Write(Opcodes.CmpGeF64); break;
 
             // ── F32 comparison ──
-            case Opcode.CmpEq_F32: writer.Write(OP_CMP_EQ_F32); break;
-            case Opcode.CmpNe_F32: writer.Write(OP_CMP_NE_F32); break;
-            case Opcode.CmpLt_F32: writer.Write(OP_CMP_LT_F32); break;
-            case Opcode.CmpLe_F32: writer.Write(OP_CMP_LE_F32); break;
-            case Opcode.CmpGt_F32: writer.Write(OP_CMP_GT_F32); break;
-            case Opcode.CmpGe_F32: writer.Write(OP_CMP_GE_F32); break;
+            case Opcode.CmpEq_F32: writer.Write(Opcodes.CmpEqF32); break;
+            case Opcode.CmpNe_F32: writer.Write(Opcodes.CmpNeF32); break;
+            case Opcode.CmpLt_F32: writer.Write(Opcodes.CmpLtF32); break;
+            case Opcode.CmpLe_F32: writer.Write(Opcodes.CmpLeF32); break;
+            case Opcode.CmpGt_F32: writer.Write(Opcodes.CmpGtF32); break;
+            case Opcode.CmpGe_F32: writer.Write(Opcodes.CmpGeF32); break;
 
             // ── Logical ──
-            case Opcode.And_Bool: writer.Write(OP_AND_BOOL); break;
-            case Opcode.Or_Bool: writer.Write(OP_OR_BOOL); break;
-            case Opcode.Not_Bool: writer.Write(OP_NOT_BOOL); break;
+            case Opcode.And_Bool: writer.Write(Opcodes.AndBool); break;
+            case Opcode.Or_Bool: writer.Write(Opcodes.OrBool); break;
+            case Opcode.Not_Bool: writer.Write(Opcodes.NotBool); break;
 
             // ── Control flow ──
             case Opcode.Branch:
-                writer.Write(OP_BRANCH);
+                writer.Write(Opcodes.Branch);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.BranchTrue:
-                writer.Write(OP_BRANCH_TRUE);
+                writer.Write(Opcodes.BranchTrue);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.BranchFalse:
-                writer.Write(OP_BRANCH_FALSE);
+                writer.Write(Opcodes.BranchFalse);
                 writer.WriteInt32(instr.Operand0);
                 break;
 
             // ── Functions ──
             case Opcode.Call:
-                writer.Write(OP_CALL);
+                writer.Write(Opcodes.Call);
                 writer.WriteInt32(instr.Operand0);
                 writer.WriteInt32(instr.Operand1);
                 break;
 
-            case Opcode.Return: writer.Write(OP_RETURN); break;
-            case Opcode.ReturnVoid: writer.Write(OP_RETURN_VOID); break;
+            case Opcode.Return: writer.Write(Opcodes.Return); break;
+            case Opcode.ReturnVoid: writer.Write(Opcodes.ReturnVoid); break;
 
             // ── Object ──
             case Opcode.NewObject:
-                writer.Write(OP_NEW_OBJECT);
+                writer.Write(Opcodes.NewObject);
                 writer.WriteInt32(instr.Operand0);
                 writer.WriteInt32(instr.Operand1);
                 break;
-            case Opcode.Dup: writer.Write(OP_DUP); break;
-            case Opcode.Pop: writer.Write(OP_POP); break;
+            case Opcode.Dup: writer.Write(Opcodes.Dup); break;
+            case Opcode.Pop: writer.Write(Opcodes.Pop); break;
 
             // ── String ──
-            case Opcode.ConcatString: writer.Write(OP_CONCAT_STRING); break;
+            case Opcode.ConcatString: writer.Write(Opcodes.ConcatString); break;
 
             // ── Async ──
-            case Opcode.Await: writer.Write(OP_AWAIT); break;
+            case Opcode.Await: writer.Write(Opcodes.Await); break;
 
             // ── Convert ──
-            case Opcode.Conv_I32_I64: writer.Write(OP_CONV_I32_I64); break;
-            case Opcode.Conv_I64_I32: writer.Write(OP_CONV_I64_I32); break;
-            case Opcode.Conv_I32_F64: writer.Write(OP_CONV_I32_F64); break;
-            case Opcode.Conv_F64_I32: writer.Write(OP_CONV_F64_I32); break;
-            case Opcode.Conv_I32_F32: writer.Write(OP_CONV_I32_F32); break;
-            case Opcode.Conv_F32_I32: writer.Write(OP_CONV_F32_I32); break;
-            case Opcode.Conv_U64_I64: writer.Write(OP_CONV_U64_I64); break;
-            case Opcode.Conv_I64_U64: writer.Write(OP_CONV_I64_U64); break;
-            case Opcode.Conv_U64_F64: writer.Write(OP_CONV_U64_F64); break;
-            case Opcode.Conv_F64_U64: writer.Write(OP_CONV_F64_U64); break;
-            case Opcode.Conv_U64_I32: writer.Write(OP_CONV_U64_I32); break;
-            case Opcode.Conv_I32_U64: writer.Write(OP_CONV_I32_U64); break;
-            case Opcode.Conv_F32_F64: writer.Write(OP_CONV_F32_F64); break;
-            case Opcode.Conv_F64_F32: writer.Write(OP_CONV_F64_F32); break;
+            case Opcode.Conv_I32_I64: writer.Write(Opcodes.ConvI32I64); break;
+            case Opcode.Conv_I64_I32: writer.Write(Opcodes.ConvI64I32); break;
+            case Opcode.Conv_I32_F64: writer.Write(Opcodes.ConvI32F64); break;
+            case Opcode.Conv_F64_I32: writer.Write(Opcodes.ConvF64I32); break;
+            case Opcode.Conv_I32_F32: writer.Write(Opcodes.ConvI32F32); break;
+            case Opcode.Conv_F32_I32: writer.Write(Opcodes.ConvF32I32); break;
+            case Opcode.Conv_U64_I64: writer.Write(Opcodes.ConvU64I64); break;
+            case Opcode.Conv_I64_U64: writer.Write(Opcodes.ConvI64U64); break;
+            case Opcode.Conv_U64_F64: writer.Write(Opcodes.ConvU64F64); break;
+            case Opcode.Conv_F64_U64: writer.Write(Opcodes.ConvF64U64); break;
+            case Opcode.Conv_U64_I32: writer.Write(Opcodes.ConvU64I32); break;
+            case Opcode.Conv_I32_U64: writer.Write(Opcodes.ConvI32U64); break;
+            case Opcode.Conv_F32_F64: writer.Write(Opcodes.ConvF32F64); break;
+            case Opcode.Conv_F64_F32: writer.Write(Opcodes.ConvF64F32); break;
 
             // ── Decimal arithmetic ──
-            case Opcode.Add_Decimal: writer.Write(OP_ADD_DECIMAL); break;
-            case Opcode.Sub_Decimal: writer.Write(OP_SUB_DECIMAL); break;
-            case Opcode.Mul_Decimal: writer.Write(OP_MUL_DECIMAL); break;
-            case Opcode.Div_Decimal: writer.Write(OP_DIV_DECIMAL); break;
-            case Opcode.Mod_Decimal: writer.Write(OP_MOD_DECIMAL); break;
-            case Opcode.Neg_Decimal: writer.Write(OP_NEG_DECIMAL); break;
+            case Opcode.Add_Decimal: writer.Write(Opcodes.AddDecimal); break;
+            case Opcode.Sub_Decimal: writer.Write(Opcodes.SubDecimal); break;
+            case Opcode.Mul_Decimal: writer.Write(Opcodes.MulDecimal); break;
+            case Opcode.Div_Decimal: writer.Write(Opcodes.DivDecimal); break;
+            case Opcode.Mod_Decimal: writer.Write(Opcodes.ModDecimal); break;
+            case Opcode.Neg_Decimal: writer.Write(Opcodes.NegDecimal); break;
 
             // ── Decimal comparison ──
-            case Opcode.CmpEq_Decimal: writer.Write(OP_CMP_EQ_DECIMAL); break;
-            case Opcode.CmpNe_Decimal: writer.Write(OP_CMP_NE_DECIMAL); break;
-            case Opcode.CmpLt_Decimal: writer.Write(OP_CMP_LT_DECIMAL); break;
-            case Opcode.CmpLe_Decimal: writer.Write(OP_CMP_LE_DECIMAL); break;
-            case Opcode.CmpGt_Decimal: writer.Write(OP_CMP_GT_DECIMAL); break;
-            case Opcode.CmpGe_Decimal: writer.Write(OP_CMP_GE_DECIMAL); break;
+            case Opcode.CmpEq_Decimal: writer.Write(Opcodes.CmpEqDecimal); break;
+            case Opcode.CmpNe_Decimal: writer.Write(Opcodes.CmpNeDecimal); break;
+            case Opcode.CmpLt_Decimal: writer.Write(Opcodes.CmpLtDecimal); break;
+            case Opcode.CmpLe_Decimal: writer.Write(Opcodes.CmpLeDecimal); break;
+            case Opcode.CmpGt_Decimal: writer.Write(Opcodes.CmpGtDecimal); break;
+            case Opcode.CmpGe_Decimal: writer.Write(Opcodes.CmpGeDecimal); break;
 
             // ── Missing emit cases ──
             case Opcode.LoadConst_Decimal:
-                writer.Write(OP_LOAD_CONST_DECIMAL);
+                writer.Write(Opcodes.LoadConstDecimal);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.CallVirt:
-                writer.Write(OP_CALL_VIRT);
+                writer.Write(Opcodes.CallVirt);
                 writer.WriteInt32(instr.Operand0);
                 writer.WriteInt32(instr.Operand1);
                 break;
-            case Opcode.Throw: writer.Write(OP_THROW); break;
+            case Opcode.Throw: writer.Write(Opcodes.Throw); break;
             case Opcode.NewArray:
-                writer.Write(OP_NEW_ARRAY);
+                writer.Write(Opcodes.NewArray);
                 writer.WriteInt32(instr.Operand0);
                 break;
-            case Opcode.NewMap: writer.Write(OP_NEW_MAP); break;
+            case Opcode.NewMap: writer.Write(Opcodes.NewMap); break;
             case Opcode.TypeCheck:
-                writer.Write(OP_TYPE_CHECK);
+                writer.Write(Opcodes.TypeCheck);
                 writer.WriteInt32(instr.Operand0);
                 break;
-            case Opcode.NullCheck: writer.Write(OP_NULL_CHECK); break;
+            case Opcode.NullCheck: writer.Write(Opcodes.NullCheck); break;
 
             // ── DEFAULT: throw on unimplemented opcode ──
             default:

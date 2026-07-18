@@ -154,45 +154,45 @@ public sealed class Interpreter
             {
                 // ── Load constants ──
 
-                case 0x00: // NOP
+                case Opcodes.Nop: // NOP
                     break;
 
-                case 0x01: // LOAD_CONST_I32
+                case Opcodes.LoadConstI32: // LOAD_CONST_I32
                     frame.Push(TsValue.FromInt32(ReadInt32(bytecode, ref frame.InstructionPointer)));
                     break;
 
-                case 0x02: // LOAD_CONST_I64
+                case Opcodes.LoadConstI64: // LOAD_CONST_I64
                     frame.Push(TsValue.FromInt64(ReadInt64(bytecode, ref frame.InstructionPointer)));
                     break;
 
-                case 0x03: // LOAD_CONST_F32
+                case Opcodes.LoadConstF32: // LOAD_CONST_F32
                     frame.Push(TsValue.FromFloat32(ReadFloat(bytecode, ref frame.InstructionPointer)));
                     break;
 
-                case 0x04: // LOAD_CONST_F64
+                case Opcodes.LoadConstF64: // LOAD_CONST_F64
                     frame.Push(TsValue.FromFloat64(ReadDouble(bytecode, ref frame.InstructionPointer)));
                     break;
 
-                case 0x05: // LOAD_CONST_STRING
+                case Opcodes.LoadConstString: // LOAD_CONST_STRING
                 {
                     int idx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     frame.Push(TsValue.FromString(strings[idx]));
                     break;
                 }
 
-                case 0x06: // LOAD_CONST_BOOL
+                case Opcodes.LoadConstBool: // LOAD_CONST_BOOL
                     frame.Push(new TsBoolValue(bytecode[frame.InstructionPointer++] != 0));
                     break;
 
-                case 0x07: // LOAD_CONST_NULL
+                case Opcodes.LoadConstNull: // LOAD_CONST_NULL
                     frame.Push(TsValue.Null);
                     break;
 
-                case 0x08: // LOAD_CONST_U64
+                case Opcodes.LoadConstU64: // LOAD_CONST_U64
                     frame.Push(TsValue.FromUInt64(ReadUInt64(bytecode, ref frame.InstructionPointer)));
                     break;
 
-                case 0x09: // LOAD_CONST_DECIMAL
+                case Opcodes.LoadConstDecimal: // LOAD_CONST_DECIMAL
                 {
                     var decimals = frame.Function.DecimalConstants;
                     int idx = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -202,32 +202,32 @@ public sealed class Interpreter
 
                 // ── Variables ──
 
-                case 0x10: // LOAD_LOCAL
+                case Opcodes.LoadLocal: // LOAD_LOCAL
                 {
                     int idx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     frame.Push(frame.Locals[idx]);
                     break;
                 }
 
-                case 0x11: // STORE_LOCAL
+                case Opcodes.StoreLocal: // STORE_LOCAL
                 {
                     int idx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     frame.Locals[idx] = frame.Pop();
                     break;
                 }
 
-                case 0x12: // LOAD_ARG
+                case Opcodes.LoadArg: // LOAD_ARG
                 {
                     int idx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     frame.Push(frame.Locals[idx]);
                     break;
                 }
 
-                case 0x13: // LOAD_THIS
+                case Opcodes.LoadThis: // LOAD_THIS
                     frame.Push(frame.Locals[0]);
                     break;
 
-                case 0x14: // LOAD_FIELD
+                case Opcodes.LoadField: // LOAD_FIELD
                 {
                     int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var fieldName = strings[fieldIdx];
@@ -239,7 +239,7 @@ public sealed class Interpreter
                     break;
                 }
 
-                case 0x15: // STORE_FIELD
+                case Opcodes.StoreField: // STORE_FIELD
                 {
                     int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var fieldName = strings[fieldIdx];
@@ -252,28 +252,28 @@ public sealed class Interpreter
 
                 // ── I32 arithmetic ──
 
-                case 0x20: // ADD_I32
+                case Opcodes.AddI32: // ADD_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt32(AsInt32(left) + AsInt32(right)));
                     break;
                 }
-                case 0x21: // SUB_I32
+                case Opcodes.SubI32: // SUB_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt32(AsInt32(left) - AsInt32(right)));
                     break;
                 }
-                case 0x22: // MUL_I32
+                case Opcodes.MulI32: // MUL_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt32(AsInt32(left) * AsInt32(right)));
                     break;
                 }
-                case 0x23: // DIV_I32
+                case Opcodes.DivI32: // DIV_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -282,7 +282,7 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromInt32(AsInt32(left) / r));
                     break;
                 }
-                case 0x24: // MOD_I32
+                case Opcodes.ModI32: // MOD_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -291,7 +291,7 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromInt32(AsInt32(left) % r));
                     break;
                 }
-                case 0x25: // NEG_I32
+                case Opcodes.NegI32: // NEG_I32
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt32(-AsInt32(val)));
@@ -300,28 +300,28 @@ public sealed class Interpreter
 
                 // ── I64 arithmetic ──
 
-                case 0x26: // ADD_I64
+                case Opcodes.AddI64: // ADD_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt64(AsInt64(left) + AsInt64(right)));
                     break;
                 }
-                case 0x27: // SUB_I64
+                case Opcodes.SubI64: // SUB_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt64(AsInt64(left) - AsInt64(right)));
                     break;
                 }
-                case 0x28: // MUL_I64
+                case Opcodes.MulI64: // MUL_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt64(AsInt64(left) * AsInt64(right)));
                     break;
                 }
-                case 0x29: // DIV_I64
+                case Opcodes.DivI64: // DIV_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -330,7 +330,7 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromInt64(AsInt64(left) / r));
                     break;
                 }
-                case 0x2A: // MOD_I64
+                case Opcodes.ModI64: // MOD_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -339,7 +339,7 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromInt64(AsInt64(left) % r));
                     break;
                 }
-                case 0x2B: // NEG_I64
+                case Opcodes.NegI64: // NEG_I64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt64(-AsInt64(val)));
@@ -348,28 +348,28 @@ public sealed class Interpreter
 
                 // ── U64 arithmetic ──
 
-                case 0x2C: // ADD_U64
+                case Opcodes.AddU64: // ADD_U64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromUInt64(AsUInt64(left) + AsUInt64(right)));
                     break;
                 }
-                case 0x2D: // SUB_U64
+                case Opcodes.SubU64: // SUB_U64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromUInt64(AsUInt64(left) - AsUInt64(right)));
                     break;
                 }
-                case 0x2E: // MUL_U64
+                case Opcodes.MulU64: // MUL_U64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromUInt64(AsUInt64(left) * AsUInt64(right)));
                     break;
                 }
-                case 0x2F: // DIV_U64
+                case Opcodes.DivU64: // DIV_U64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -378,7 +378,7 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromUInt64(AsUInt64(left) / r));
                     break;
                 }
-                case 0x30: // MOD_U64
+                case Opcodes.ModU64: // MOD_U64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -390,42 +390,42 @@ public sealed class Interpreter
 
                 // ── F64 arithmetic ──
 
-                case 0x31: // ADD_F64
+                case Opcodes.AddF64: // ADD_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromFloat64(AsFloat64(left) + AsFloat64(right)));
                     break;
                 }
-                case 0x32: // SUB_F64
+                case Opcodes.SubF64: // SUB_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromFloat64(AsFloat64(left) - AsFloat64(right)));
                     break;
                 }
-                case 0x33: // MUL_F64
+                case Opcodes.MulF64: // MUL_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromFloat64(AsFloat64(left) * AsFloat64(right)));
                     break;
                 }
-                case 0x34: // DIV_F64
+                case Opcodes.DivF64: // DIV_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromFloat64(AsFloat64(left) / AsFloat64(right)));
                     break;
                 }
-                case 0x35: // MOD_F64
+                case Opcodes.ModF64: // MOD_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromFloat64(AsFloat64(left) % AsFloat64(right)));
                     break;
                 }
-                case 0x36: // NEG_F64
+                case Opcodes.NegF64: // NEG_F64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromFloat64(-AsFloat64(val)));
@@ -434,28 +434,28 @@ public sealed class Interpreter
 
                 // ── F32 arithmetic ──
 
-                case 0x37: // ADD_F32
+                case Opcodes.AddF32: // ADD_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromFloat32(AsFloat32(left) + AsFloat32(right)));
                     break;
                 }
-                case 0x38: // SUB_F32
+                case Opcodes.SubF32: // SUB_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromFloat32(AsFloat32(left) - AsFloat32(right)));
                     break;
                 }
-                case 0x39: // MUL_F32
+                case Opcodes.MulF32: // MUL_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromFloat32(AsFloat32(left) * AsFloat32(right)));
                     break;
                 }
-                case 0x3A: // DIV_F32
+                case Opcodes.DivF32: // DIV_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -464,7 +464,7 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromFloat32(AsFloat32(left) / r));
                     break;
                 }
-                case 0x3B: // NEG_F32
+                case Opcodes.NegF32: // NEG_F32
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromFloat32(-AsFloat32(val)));
@@ -473,28 +473,28 @@ public sealed class Interpreter
 
                 // ── I32 bitwise ──
 
-                case 0x3C: // AND_I32
+                case Opcodes.AndI32: // AND_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt32(AsInt32(left) & AsInt32(right)));
                     break;
                 }
-                case 0x3D: // OR_I32
+                case Opcodes.OrI32: // OR_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt32(AsInt32(left) | AsInt32(right)));
                     break;
                 }
-                case 0x3E: // XOR_I32
+                case Opcodes.XorI32: // XOR_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt32(AsInt32(left) ^ AsInt32(right)));
                     break;
                 }
-                case 0x3F: // NOT_I32
+                case Opcodes.NotI32: // NOT_I32
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt32(~AsInt32(val)));
@@ -503,42 +503,42 @@ public sealed class Interpreter
 
                 // ── I32 comparison ──
 
-                case 0x40: // CMP_EQ_I32
+                case Opcodes.CmpEqI32: // CMP_EQ_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt32(left) == AsInt32(right)));
                     break;
                 }
-                case 0x41: // CMP_NE_I32
+                case Opcodes.CmpNeI32: // CMP_NE_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt32(left) != AsInt32(right)));
                     break;
                 }
-                case 0x42: // CMP_LT_I32
+                case Opcodes.CmpLtI32: // CMP_LT_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt32(left) < AsInt32(right)));
                     break;
                 }
-                case 0x43: // CMP_LE_I32
+                case Opcodes.CmpLeI32: // CMP_LE_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt32(left) <= AsInt32(right)));
                     break;
                 }
-                case 0x44: // CMP_GT_I32
+                case Opcodes.CmpGtI32: // CMP_GT_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt32(left) > AsInt32(right)));
                     break;
                 }
-                case 0x45: // CMP_GE_I32
+                case Opcodes.CmpGeI32: // CMP_GE_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -548,42 +548,42 @@ public sealed class Interpreter
 
                 // ── I64 comparison ──
 
-                case 0x46: // CMP_EQ_I64
+                case Opcodes.CmpEqI64: // CMP_EQ_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt64(left) == AsInt64(right)));
                     break;
                 }
-                case 0x47: // CMP_NE_I64
+                case Opcodes.CmpNeI64: // CMP_NE_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt64(left) != AsInt64(right)));
                     break;
                 }
-                case 0x48: // CMP_LT_I64
+                case Opcodes.CmpLtI64: // CMP_LT_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt64(left) < AsInt64(right)));
                     break;
                 }
-                case 0x49: // CMP_LE_I64
+                case Opcodes.CmpLeI64: // CMP_LE_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt64(left) <= AsInt64(right)));
                     break;
                 }
-                case 0x4A: // CMP_GT_I64
+                case Opcodes.CmpGtI64: // CMP_GT_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsInt64(left) > AsInt64(right)));
                     break;
                 }
-                case 0x4B: // CMP_GE_I64
+                case Opcodes.CmpGeI64: // CMP_GE_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -593,28 +593,28 @@ public sealed class Interpreter
 
                 // ── U64 comparison ──
 
-                case 0x4C: // CMP_EQ_U64
+                case Opcodes.CmpEqU64: // CMP_EQ_U64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsUInt64(left) == AsUInt64(right)));
                     break;
                 }
-                case 0x4D: // CMP_NE_U64
+                case Opcodes.CmpNeU64: // CMP_NE_U64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsUInt64(left) != AsUInt64(right)));
                     break;
                 }
-                case 0x4E: // CMP_LT_U64
+                case Opcodes.CmpLtU64: // CMP_LT_U64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsUInt64(left) < AsUInt64(right)));
                     break;
                 }
-                case 0x4F: // CMP_LE_U64
+                case Opcodes.CmpLeU64: // CMP_LE_U64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -624,42 +624,42 @@ public sealed class Interpreter
 
                 // ── F64 comparison ──
 
-                case 0x50: // CMP_EQ_F64
+                case Opcodes.CmpEqF64: // CMP_EQ_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat64(left) == AsFloat64(right)));
                     break;
                 }
-                case 0x51: // CMP_NE_F64
+                case Opcodes.CmpNeF64: // CMP_NE_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat64(left) != AsFloat64(right)));
                     break;
                 }
-                case 0x52: // CMP_LT_F64
+                case Opcodes.CmpLtF64: // CMP_LT_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat64(left) < AsFloat64(right)));
                     break;
                 }
-                case 0x53: // CMP_LE_F64
+                case Opcodes.CmpLeF64: // CMP_LE_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat64(left) <= AsFloat64(right)));
                     break;
                 }
-                case 0x54: // CMP_GT_F64
+                case Opcodes.CmpGtF64: // CMP_GT_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat64(left) > AsFloat64(right)));
                     break;
                 }
-                case 0x55: // CMP_GE_F64
+                case Opcodes.CmpGeF64: // CMP_GE_F64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -669,42 +669,42 @@ public sealed class Interpreter
 
                 // ── F32 comparison ──
 
-                case 0x56: // CMP_EQ_F32
+                case Opcodes.CmpEqF32: // CMP_EQ_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat32(left) == AsFloat32(right)));
                     break;
                 }
-                case 0x57: // CMP_NE_F32
+                case Opcodes.CmpNeF32: // CMP_NE_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat32(left) != AsFloat32(right)));
                     break;
                 }
-                case 0x58: // CMP_LT_F32
+                case Opcodes.CmpLtF32: // CMP_LT_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat32(left) < AsFloat32(right)));
                     break;
                 }
-                case 0x59: // CMP_LE_F32
+                case Opcodes.CmpLeF32: // CMP_LE_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat32(left) <= AsFloat32(right)));
                     break;
                 }
-                case 0x5A: // CMP_GT_F32
+                case Opcodes.CmpGtF32: // CMP_GT_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsFloat32(left) > AsFloat32(right)));
                     break;
                 }
-                case 0x5B: // CMP_GE_F32
+                case Opcodes.CmpGeF32: // CMP_GE_F32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -714,21 +714,21 @@ public sealed class Interpreter
 
                 // ── Logical ──
 
-                case 0x5C: // AND_BOOL
+                case Opcodes.AndBool: // AND_BOOL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsBool(left) && AsBool(right)));
                     break;
                 }
-                case 0x5D: // OR_BOOL
+                case Opcodes.OrBool: // OR_BOOL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsBool(left) || AsBool(right)));
                     break;
                 }
-                case 0x5E: // NOT_BOOL
+                case Opcodes.NotBool: // NOT_BOOL
                 {
                     var val = frame.Pop();
                     frame.Push(new TsBoolValue(!AsBool(val)));
@@ -737,55 +737,55 @@ public sealed class Interpreter
 
                 // ── I64 bitwise ──
 
-                case 0x60: // AND_I64
+                case Opcodes.AndI64: // AND_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt64(AsInt64(left) & AsInt64(right)));
                     break;
                 }
-                case 0x61: // OR_I64
+                case Opcodes.OrI64: // OR_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt64(AsInt64(left) | AsInt64(right)));
                     break;
                 }
-                case 0x62: // XOR_I64
+                case Opcodes.XorI64: // XOR_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt64(AsInt64(left) ^ AsInt64(right)));
                     break;
                 }
-                case 0x63: // NOT_I64
+                case Opcodes.NotI64: // NOT_I64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt64(~AsInt64(val)));
                     break;
                 }
-                case 0x64: // SHL_I32
+                case Opcodes.ShlI32: // SHL_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt32(AsInt32(left) << AsInt32(right)));
                     break;
                 }
-                case 0x65: // SHR_I32
+                case Opcodes.ShrI32: // SHR_I32
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt32(AsInt32(left) >> AsInt32(right)));
                     break;
                 }
-                case 0x66: // SHL_I64
+                case Opcodes.ShlI64: // SHL_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromInt64(AsInt64(left) << AsInt32(right)));
                     break;
                 }
-                case 0x67: // SHR_I64
+                case Opcodes.ShrI64: // SHR_I64
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -795,13 +795,13 @@ public sealed class Interpreter
 
                 // ── Control flow ──
 
-                case 0x70: // BRANCH
+                case Opcodes.Branch: // BRANCH
                 {
                     int target = ReadInt32(bytecode, ref frame.InstructionPointer);
                     frame.InstructionPointer = target;
                     break;
                 }
-                case 0x71: // BRANCH_TRUE
+                case Opcodes.BranchTrue: // BRANCH_TRUE
                 {
                     int target = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var cond = frame.Pop();
@@ -809,7 +809,7 @@ public sealed class Interpreter
                         frame.InstructionPointer = target;
                     break;
                 }
-                case 0x72: // BRANCH_FALSE
+                case Opcodes.BranchFalse: // BRANCH_FALSE
                 {
                     int target = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var cond = frame.Pop();
@@ -820,7 +820,7 @@ public sealed class Interpreter
 
                 // ── Functions ──
 
-                case 0x73: // CALL
+                case Opcodes.Call: // CALL
                 {
                     int funcIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -857,7 +857,7 @@ public sealed class Interpreter
                     break;
                 }
 
-                case 0x74: // CALL_HOST
+                case Opcodes.CallHost: // CALL_HOST
                 {
                     int funcIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -877,16 +877,16 @@ public sealed class Interpreter
                     break;
                 }
 
-                case 0x75: // RETURN
+                case Opcodes.Return: // RETURN
                 {
                     return frame.Pop();
                 }
-                case 0x76: // RETURN_VOID
+                case Opcodes.ReturnVoid: // RETURN_VOID
                 {
                     return null;
                 }
 
-                case 0x77: // CALL_VIRT
+                case Opcodes.CallVirt: // CALL_VIRT
                 {
                     int funcIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -921,7 +921,7 @@ public sealed class Interpreter
 
                 // ── Object ──
 
-                case 0x80: // NEW_OBJECT
+                case Opcodes.NewObject: // NEW_OBJECT
                 {
                     int typeIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -952,7 +952,7 @@ public sealed class Interpreter
                     break;
                 }
 
-                case 0x81: // NEW_ARRAY
+                case Opcodes.NewArray: // NEW_ARRAY
                 {
                     int capacity = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var arr = ctx.Heap.AllocateArray(capacity);
@@ -962,27 +962,27 @@ public sealed class Interpreter
                     break;
                 }
 
-                case 0x82: // NEW_MAP
+                case Opcodes.NewMap: // NEW_MAP
                 {
                     var map = ctx.Heap.AllocateMap();
                     frame.Push(new TsMapValue(map));
                     break;
                 }
 
-                case 0x83: // DUP
+                case Opcodes.Dup: // DUP
                 {
                     var val = frame.Peek();
                     frame.Push(val);
                     break;
                 }
 
-                case 0x84: // POP
+                case Opcodes.Pop: // POP
                     frame.Pop();
                     break;
 
                 // ── String ──
 
-                case 0x85: // CONCAT_STRING
+                case Opcodes.ConcatString: // CONCAT_STRING
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -992,7 +992,7 @@ public sealed class Interpreter
 
                 // ── Async ──
 
-                case 0x86: // AWAIT
+                case Opcodes.Await: // AWAIT
                 {
                     var val = frame.Pop();
                     frame.Push(val);
@@ -1001,7 +1001,7 @@ public sealed class Interpreter
 
                 // ── Exception ──
 
-                case 0x87: // THROW
+                case Opcodes.Throw: // THROW
                 {
                     var val = frame.Pop();
                     var msg = val is TsStringValue sv ? sv.Value : val.ToString();
@@ -1010,7 +1010,7 @@ public sealed class Interpreter
 
                 // ── Type/Null checks ──
 
-                case 0xA0: // TYPE_CHECK
+                case Opcodes.TypeCheck: // TYPE_CHECK
                 {
                     int typeIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var typeName = strings[typeIdx];
@@ -1032,7 +1032,7 @@ public sealed class Interpreter
                     frame.Push(new TsBoolValue(match));
                     break;
                 }
-                case 0xA1: // NULL_CHECK
+                case Opcodes.NullCheck: // NULL_CHECK
                 {
                     var val = frame.Peek();
                     frame.Push(new TsBoolValue(val is TsNull));
@@ -1041,28 +1041,28 @@ public sealed class Interpreter
 
                 // ── Decimal arithmetic ──
 
-                case 0xB0: // ADD_DECIMAL
+                case Opcodes.AddDecimal: // ADD_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromDecimal(AsDecimal(left) + AsDecimal(right)));
                     break;
                 }
-                case 0xB1: // SUB_DECIMAL
+                case Opcodes.SubDecimal: // SUB_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromDecimal(AsDecimal(left) - AsDecimal(right)));
                     break;
                 }
-                case 0xB2: // MUL_DECIMAL
+                case Opcodes.MulDecimal: // MUL_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(TsValue.FromDecimal(AsDecimal(left) * AsDecimal(right)));
                     break;
                 }
-                case 0xB3: // DIV_DECIMAL
+                case Opcodes.DivDecimal: // DIV_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -1071,7 +1071,7 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromDecimal(AsDecimal(left) / r));
                     break;
                 }
-                case 0xB4: // MOD_DECIMAL
+                case Opcodes.ModDecimal: // MOD_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -1080,7 +1080,7 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromDecimal(AsDecimal(left) % r));
                     break;
                 }
-                case 0xB5: // NEG_DECIMAL
+                case Opcodes.NegDecimal: // NEG_DECIMAL
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromDecimal(-AsDecimal(val)));
@@ -1089,42 +1089,42 @@ public sealed class Interpreter
 
                 // ── Decimal comparison ──
 
-                case 0xB6: // CMP_EQ_DECIMAL
+                case Opcodes.CmpEqDecimal: // CMP_EQ_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsDecimal(left) == AsDecimal(right)));
                     break;
                 }
-                case 0xB7: // CMP_NE_DECIMAL
+                case Opcodes.CmpNeDecimal: // CMP_NE_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsDecimal(left) != AsDecimal(right)));
                     break;
                 }
-                case 0xB8: // CMP_LT_DECIMAL
+                case Opcodes.CmpLtDecimal: // CMP_LT_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsDecimal(left) < AsDecimal(right)));
                     break;
                 }
-                case 0xB9: // CMP_LE_DECIMAL
+                case Opcodes.CmpLeDecimal: // CMP_LE_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsDecimal(left) <= AsDecimal(right)));
                     break;
                 }
-                case 0xBA: // CMP_GT_DECIMAL
+                case Opcodes.CmpGtDecimal: // CMP_GT_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
                     frame.Push(new TsBoolValue(AsDecimal(left) > AsDecimal(right)));
                     break;
                 }
-                case 0xBB: // CMP_GE_DECIMAL
+                case Opcodes.CmpGeDecimal: // CMP_GE_DECIMAL
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
@@ -1134,86 +1134,86 @@ public sealed class Interpreter
 
                 // ── Convert ──
 
-                case 0x90: // CONV_I32_I64
+                case Opcodes.ConvI32I64: // CONV_I32_I64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt64(AsInt32(val)));
                     break;
                 }
-                case 0x91: // CONV_I64_I32
+                case Opcodes.ConvI64I32: // CONV_I64_I32
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt32((int)AsInt64(val)));
                     break;
                 }
-                case 0x92: // CONV_I32_F64
+                case Opcodes.ConvI32F64: // CONV_I32_F64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromFloat64(AsInt32(val)));
                     break;
                 }
-                case 0x93: // CONV_F64_I32
+                case Opcodes.ConvF64I32: // CONV_F64_I32
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt32((int)AsFloat64(val)));
                     break;
                 }
-                case 0x94: // CONV_I32_F32
+                case Opcodes.ConvI32F32: // CONV_I32_F32
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromFloat32(AsInt32(val)));
                     break;
                 }
-                case 0x95: // CONV_F32_I32
+                case Opcodes.ConvF32I32: // CONV_F32_I32
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt32((int)AsFloat32(val)));
                     break;
                 }
-                case 0x96: // CONV_U64_I64
+                case Opcodes.ConvU64I64: // CONV_U64_I64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt64(unchecked((long)AsUInt64(val))));
                     break;
                 }
-                case 0x97: // CONV_I64_U64
+                case Opcodes.ConvI64U64: // CONV_I64_U64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromUInt64(unchecked((ulong)AsInt64(val))));
                     break;
                 }
-                case 0x98: // CONV_U64_F64
+                case Opcodes.ConvU64F64: // CONV_U64_F64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromFloat64(AsUInt64(val)));
                     break;
                 }
-                case 0x99: // CONV_F64_U64
+                case Opcodes.ConvF64U64: // CONV_F64_U64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromUInt64(Convert.ToUInt64(AsFloat64(val))));
                     break;
                 }
-                case 0x9A: // CONV_U64_I32
+                case Opcodes.ConvU64I32: // CONV_U64_I32
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromInt32(unchecked((int)AsUInt64(val))));
                     break;
                 }
-                case 0x9B: // CONV_I32_U64
+                case Opcodes.ConvI32U64: // CONV_I32_U64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromUInt64(unchecked((ulong)AsInt32(val))));
                     break;
                 }
 
-                case 0x9C: // CONV_F32_F64
+                case Opcodes.ConvF32F64: // CONV_F32_F64
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromFloat64(AsFloat32(val)));
                     break;
                 }
-                case 0x9D: // CONV_F64_F32
+                case Opcodes.ConvF64F32: // CONV_F64_F32
                 {
                     var val = frame.Pop();
                     frame.Push(TsValue.FromFloat32((float)AsFloat64(val)));
