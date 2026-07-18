@@ -617,60 +617,22 @@ public static class BytecodeCompiler
 
         while (stream.Position < stream.Length)
         {
+            long opStart = stream.Position;
             byte op = reader.ReadByte();
+            var fmt = OpcodeFormats.Get(op);
 
-            switch (op)
+            if (fmt.IsBranch)
             {
-                case OP_BRANCH:
-                case OP_BRANCH_TRUE:
-                case OP_BRANCH_FALSE:
+                int blockId = reader.ReadInt32();
+                if (blockStarts.TryGetValue(blockId, out int byteOffset))
                 {
-                    int blockId = reader.ReadInt32();
-                    if (blockStarts.TryGetValue(blockId, out int byteOffset))
-                    {
-                        stream.Seek(-4, SeekOrigin.Current);
-                        writer.Write(byteOffset);
-                    }
-                    break;
+                    stream.Seek(-4, SeekOrigin.Current);
+                    writer.Write(byteOffset);
                 }
-                case OP_LOAD_CONST_I32:
-                case OP_LOAD_CONST_I64:
-                case OP_LOAD_CONST_U64:
-                case OP_LOAD_LOCAL:
-                case OP_STORE_LOCAL:
-                case OP_LOAD_ARG:
-                    reader.ReadInt32();
-                    break;
-                case OP_LOAD_CONST_F32:
-                    reader.ReadSingle();
-                    break;
-                case OP_LOAD_CONST_F64:
-                    reader.ReadDouble();
-                    break;
-                case OP_LOAD_CONST_BOOL:
-                    reader.ReadByte();
-                    break;
-                case OP_CALL:
-                    reader.ReadInt32();
-                    reader.ReadInt32();
-                    break;
-                case OP_NEW_OBJECT:
-                    reader.ReadInt32();
-                    reader.ReadInt32();
-                    break;
-                case OP_LOAD_FIELD:
-                case OP_STORE_FIELD:
-                case OP_LOAD_CONST_DECIMAL:
-                case OP_TYPE_CHECK:
-                    reader.ReadInt32();
-                    break;
-                case OP_CALL_VIRT:
-                    reader.ReadInt32();
-                    reader.ReadInt32();
-                    break;
-                case OP_NEW_ARRAY:
-                    reader.ReadInt32();
-                    break;
+            }
+            else
+            {
+                stream.Seek(fmt.OperandBytes, SeekOrigin.Current);
             }
         }
     }

@@ -417,6 +417,123 @@ public class InterpreterTests
         Assert.IsType<InvalidOperationException>(ex);
         Assert.Contains("something broke", ex.Message);
     }
+
+    [Fact]
+    public void ExecuteInt64WithBranches()
+    {
+        var code = @"
+            function main(): int64 {
+                const big: int64 = 9999999999i64;
+                if (big > 100i64) {
+                    return big;
+                }
+                return 0i64;
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt64Value>(result);
+        Assert.Equal(9999999999L, ((TsInt64Value)result).Value);
+    }
+
+    [Fact]
+    public void ExecuteUint64WithBranches()
+    {
+        var code = @"
+            function main(): uint64 {
+                const big: uint64 = 18446744073709551615u64;
+                if (big > 100u64) {
+                    return big;
+                }
+                return 0u64;
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsUInt64Value>(result);
+        Assert.Equal(18446744073709551615UL, ((TsUInt64Value)result).Value);
+    }
+}
+
+public class TypeCheckingTests
+{
+    [Fact]
+    public void StringPlusIntProducesVoidType()
+    {
+        var code = @"
+            function main(): string {
+                return ""hello"" + 5;
+            }
+        ";
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        var boundTree = binder.Bind(syntaxTree);
+
+        Assert.True(binder.Diagnostics.HasErrors);
+        Assert.Contains(binder.Diagnostics.All, d =>
+            d.Message.Contains("cannot be applied to types"));
+    }
+
+    [Fact]
+    public void StringPlusStringWorks()
+    {
+        var result = Run(@"
+            function main(): string {
+                return ""hello "" + ""world"";
+            }
+        ");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsStringValue>(result);
+        Assert.Equal("hello world", ((TsStringValue)result).Value);
+    }
+
+    [Fact]
+    public void WrongArgumentCountProducesError()
+    {
+        var code = @"
+            function add(a: int32, b: int32): int32 {
+                return a + b;
+            }
+            function main(): int32 {
+                return add(1);
+            }
+        ";
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        var boundTree = binder.Bind(syntaxTree);
+
+        Assert.True(binder.Diagnostics.HasErrors);
+        Assert.Contains(binder.Diagnostics.All, d =>
+            d.Message.Contains("Expected 2") && d.Message.Contains("but got 1"));
+    }
+
+    private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)
+    {
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(syntaxTree);
+        var irGen = new IR.IRGenerator();
+        var moduleIR = irGen.Generate(boundTree);
+        var bytecodeModule = Bytecode.BytecodeCompiler.Compile(moduleIR);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        return interpreter.Execute(bytecodeModule, entryPoint, args);
+    }
 }
 
 public class BytecodeTests

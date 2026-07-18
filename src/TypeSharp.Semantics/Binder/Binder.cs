@@ -380,6 +380,12 @@ public sealed class Binder
     private BoundIfStatement BindIf(IfStatementSyntax ifStmt)
     {
         var condition = BindExpression(ifStmt.Condition);
+        if (condition.Type != TsType.Bool && condition.Type != TsType.Void)
+        {
+            _diagnostics.Warning(
+                $"Condition has type '{condition.Type}', expected 'bool'",
+                ifStmt.Condition.Range.Start);
+        }
         var thenBranch = BindStatement(ifStmt.ThenBranch);
         var elseBranch = ifStmt.ElseBranch != null ? BindStatement(ifStmt.ElseBranch) : null;
         return new BoundIfStatement(condition, thenBranch, elseBranch);
@@ -388,6 +394,12 @@ public sealed class Binder
     private BoundWhileStatement BindWhile(WhileStatementSyntax whileStmt)
     {
         var condition = BindExpression(whileStmt.Condition);
+        if (condition.Type != TsType.Bool && condition.Type != TsType.Void)
+        {
+            _diagnostics.Warning(
+                $"Condition has type '{condition.Type}', expected 'bool'",
+                whileStmt.Condition.Range.Start);
+        }
         var body = BindStatement(whileStmt.Body);
         return new BoundWhileStatement(condition, body);
     }
@@ -572,6 +584,13 @@ public sealed class Binder
         var right = BindExpression(bin.Right);
         var resultType = InferBinaryResultType(left.Type, right.Type, bin.OperatorToken.Kind);
 
+        if (resultType == TsType.Void && left.Type != TsType.Void && right.Type != TsType.Void)
+        {
+            _diagnostics.Error(
+                $"Operator '{bin.OperatorToken.Text}' cannot be applied to types '{left.Type}' and '{right.Type}'",
+                bin.OperatorToken.Location);
+        }
+
         return new BoundBinaryExpression(left, bin.OperatorToken.Kind, right, resultType);
     }
 
@@ -589,14 +608,41 @@ public sealed class Binder
         var args = call.Arguments.Select(BindExpression).ToList();
 
         TsType returnType = TsType.Void;
+        List<ParameterSymbol>? expectedParams = null;
 
         if (callee is BoundVariableExpression varExpr && varExpr.Symbol is FunctionSymbol funcSym)
         {
             returnType = funcSym.Type;
+            expectedParams = funcSym.Parameters;
         }
         else if (callee is BoundMemberAccessExpression memberExpr && memberExpr.Member is MethodSymbol methodSym)
         {
             returnType = methodSym.Type;
+        }
+
+        if (expectedParams != null)
+        {
+            if (args.Count != expectedParams.Count)
+            {
+                _diagnostics.Error(
+                    $"Expected {expectedParams.Count} argument(s) but got {args.Count}",
+                    call.Range.Start);
+            }
+            else
+            {
+                for (int i = 0; i < args.Count; i++)
+                {
+                    var argType = args[i].Type;
+                    var paramType = expectedParams[i].Type;
+                    if (paramType != TsType.Void && argType != TsType.Void &&
+                        !argType.IsAssignableTo(paramType) && !paramType.IsAssignableTo(argType))
+                    {
+                        _diagnostics.Error(
+                            $"Argument {i + 1}: cannot assign '{argType}' to parameter '{expectedParams[i].Name}' of type '{paramType}'",
+                            call.Range.Start);
+                    }
+                }
+            }
         }
 
         return new BoundCallExpression(callee, args, returnType);
@@ -662,6 +708,16 @@ public sealed class Binder
         if (target is BoundVariableExpression varExpr && varExpr.Symbol is LocalSymbol local && local.IsConst)
         {
             _diagnostics.Error($"Cannot assign to const variable '{local.Name}'", assign.Range.Start);
+        }
+
+        var targetType = target.Type;
+        var valueType = value.Type;
+        if (targetType != TsType.Void && valueType != TsType.Void &&
+            targetType != TsType.Void && !valueType.IsAssignableTo(targetType) && !targetType.IsAssignableTo(valueType))
+        {
+            _diagnostics.Error(
+                $"Cannot assign '{valueType}' to variable of type '{targetType}'",
+                assign.Range.Start);
         }
 
         return new BoundAssignmentExpression(target, value);
@@ -796,7 +852,7 @@ public sealed class Binder
 
             TokenKind.QuestionQuestion => right,
 
-            TokenKind.Plus when left == TsType.String || right == TsType.String => TsType.String,
+            TokenKind.Plus when left == TsType.String && right == TsType.String => TsType.String,
 
             _ => left.IsNumeric && right.IsNumeric ? left : TsType.Void
         };
