@@ -15,8 +15,28 @@ public abstract class TsType : IEquatable<TsType>
 
     public virtual bool IsAssignableTo(TsType other) => Equals(other);
 
+    public static bool IsCompatibleWith(TsType source, TsType target)
+    {
+        if (source is TsNullType)
+            return target is TsNullableType || target is TsUnionType;
+
+        if (source.Equals(target)) return true;
+
+        if (source.IsAssignableTo(target)) return true;
+        if (target.IsAssignableTo(source)) return true;
+
+        if (source is TsNullableType nullable && nullable.ElementType.IsAssignableTo(target))
+            return false;
+
+        if (target is TsNullableType targetNullable && source.IsAssignableTo(targetNullable.ElementType))
+            return true;
+
+        return false;
+    }
+
     // Primitive type singletons
     public static readonly TsPrimitiveType Void = new("void", true);
+    public static readonly TsNullType Null = new();
     public static readonly TsPrimitiveType Bool = new("bool", true);
     public static readonly TsPrimitiveType Int8 = new("int8", true);
     public static readonly TsPrimitiveType UInt8 = new("uint8", true);
@@ -77,6 +97,20 @@ public sealed class TsPrimitiveType : TsType
         IsNumericType = name is "int8" or "uint8" or "int16" or "uint16" or
             "int32" or "uint32" or "int64" or "uint64" or
             "float32" or "float64" or "decimal" or "bigint" or "number";
+    }
+}
+
+public sealed class TsNullType : TsType
+{
+    public override string Name => "null";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+
+    public override bool IsAssignableTo(TsType other)
+    {
+        if (other is TsNullableType) return true;
+        if (other is TsUnionType u) return u.Types.Any(t => t is TsNullableType);
+        return false;
     }
 }
 
@@ -198,7 +232,7 @@ public sealed class TsNullableType : TsType
     public override bool IsAssignableTo(TsType other)
     {
         if (other is TsNullableType nullable) return ElementType.IsAssignableTo(nullable.ElementType);
-        return ElementType.IsAssignableTo(other);
+        return false;
     }
 }
 

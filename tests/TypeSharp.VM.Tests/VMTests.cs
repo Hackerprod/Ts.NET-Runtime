@@ -523,6 +523,132 @@ public class TypeCheckingTests
             d.Message.Contains("Expected 2") && d.Message.Contains("but got 1"));
     }
 
+    [Fact]
+    public void ReturnTypeMismatch_ProducesError()
+    {
+        var code = @"
+            function main(): int32 {
+                return ""hello"";
+            }
+        ";
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        binder.Bind(syntaxTree);
+
+        Assert.True(binder.Diagnostics.HasErrors);
+        Assert.Contains(binder.Diagnostics.All, d =>
+            d.Message.Contains("Cannot return") && d.Message.Contains("from function returning"));
+    }
+
+    [Fact]
+    public void ReturnVoidWithExpression_ProducesWarning()
+    {
+        var code = @"
+            function main(): void {
+                return 42;
+            }
+        ";
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        binder.Bind(syntaxTree);
+
+        Assert.Contains(binder.Diagnostics.All, d =>
+            d.Severity == TypeSharp.Syntax.Diagnostics.DiagnosticSeverity.Warning &&
+            d.Message.Contains("returns 'void' but return statement has a value"));
+    }
+
+    [Fact]
+    public void ReturnNonVoidWithoutValue_ProducesError()
+    {
+        var code = @"
+            function main(): int32 {
+                return;
+            }
+        ";
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        binder.Bind(syntaxTree);
+
+        Assert.True(binder.Diagnostics.HasErrors);
+        Assert.Contains(binder.Diagnostics.All, d =>
+            d.Message.Contains("returns 'int32' but return statement has no value"));
+    }
+
+    [Fact]
+    public void NullAssignToNonNullable_ProducesError()
+    {
+        var code = @"
+            function main(): string {
+                const x: string = null;
+                return x;
+            }
+        ";
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        binder.Bind(syntaxTree);
+
+        Assert.True(binder.Diagnostics.HasErrors);
+    }
+
+    [Fact]
+    public void NullAssignToNullable_NoError()
+    {
+        var code = @"
+            function main(): int32 {
+                const x: string? = null;
+                return 0;
+            }
+        ";
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        binder.Bind(syntaxTree);
+
+        Assert.False(binder.Diagnostics.HasErrors);
+    }
+
+    [Fact]
+    public void NullableAssignToNonNullable_ProducesError()
+    {
+        var code = @"
+            function getString(): string? {
+                return null;
+            }
+            function main(): string {
+                const x: string = getString();
+                return x;
+            }
+        ";
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+        binder.Bind(syntaxTree);
+
+        Assert.True(binder.Diagnostics.HasErrors);
+    }
+
     private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)
     {
         var lexer = new TypeSharp.Syntax.Lexer(code);

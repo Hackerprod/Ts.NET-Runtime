@@ -7,19 +7,6 @@ using TypeSharp.VM.Bytecode;
 
 namespace TypeSharp.Hosting.Compilation;
 
-public sealed class CompilationDiagnostics
-{
-    private readonly List<string> _errors = new();
-    private readonly List<string> _warnings = new();
-
-    public IReadOnlyList<string> Errors => _errors;
-    public IReadOnlyList<string> Warnings => _warnings;
-    public bool HasErrors => _errors.Count > 0;
-
-    public void Error(string message) => _errors.Add(message);
-    public void Warning(string message) => _warnings.Add(message);
-}
-
 public sealed class CompiledModule
 {
     public string ModuleId { get; }
@@ -46,6 +33,7 @@ public sealed class CompilationUnit
     public SourceFileSyntax SyntaxTree { get; }
     public List<string> Imports { get; } = new();
     public List<string> Exports { get; } = new();
+    public SourceLocation GetLocation() => new(FilePath, 1, 1, 0);
 
     public CompilationUnit(string filePath, string moduleId, SourceFileSyntax syntaxTree)
     {
@@ -59,11 +47,11 @@ public sealed class TypeScriptCompilation
 {
     private readonly string _sourceRoot;
     private readonly List<string> _sourceFiles = new();
-    private readonly CompilationDiagnostics _diagnostics = new();
+    private readonly DiagnosticBag _diagnostics = new();
     private readonly Dictionary<string, CompilationUnit> _units = new();
     private readonly Dictionary<string, CompiledModule> _compiledModules = new();
 
-    public CompilationDiagnostics Diagnostics => _diagnostics;
+    public DiagnosticBag Diagnostics => _diagnostics;
     public IReadOnlyDictionary<string, CompiledModule> CompiledModules => _compiledModules;
 
     public TypeScriptCompilation(string sourceRoot)
@@ -111,7 +99,13 @@ public sealed class TypeScriptCompilation
                 if (parser.Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error))
                 {
                     foreach (var d in parser.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error))
-                        _diagnostics.Error($"{moduleId}: {d}");
+                    {
+                        var diag = new Diagnostic(DiagnosticSeverity.Error, d.Message, d.Location, d.Code)
+                        {
+                            ModuleId = moduleId
+                        };
+                        _diagnostics.Add(diag);
+                    }
                     continue;
                 }
 
@@ -122,7 +116,9 @@ public sealed class TypeScriptCompilation
             }
             catch (Exception ex)
             {
-                _diagnostics.Error($"Failed to parse {file}: {ex.Message}");
+                var loc = new SourceLocation(file, 1, 1, 0);
+                _diagnostics.Error($"Failed to parse {Path.GetFileName(file)}: {ex.Message}", loc,
+                    DiagnosticCode.TS3001);
             }
         }
     }
@@ -173,18 +169,49 @@ public sealed class TypeScriptCompilation
 
     public void ResolveImports()
     {
-        var unresolved = _units.Values
-            .Where(u => u.Imports.Any(i => !_units.ContainsKey(i)))
-            .ToList();
-
-        foreach (var unit in unresolved)
+        foreach (var unit in _units.Values)
         {
             var missing = unit.Imports.Where(i => !_units.ContainsKey(i)).ToList();
             foreach (var m in missing)
             {
-                _diagnostics.Warning($"Module '{m}' not found (imported by '{unit.ModuleId}'). Cross-module imports not yet fully supported.");
+                var loc = unit.GetLocation();
+                _diagnostics.Warning(
+                    $"Module '{m}' not found (imported by '{unit.ModuleId}'). Cross-module imports not yet fully supported.",
+                    loc, DiagnosticCode.TS3002);
+            }
+
+            var cycles = DetectCycles(unit);
+            if (cycles != null)
+            {
+                var loc = unit.GetLocation();
+                _diagnostics.Error(
+                    $"Circular dependency detected: {cycles}",
+                    loc, DiagnosticCode.TS3003);
             }
         }
+    }
+
+    private string? DetectCycles(CompilationUnit unit)
+    {
+        var visited = new HashSet<string>();
+        return DfsCycle(unit.ModuleId, visited);
+    }
+
+    private string? DfsCycle(string moduleId, HashSet<string> visited)
+    {
+        if (!visited.Add(moduleId))
+            return moduleId;
+        if (!_units.TryGetValue(moduleId, out var unit))
+            return null;
+
+        foreach (var imp in unit.Imports)
+        {
+            var cycle = DfsCycle(imp, visited);
+            if (cycle != null) return cycle;
+        }
+
+        visited.Remove(moduleId);
+        return null;
     }
 
     public Dictionary<string, BoundSourceFile> Bind()
@@ -201,15 +228,31 @@ public sealed class TypeScriptCompilation
                 if (binder.Diagnostics.HasErrors)
                 {
                     foreach (var d in binder.Diagnostics.GetErrors())
-                        _diagnostics.Error($"{moduleId}: {d}");
+                    {
+                        var diag = new Diagnostic(DiagnosticSeverity.Error, d.Message, d.Location, d.Code)
+                        {
+                            ModuleId = moduleId
+                        };
+                        _diagnostics.Add(diag);
+                    }
                     continue;
+                }
+
+                foreach (var d in binder.Diagnostics.GetWarnings())
+                {
+                    var diag = new Diagnostic(DiagnosticSeverity.Warning, d.Message, d.Location, d.Code)
+                    {
+                        ModuleId = moduleId
+                    };
+                    _diagnostics.Add(diag);
                 }
 
                 boundFiles[moduleId] = boundTree;
             }
             catch (Exception ex)
             {
-                _diagnostics.Error($"Failed to bind {moduleId}: {ex.Message}");
+                var loc = unit.GetLocation();
+                _diagnostics.Error($"Failed to bind '{moduleId}': {ex.Message}", loc, DiagnosticCode.TS3004);
             }
         }
 
@@ -250,7 +293,8 @@ public sealed class TypeScriptCompilation
             }
             catch (Exception ex)
             {
-                _diagnostics.Error($"Failed to compile {moduleId}: {ex.Message}");
+                var loc = _units.TryGetValue(moduleId, out var u) ? u.GetLocation() : new SourceLocation(moduleId, 1, 1, 0);
+                _diagnostics.Error($"Failed to compile '{moduleId}': {ex.Message}", loc, DiagnosticCode.TS4001);
             }
         }
 

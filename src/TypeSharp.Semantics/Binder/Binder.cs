@@ -14,6 +14,7 @@ public sealed class Binder
     private readonly Dictionary<string, TsInterfaceType> _interfaceTypes = new();
     private readonly Dictionary<string, TsEnumType> _enumTypes = new();
     private TsClassType? _currentClassType;
+    private TsType? _currentFunctionReturnType;
 
     public DiagnosticBag Diagnostics => _diagnostics;
 
@@ -106,7 +107,10 @@ public sealed class Binder
         foreach (var p in sym.Parameters)
             _symbolTable.Define(p);
 
+        var prevReturnType = _currentFunctionReturnType;
+        _currentFunctionReturnType = returnType;
         var body = BindNode(func.Body);
+        _currentFunctionReturnType = prevReturnType;
 
         _symbolTable.PopScope();
 
@@ -357,7 +361,7 @@ public sealed class Binder
         if (varDecl.TypeAnnotation != null && initializer != null)
         {
             var declaredType = ResolveType(varDecl.TypeAnnotation);
-            if (!initializer.Type.IsAssignableTo(declaredType) && !declaredType.IsAssignableTo(initializer.Type))
+            if (!TsType.IsCompatibleWith(initializer.Type, declaredType))
             {
                 _diagnostics.Error($"Type mismatch: cannot assign {initializer.Type} to {declaredType}",
                     varDecl.Range.Start);
@@ -374,6 +378,29 @@ public sealed class Binder
     private BoundReturnStatement BindReturn(ReturnStatementSyntax ret)
     {
         BoundNode? value = ret.Value != null ? BindExpression(ret.Value) : null;
+
+        if (_currentFunctionReturnType != null && _currentFunctionReturnType != TsType.Void)
+        {
+            if (value == null)
+            {
+                _diagnostics.Error(
+                    $"Function returns '{_currentFunctionReturnType}' but return statement has no value",
+                    ret.Range.Start, DiagnosticCode.TS2009);
+            }
+            else if (!TsType.IsCompatibleWith(value.Type, _currentFunctionReturnType))
+            {
+                _diagnostics.Error(
+                    $"Cannot return '{value.Type}' from function returning '{_currentFunctionReturnType}'",
+                    ret.Range.Start, DiagnosticCode.TS2010);
+            }
+        }
+        else if (_currentFunctionReturnType == TsType.Void && value != null)
+        {
+            _diagnostics.Warning(
+                "Function returns 'void' but return statement has a value",
+                ret.Range.Start, DiagnosticCode.TS2011);
+        }
+
         return new BoundReturnStatement(value);
     }
 
@@ -553,7 +580,7 @@ public sealed class Binder
                 value = lit.Token.Kind == TokenKind.TrueLiteral;
                 break;
             case TokenKind.NullLiteral:
-                type = TsType.Void;
+                type = TsType.Null;
                 value = null;
                 break;
             default:
@@ -618,6 +645,9 @@ public sealed class Binder
         else if (callee is BoundMemberAccessExpression memberExpr && memberExpr.Member is MethodSymbol methodSym)
         {
             returnType = methodSym.Type;
+            expectedParams = methodSym.Parameters?.Count > 0
+                ? methodSym.Parameters
+                : null;
         }
 
         if (expectedParams != null)
@@ -634,8 +664,7 @@ public sealed class Binder
                 {
                     var argType = args[i].Type;
                     var paramType = expectedParams[i].Type;
-                    if (paramType != TsType.Void && argType != TsType.Void &&
-                        !argType.IsAssignableTo(paramType) && !paramType.IsAssignableTo(argType))
+                    if (!TsType.IsCompatibleWith(argType, paramType))
                     {
                         _diagnostics.Error(
                             $"Argument {i + 1}: cannot assign '{argType}' to parameter '{expectedParams[i].Name}' of type '{paramType}'",
@@ -712,8 +741,7 @@ public sealed class Binder
 
         var targetType = target.Type;
         var valueType = value.Type;
-        if (targetType != TsType.Void && valueType != TsType.Void &&
-            targetType != TsType.Void && !valueType.IsAssignableTo(targetType) && !targetType.IsAssignableTo(valueType))
+        if (!TsType.IsCompatibleWith(valueType, targetType))
         {
             _diagnostics.Error(
                 $"Cannot assign '{valueType}' to variable of type '{targetType}'",
