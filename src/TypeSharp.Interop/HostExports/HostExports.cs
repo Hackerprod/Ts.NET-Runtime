@@ -3,6 +3,13 @@ using TypeSharp.VM.Memory;
 
 namespace TypeSharp.Interop.HostExports;
 
+public enum ExportMode
+{
+    ExplicitOnly,
+    Public,
+    All
+}
+
 [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class | AttributeTargets.Property)]
 public sealed class TsExportAttribute : Attribute
 {
@@ -47,6 +54,12 @@ public sealed class HostRegistry
     private readonly Dictionary<string, HostFunctionDescriptor> _functions = new();
     private readonly Dictionary<string, IHostService> _services = new();
 
+    private static readonly HashSet<string> ObjectMethodNames = new(StringComparer.Ordinal)
+    {
+        "ToString", "GetHashCode", "Equals", "GetType",
+        "ReferenceEquals", "MemberwiseClone"
+    };
+
     public IReadOnlyDictionary<string, HostFunctionDescriptor> Functions => _functions;
     public IReadOnlyDictionary<string, IHostService> Services => _services;
 
@@ -66,27 +79,39 @@ public sealed class HostRegistry
         return _functions.TryGetValue($"{module}.{name}", out var desc) ? desc : null;
     }
 
-    public void RegisterObject<T>(string moduleName, T instance) where T : class
+    public void RegisterObject<T>(string moduleName, T instance, ExportMode mode = ExportMode.ExplicitOnly) where T : class
     {
         var type = typeof(T);
-        var methods = type.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
 
         foreach (var method in methods)
         {
-            if (method.GetCustomAttribute<TsExportAttribute>() != null || method.IsPublic)
+            bool hasExport = method.GetCustomAttribute<TsExportAttribute>() != null;
+
+            bool shouldExport = mode switch
             {
-                var parameters = method.GetParameters();
-                var paramTypes = parameters.Select(p => p.ParameterType).ToArray();
+                ExportMode.ExplicitOnly => hasExport,
+                ExportMode.Public => !ObjectMethodNames.Contains(method.Name),
+                ExportMode.All => true,
+                _ => false
+            };
 
-                var funcDesc = new HostFunctionDescriptor(
-                    moduleName,
-                    method.Name,
-                    method.ReturnType,
-                    paramTypes,
-                    args => InvokeHostMethod(instance, method, args));
+            if (!shouldExport) continue;
 
-                RegisterFunction(funcDesc);
-            }
+            var parameters = method.GetParameters();
+            var paramTypes = parameters.Select(p => p.ParameterType).ToArray();
+
+            var exportAttr = method.GetCustomAttribute<TsExportAttribute>();
+            string funcName = exportAttr?.Name ?? method.Name;
+
+            var funcDesc = new HostFunctionDescriptor(
+                moduleName,
+                funcName,
+                method.ReturnType,
+                paramTypes,
+                args => InvokeHostMethod(instance, method, args));
+
+            RegisterFunction(funcDesc);
         }
     }
 

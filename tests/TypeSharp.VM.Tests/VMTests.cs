@@ -2,6 +2,7 @@ using TypeSharp.VM.Bytecode;
 using TypeSharp.VM.Interpreter;
 using TypeSharp.VM.Memory;
 using TypeSharp.IR;
+using TypeSharp.Interop.HostExports;
 using Xunit;
 
 namespace TypeSharp.VM.Tests;
@@ -613,5 +614,67 @@ public class HeapTests
         heap.AllocateObject("Test");
         heap.AllocateArray();
         Assert.True(heap.BytesAllocated > initial);
+    }
+
+    public class SampleService
+    {
+        [TsExport("add")]
+        public int Add(int a, int b) => a + b;
+
+        public int Subtract(int a, int b) => a - b;
+
+        public override string ToString() => "SampleService";
+        public override int GetHashCode() => 42;
+    }
+
+    [Fact]
+    public void ExplicitOnly_OnlyExportsMarkedMethods()
+    {
+        var registry = new HostRegistry();
+        var service = new SampleService();
+        registry.RegisterObject("math", service, ExportMode.ExplicitOnly);
+
+        Assert.Single(registry.Functions);
+        Assert.True(registry.Functions.ContainsKey("math.add"));
+    }
+
+    [Fact]
+    public void Public_ExcludesObjectMethods()
+    {
+        var registry = new HostRegistry();
+        var service = new SampleService();
+        registry.RegisterObject("math", service, ExportMode.Public);
+
+        Assert.True(registry.Functions.ContainsKey("math.add"));
+        Assert.True(registry.Functions.ContainsKey("math.Subtract"));
+        Assert.False(registry.Functions.ContainsKey("math.ToString"));
+        Assert.False(registry.Functions.ContainsKey("math.GetHashCode"));
+        Assert.False(registry.Functions.ContainsKey("math.Equals"));
+        Assert.False(registry.Functions.ContainsKey("math.GetType"));
+    }
+
+    [Fact]
+    public void All_ExportsEverything()
+    {
+        var registry = new HostRegistry();
+        var service = new SampleService();
+        registry.RegisterObject("math", service, ExportMode.All);
+
+        Assert.True(registry.Functions.ContainsKey("math.add"));
+        Assert.True(registry.Functions.ContainsKey("math.Subtract"));
+        Assert.True(registry.Functions.ContainsKey("math.ToString"));
+        Assert.True(registry.Functions.ContainsKey("math.GetHashCode"));
+        Assert.False(registry.Functions.ContainsKey("math.Equals"));
+        Assert.False(registry.Functions.ContainsKey("math.GetType"));
+    }
+
+    [Fact]
+    public void ExplicitOnly_DoesNotExportUnmarkedPublic()
+    {
+        var registry = new HostRegistry();
+        var service = new SampleService();
+        registry.RegisterObject("math", service, ExportMode.ExplicitOnly);
+
+        Assert.False(registry.Functions.ContainsKey("math.Subtract"));
     }
 }

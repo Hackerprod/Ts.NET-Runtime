@@ -14,5 +14,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\TypeSharp.VM\TypeSharp.VM.csproj" />
+    <ProjectReference Include="..\..\src\TypeSharp.Interop\TypeSharp.Interop.csproj" />
   </ItemGroup>
 </Project>
