@@ -184,6 +184,151 @@ public class InterpreterTests
         Assert.IsType<TsInt32Value>(result);
         Assert.Equal(20, ((TsInt32Value)result).Value);
     }
+
+    [Fact]
+    public void ExecuteClassConstructor()
+    {
+        var code = @"
+            class Counter {
+                count: int32;
+                constructor(initial: int32) {
+                    this.count = initial;
+                }
+                getCount(): int32 {
+                    return this.count;
+                }
+            }
+            function main(): int32 {
+                const c = new Counter(5);
+                return c.getCount();
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(5, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
+    public void ExecuteClassMethodMutatingFields()
+    {
+        var code = @"
+            class Counter {
+                count: int32;
+                constructor(initial: int32) {
+                    this.count = initial;
+                }
+                increment(): void {
+                    this.count = this.count + 1;
+                }
+                getCount(): int32 {
+                    return this.count;
+                }
+            }
+            function main(): int32 {
+                const c = new Counter(5);
+                c.increment();
+                c.increment();
+                c.increment();
+                return c.getCount();
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(8, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
+    public void ExecuteClassMultipleFields()
+    {
+        var code = @"
+            class Point {
+                x: int32;
+                y: int32;
+                constructor(x: int32, y: int32) {
+                    this.x = x;
+                    this.y = y;
+                }
+                sum(): int32 {
+                    return this.x + this.y;
+                }
+            }
+            function main(): int32 {
+                const p = new Point(3, 4);
+                return p.sum();
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(7, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
+    public void ExecuteClassStringField()
+    {
+        var code = @"
+            class Greeter {
+                greeting: string;
+                constructor(name: string) {
+                    this.greeting = ""Hello "" + name;
+                }
+                getGreeting(): string {
+                    return this.greeting;
+                }
+            }
+            function main(): string {
+                const g = new Greeter(""World"");
+                return g.getGreeting();
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsStringValue>(result);
+        Assert.Equal("Hello World", ((TsStringValue)result).Value);
+    }
+
+    [Fact]
+    public void ExecuteClassMultipleInstances()
+    {
+        var code = @"
+            class Counter {
+                count: int32;
+                constructor(initial: int32) {
+                    this.count = initial;
+                }
+                increment(): void {
+                    this.count = this.count + 1;
+                }
+                getCount(): int32 {
+                    return this.count;
+                }
+            }
+            function main(): int32 {
+                const a = new Counter(0);
+                const b = new Counter(10);
+                a.increment();
+                a.increment();
+                b.increment();
+                return a.getCount() + b.getCount();
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(13, ((TsInt32Value)result).Value);
+    }
 }
 
 public class BytecodeTests

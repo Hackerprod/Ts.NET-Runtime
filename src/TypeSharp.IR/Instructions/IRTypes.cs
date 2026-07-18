@@ -79,6 +79,7 @@ public enum Opcode
     Nop,
     Throw,
     Pop,
+    Dup,
 
     // String
     ConcatString,

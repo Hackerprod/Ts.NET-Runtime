@@ -176,7 +176,7 @@ public sealed class Binder
                 var body = BindNode(ctor.Body);
                 _symbolTable.PopScope();
 
-                return body;
+                return new BoundConstructorDeclaration(classType.Name, ctorSym, body!);
             }
 
             case FieldDeclarationSyntax field:
@@ -186,7 +186,7 @@ public sealed class Binder
                 _symbolTable.Define(fieldSym);
 
                 classType.Fields[field.Name] = new TsField(field.Name, fieldType);
-                return null;
+                return new BoundFieldInitializer(classType.Name, fieldSym);
             }
 
             case MethodDeclarationSyntax method:
@@ -217,7 +217,7 @@ public sealed class Binder
                         _symbolTable.Define(p);
                     var body = BindNode(method.Body);
                     _symbolTable.PopScope();
-                    return body;
+                    return new BoundMethodDeclaration(classType.Name, methodSym, body!);
                 }
                 return null;
             }

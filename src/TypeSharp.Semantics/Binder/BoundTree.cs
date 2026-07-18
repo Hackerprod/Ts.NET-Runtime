@@ -47,6 +47,9 @@ public enum BoundNodeKind
     TryStatement,
 
     FunctionDeclaration,
+    MethodDeclaration,
+    ConstructorDeclaration,
+    FieldInitializer,
     ClassDeclaration,
     InterfaceDeclaration,
     EnumDeclaration,
@@ -351,6 +354,49 @@ public sealed class BoundFunctionDeclaration : BoundNode
     {
         Symbol = symbol;
         Body = body;
+    }
+}
+
+public sealed class BoundMethodDeclaration : BoundNode
+{
+    public string ClassName { get; }
+    public MethodSymbol Symbol { get; }
+    public BoundNode Body { get; }
+
+    public BoundMethodDeclaration(string className, MethodSymbol symbol, BoundNode body)
+        : base(BoundNodeKind.MethodDeclaration, TsType.Void)
+    {
+        ClassName = className;
+        Symbol = symbol;
+        Body = body;
+    }
+}
+
+public sealed class BoundConstructorDeclaration : BoundNode
+{
+    public string ClassName { get; }
+    public MethodSymbol Symbol { get; }
+    public BoundNode Body { get; }
+
+    public BoundConstructorDeclaration(string className, MethodSymbol symbol, BoundNode body)
+        : base(BoundNodeKind.ConstructorDeclaration, TsType.Void)
+    {
+        ClassName = className;
+        Symbol = symbol;
+        Body = body;
+    }
+}
+
+public sealed class BoundFieldInitializer : BoundNode
+{
+    public string ClassName { get; }
+    public FieldSymbol Field { get; }
+
+    public BoundFieldInitializer(string className, FieldSymbol field)
+        : base(BoundNodeKind.FieldInitializer, TsType.Void)
+    {
+        ClassName = className;
+        Field = field;
     }
 }
 

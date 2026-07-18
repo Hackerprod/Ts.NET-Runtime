@@ -113,6 +113,7 @@ public static class BytecodeCompiler
     private const byte OP_RETURN = 0x80;
     private const byte OP_RETURN_VOID = 0x81;
     private const byte OP_NEW_OBJECT = 0x90;
+    private const byte OP_DUP = 0x91;
     private const byte OP_CONCAT_STRING = 0xA0;
     private const byte OP_AWAIT = 0xB0;
     private const byte OP_THROW = 0xC0;
@@ -215,6 +216,18 @@ public static class BytecodeCompiler
             case TypeSharp.IR.Opcode.LoadThis:
                 writer.Write(OP_LOAD_THIS);
                 break;
+            case TypeSharp.IR.Opcode.LoadField:
+            {
+                writer.Write(OP_LOAD_FIELD);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            }
+            case TypeSharp.IR.Opcode.StoreField:
+            {
+                writer.Write(OP_STORE_FIELD);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            }
             case TypeSharp.IR.Opcode.Add_I32: writer.Write(OP_ADD_I32); break;
             case TypeSharp.IR.Opcode.Sub_I32: writer.Write(OP_SUB_I32); break;
             case TypeSharp.IR.Opcode.Mul_I32: writer.Write(OP_MUL_I32); break;
@@ -278,6 +291,16 @@ public static class BytecodeCompiler
             case TypeSharp.IR.Opcode.Pop:
                 writer.Write(OP_POP);
                 break;
+            case TypeSharp.IR.Opcode.NewObject:
+            {
+                writer.Write(OP_NEW_OBJECT);
+                writer.WriteInt32(instr.Operand0);
+                writer.WriteInt32(instr.Operand1);
+                break;
+            }
+            case TypeSharp.IR.Opcode.Dup:
+                writer.Write(OP_DUP);
+                break;
             default:
                 writer.Write(OP_NOP);
                 break;
@@ -293,7 +316,11 @@ public static class BytecodeCompiler
             {
                 if (instr.OperandObject is string s)
                 {
-                    if (instr.Opcode == TypeSharp.IR.Opcode.LoadConst_String || instr.Opcode == TypeSharp.IR.Opcode.Call)
+                    if (instr.Opcode == TypeSharp.IR.Opcode.LoadConst_String ||
+                        instr.Opcode == TypeSharp.IR.Opcode.Call ||
+                        instr.Opcode == TypeSharp.IR.Opcode.NewObject ||
+                        instr.Opcode == TypeSharp.IR.Opcode.LoadField ||
+                        instr.Opcode == TypeSharp.IR.Opcode.StoreField)
                     {
                         instr.Operand0 = strings.Count;
                         strings.Add(s);
@@ -359,6 +386,14 @@ public static class BytecodeCompiler
                 case OP_CALL_HOST:
                     reader.ReadInt32(); // func name index
                     reader.ReadInt32(); // arg count
+                    break;
+                case OP_NEW_OBJECT:
+                    reader.ReadInt32(); // type name index
+                    reader.ReadInt32(); // arg count
+                    break;
+                case OP_LOAD_FIELD:
+                case OP_STORE_FIELD:
+                    reader.ReadInt32(); // field name index
                     break;
             }
         }

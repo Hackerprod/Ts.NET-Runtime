@@ -9,6 +9,9 @@ obj/
 project.lock.json
 project.fragment.lock.json
 
+## Archives
+*.zip
+
 ## Rider / VS
 .idea/
 *.DotSettings.user

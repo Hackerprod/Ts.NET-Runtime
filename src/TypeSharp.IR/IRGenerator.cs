@@ -71,14 +71,69 @@ public sealed class IRGenerator
         return funcIR;
     }
 
+    private FunctionIR GenerateMethodFunction(string className, string methodName, TsType returnType,
+        List<ParameterSymbol> explicitParams, BoundNode body, bool isAsync = false)
+    {
+        var parameters = new List<ParameterInfo>();
+        parameters.Add(new ParameterInfo("this", new TsClassType(className)));
+        foreach (var p in explicitParams)
+            parameters.Add(new ParameterInfo(p.Name, p.Type));
+
+        var qualifiedName = $"{className}::{methodName}";
+        var funcIR = new FunctionIR(qualifiedName, returnType, parameters)
+        {
+            IsAsync = isAsync,
+            LocalCount = 0
+        };
+
+        _currentFunction = funcIR;
+        _tempCounter = 0;
+        _localMap = new Dictionary<string, int>();
+
+        var entryBlock = funcIR.CreateBlock();
+        _currentBlock = entryBlock;
+
+        _localMap["this"] = 0;
+        for (int i = 0; i < explicitParams.Count; i++)
+            _localMap[explicitParams[i].Name] = i + 1;
+        _tempCounter = 1 + explicitParams.Count;
+
+        GenerateStatement(body);
+
+        funcIR.LocalCount = _tempCounter;
+
+        if (!_currentBlock.EndsInBranch)
+        {
+            EmitReturnVoid();
+        }
+
+        return funcIR;
+    }
+
     private void GenerateClass(ModuleIR module, BoundClassDeclaration cls)
     {
         foreach (var member in cls.Members)
         {
-            if (member is BoundFunctionDeclaration method)
+            switch (member)
             {
-                var funcIR = GenerateFunction(method);
-                module.AddFunction(funcIR);
+                case BoundConstructorDeclaration ctor:
+                {
+                    var funcIR = GenerateMethodFunction(
+                        cls.Symbol.Name, ".ctor", TsType.Void,
+                        ctor.Symbol.Parameters, ctor.Body, ctor.Symbol.IsAsync);
+                    module.AddFunction(funcIR);
+                    break;
+                }
+                case BoundMethodDeclaration method:
+                {
+                    var funcIR = GenerateMethodFunction(
+                        cls.Symbol.Name, method.Symbol.Name, method.Symbol.Type,
+                        method.Symbol.Parameters, method.Body, method.Symbol.IsAsync);
+                    module.AddFunction(funcIR);
+                    break;
+                }
+                case BoundFieldInitializer:
+                    break;
             }
         }
     }
@@ -260,6 +315,12 @@ public sealed class IRGenerator
             case BoundMemberAccessExpression member:
                 GenerateMemberAccess(member);
                 break;
+            case BoundNewExpression newExpr:
+                GenerateNew(newExpr);
+                break;
+            case BoundObjectLiteralExpression objLit:
+                GenerateObjectLiteral(objLit);
+                break;
             case BoundAwaitExpression awaitExpr:
                 GenerateExpression(awaitExpr.Expression);
                 EmitAwait();
@@ -347,27 +408,79 @@ public sealed class IRGenerator
 
     private void GenerateCall(BoundCallExpression call)
     {
-        for (int i = call.Arguments.Count - 1; i >= 0; i--)
-            GenerateExpression(call.Arguments[i]);
+        if (call.Callee is BoundMemberAccessExpression memberAccess)
+        {
+            GenerateExpression(memberAccess.Object);
+            for (int i = call.Arguments.Count - 1; i >= 0; i--)
+                GenerateExpression(call.Arguments[i]);
 
-        string funcName = "";
-        if (call.Callee is BoundVariableExpression varExpr && varExpr.Symbol is TypeSharp.Semantics.Symbols.FunctionSymbol funcSym)
-            funcName = funcSym.Name;
-        else if (call.Callee is BoundVariableExpression varExpr2)
-            funcName = varExpr2.Symbol.Name;
+            string funcName = "";
+            string className = GetClassName(memberAccess.Object.Type);
 
-        int argCount = call.Arguments.Count;
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, argCount, funcName));
+            if (memberAccess.Member is MethodSymbol methodSym)
+                funcName = $"{className}::{methodSym.Name}";
+            else if (memberAccess.Member is PropertySymbol propSym)
+                funcName = $"{className}::{propSym.Name}";
+
+            int totalArgs = 1 + call.Arguments.Count;
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, totalArgs, funcName));
+        }
+        else
+        {
+            for (int i = call.Arguments.Count - 1; i >= 0; i--)
+                GenerateExpression(call.Arguments[i]);
+
+            string funcName = "";
+            if (call.Callee is BoundVariableExpression varExpr && varExpr.Symbol is FunctionSymbol funcSym)
+                funcName = funcSym.Name;
+            else if (call.Callee is BoundVariableExpression varExpr2)
+                funcName = varExpr2.Symbol.Name;
+
+            int argCount = call.Arguments.Count;
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, argCount, funcName));
+        }
+    }
+
+    private void GenerateNew(BoundNewExpression newExpr)
+    {
+        var className = GetClassName(newExpr.ConstructedType);
+
+        for (int i = newExpr.Arguments.Count - 1; i >= 0; i--)
+            GenerateExpression(newExpr.Arguments[i]);
+
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.NewObject, 0, newExpr.Arguments.Count, className));
+    }
+
+    private void GenerateObjectLiteral(BoundObjectLiteralExpression objLit)
+    {
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.NewObject, 0, 0, "Object"));
+
+        foreach (var prop in objLit.Properties)
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+            GenerateExpression(prop.Value);
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, prop.Key));
+        }
     }
 
     private void GenerateAssignment(BoundAssignmentExpression assign)
     {
-        GenerateExpression(assign.Value);
-
-        if (assign.Target is BoundVariableExpression varExpr && varExpr.Symbol is LocalSymbol local)
+        if (assign.Target is BoundMemberAccessExpression memberAccess &&
+            memberAccess.Member is FieldSymbol field)
         {
-            int localIndex = GetLocalIndex(local);
-            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreLocal, localIndex));
+            GenerateExpression(memberAccess.Object);
+            GenerateExpression(assign.Value);
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, field.Name));
+        }
+        else
+        {
+            GenerateExpression(assign.Value);
+
+            if (assign.Target is BoundVariableExpression varExpr && varExpr.Symbol is LocalSymbol local)
+            {
+                int localIndex = GetLocalIndex(local);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreLocal, localIndex));
+            }
         }
     }
 
@@ -379,6 +492,17 @@ public sealed class IRGenerator
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, field.Name));
         }
+    }
+
+    private string GetClassName(TsType type)
+    {
+        return type switch
+        {
+            TsClassType cls => cls.Name,
+            TsNullableType nullable => GetClassName(nullable.ElementType),
+            TsGenericType generic => GetClassName(generic.Definition),
+            _ => "Unknown"
+        };
     }
 
     // Emit helpers

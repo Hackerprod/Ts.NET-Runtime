@@ -88,10 +88,10 @@ public sealed class TsModuleManager
     {
         string source = await File.ReadAllTextAsync(filePath);
         string modulePath = Path.GetFullPath(filePath);
-        string dir = Path.GetDirectoryName(modulePath);
-        string moduleName = !string.IsNullOrEmpty(dir)
-            ? Path.GetFileName(dir)
-            : Path.GetFileNameWithoutExtension(modulePath);
+        string moduleName = Path.ChangeExtension(modulePath, null)
+            .Replace(Directory.GetCurrentDirectory(), "")
+            .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Replace('\\', '/');
 
         var lexer = new TypeSharp.Syntax.Lexer(source, filePath);
         var tokens = lexer.Tokenize();

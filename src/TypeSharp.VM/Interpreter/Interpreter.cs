@@ -160,6 +160,29 @@ public sealed class Interpreter
                     frame.Push(frame.Locals[0]);
                     break;
 
+                case 0x14: // LOAD_FIELD
+                {
+                    int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var fieldName = strings[fieldIdx];
+                    var obj = frame.Pop();
+                    if (obj is TsObjectValue objVal)
+                        frame.Push(objVal.Value.GetField(fieldName));
+                    else
+                        frame.Push(TsValue.Null);
+                    break;
+                }
+
+                case 0x15: // STORE_FIELD
+                {
+                    int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var fieldName = strings[fieldIdx];
+                    var value = frame.Pop();
+                    var obj = frame.Pop();
+                    if (obj is TsObjectValue objVal)
+                        objVal.Value.SetField(fieldName, value);
+                    break;
+                }
+
                 // Arithmetic - I32
                 case 0x20: // ADD_I32
                 {
@@ -463,6 +486,45 @@ public sealed class Interpreter
                 case 0x81: // RETURN_VOID
                 {
                     return null;
+                }
+
+                // Object
+                case 0x90: // NEW_OBJECT
+                {
+                    int typeIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var typeName = strings[typeIdx];
+
+                    var obj = _heap.AllocateObject(typeName);
+
+                    string ctorName = $"{typeName}::.ctor";
+                    if (module.FunctionIndex.TryGetValue(ctorName, out int ctorIdx))
+                    {
+                        var ctorFunc = module.Functions[ctorIdx];
+                        var ctorFrame = new CallFrame(ctorFunc, frame);
+
+                        ctorFrame.Locals[0] = TsValue.FromObject(obj);
+                        for (int i = 0; i < argCount; i++)
+                            ctorFrame.Locals[i + 1] = frame.Pop();
+
+                        _callStack.Push(ctorFrame);
+                        ExecuteFrame(ctorFrame, module);
+                        _callStack.Pop();
+                    }
+                    else
+                    {
+                        for (int i = 0; i < argCount; i++) frame.Pop();
+                    }
+
+                    frame.Push(TsValue.FromObject(obj));
+                    break;
+                }
+
+                case 0x91: // DUP
+                {
+                    var val = frame.Peek();
+                    frame.Push(val);
+                    break;
                 }
 
                 // String
