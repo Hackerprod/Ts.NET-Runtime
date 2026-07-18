@@ -1,4 +1,7 @@
 using System.Reflection;
+using TypeSharp.Semantics.Symbols;
+using TypeSharp.Semantics.TypeSystem;
+using TypeSharp.Syntax;
 using TypeSharp.VM.Memory;
 
 namespace TypeSharp.Interop.HostExports;
@@ -35,11 +38,11 @@ public sealed class HostFunctionDescriptor
     public string ModuleName { get; }
     public string FunctionName { get; }
     public Type ReturnType { get; }
-    public Type[] ParameterTypes { get; }
+    public Type[]? ParameterTypes { get; }
     public Func<TsValue[], TsValue?> Implementation { get; }
 
     public HostFunctionDescriptor(string moduleName, string functionName,
-        Type returnType, Type[] parameterTypes, Func<TsValue[], TsValue?> implementation)
+        Type returnType, Type[]? parameterTypes, Func<TsValue[], TsValue?> implementation)
     {
         ModuleName = moduleName;
         FunctionName = functionName;
@@ -77,6 +80,47 @@ public sealed class HostRegistry
     public HostFunctionDescriptor? GetFunction(string module, string name)
     {
         return _functions.TryGetValue($"{module}.{name}", out var desc) ? desc : null;
+    }
+
+    public IReadOnlyDictionary<string, Symbol> CreateGlobalSymbols()
+    {
+        var symbols = new Dictionary<string, Symbol>(StringComparer.Ordinal);
+        var location = new SourceRange(new SourceLocation("<host>", 1, 1, 0), new SourceLocation("<host>", 1, 1, 0));
+
+        foreach (var group in _functions.Values.GroupBy(f => f.FunctionName, StringComparer.Ordinal))
+        {
+            if (group.Count() != 1)
+                continue; // Ambiguous host names require a future qualified import surface.
+
+            var descriptor = group.Single();
+            var symbol = new FunctionSymbol(descriptor.FunctionName, MapManagedType(descriptor.ReturnType), location)
+            {
+                HasDynamicSignature = descriptor.ParameterTypes == null
+            };
+            if (descriptor.ParameterTypes != null)
+            {
+                for (int i = 0; i < descriptor.ParameterTypes.Length; i++)
+                    symbol.Parameters.Add(new ParameterSymbol($"arg{i}", MapManagedType(descriptor.ParameterTypes[i]), location));
+            }
+            symbols[symbol.Name] = symbol;
+        }
+        return symbols;
+    }
+
+    private static TsType MapManagedType(Type type)
+    {
+        if (type == typeof(void) || type == typeof(Task) || type == typeof(ValueTask)) return TsType.Void;
+        if (type.IsGenericType && (type.GetGenericTypeDefinition() == typeof(Task<>) || type.GetGenericTypeDefinition() == typeof(ValueTask<>)))
+            type = type.GetGenericArguments()[0];
+        if (type == typeof(bool)) return TsType.Bool;
+        if (type == typeof(int)) return TsType.Int32;
+        if (type == typeof(long)) return TsType.Int64;
+        if (type == typeof(ulong)) return TsType.UInt64;
+        if (type == typeof(float)) return TsType.Float32;
+        if (type == typeof(double)) return TsType.Float64;
+        if (type == typeof(decimal)) return TsType.Decimal;
+        if (type == typeof(string)) return TsType.String;
+        return TsType.Any;
     }
 
     public void RegisterObject<T>(string moduleName, T instance, ExportMode mode = ExportMode.ExplicitOnly) where T : class

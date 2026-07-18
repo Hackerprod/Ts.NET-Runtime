@@ -215,8 +215,10 @@ public sealed class IRGenerator
         var elseBlock = ifStmt.ElseBranch != null ? _currentFunction.CreateBlock() : null;
         var continuationBlock = _currentFunction.CreateBlock();
 
-        int condBranchIdx = _currentBlock!.Instructions.Count;
-        EmitBranchFalse((elseBlock ?? continuationBlock).Id);
+        // Blocks can be created by enclosing control flow before these blocks.
+        // Use explicit edges rather than relying on bytecode fallthrough order.
+        EmitBranchTrue(thenBlock.Id);
+        EmitBranch((elseBlock ?? continuationBlock).Id);
 
         _currentBlock = thenBlock;
         GenerateStatement(ifStmt.ThenBranch);
@@ -408,7 +410,8 @@ public sealed class IRGenerator
         GenerateExpression(bin.Left);
         GenerateExpression(bin.Right);
 
-        var opcode = InferBinaryOpcode(bin.Left.Type, bin.Operator);
+        var operandType = bin.Left.Type is TsAnyType ? bin.Right.Type : bin.Left.Type;
+        var opcode = InferBinaryOpcode(operandType, bin.Operator);
         _currentBlock!.Instructions.Add(new Instruction(opcode));
     }
 
@@ -524,6 +527,10 @@ public sealed class IRGenerator
         if (member.Member is FieldSymbol field)
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, field.Name));
+        }
+        else if (member.Member is PropertySymbol property)
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, property.Name));
         }
     }
 

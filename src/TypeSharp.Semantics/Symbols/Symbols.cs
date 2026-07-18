@@ -97,6 +97,7 @@ public sealed class FunctionSymbol : Symbol
     public List<ParameterSymbol> Parameters { get; } = new();
     public bool IsAsync { get; set; }
     public bool IsExported { get; set; }
+    public bool HasDynamicSignature { get; set; }
 
     public FunctionSymbol(string name, TypeSystem.TsType returnType, SourceRange location)
         : base(name, returnType, location) { }

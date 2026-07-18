@@ -32,6 +32,12 @@ public sealed class Binder
         _importedSymbols[moduleId] = symbols;
     }
 
+    public void AddGlobalSymbols(IReadOnlyDictionary<string, Symbol> symbols)
+    {
+        foreach (var symbol in symbols.Values)
+            _symbolTable.Define(symbol);
+    }
+
     private void RegisterBuiltins()
     {
         var consoleType = new TsClassType("Console");
@@ -778,7 +784,7 @@ public sealed class Binder
         if (callee is BoundVariableExpression varExpr && varExpr.Symbol is FunctionSymbol funcSym)
         {
             returnType = funcSym.Type;
-            expectedParams = funcSym.Parameters;
+            expectedParams = funcSym.HasDynamicSignature ? null : funcSym.Parameters;
         }
         else if (callee is BoundMemberAccessExpression memberExpr && memberExpr.Member is MethodSymbol methodSym)
         {
@@ -1060,6 +1066,13 @@ public sealed class Binder
     // Type inference helpers
     private static TsType InferBinaryResultType(TsType left, TsType right, TokenKind op)
     {
+        if (left is TsAnyType && right is not TsAnyType)
+            return right;
+        if (right is TsAnyType && left is not TsAnyType)
+            return left;
+        if (left is TsAnyType || right is TsAnyType)
+            return TsType.Any;
+
         return op switch
         {
             TokenKind.DoubleEquals or TokenKind.StrictNotEquals or

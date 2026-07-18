@@ -17,6 +17,8 @@ public abstract class TsType : IEquatable<TsType>
 
     public static bool IsCompatibleWith(TsType source, TsType target)
     {
+        if (source is TsAnyType || target is TsAnyType)
+            return true;
         if (source is TsNullType)
             return target is TsNullableType || target is TsUnionType;
 
@@ -55,6 +57,7 @@ public abstract class TsType : IEquatable<TsType>
     public static readonly TsPrimitiveType DateTime = new("datetime", false);
     public static readonly TsPrimitiveType Guid = new("guid", false);
     public static readonly TsPrimitiveType Number = new("number", true); // alias for float64
+    public static readonly TsAnyType Any = new();
 
     public static TsType FromToken(TokenKind kind) => kind switch
     {
@@ -81,6 +84,14 @@ public abstract class TsType : IEquatable<TsType>
     };
 
     public bool IsNumeric => this is TsPrimitiveType p && p.IsNumericType;
+}
+
+public sealed class TsAnyType : TsType
+{
+    public override string Name => "any";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+    public override bool IsAssignableTo(TsType other) => true;
 }
 
 public sealed class TsPrimitiveType : TsType

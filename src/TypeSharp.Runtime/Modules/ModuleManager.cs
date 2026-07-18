@@ -40,6 +40,14 @@ public sealed class ModuleRegistry
         _modulePaths[module.Name] = path;
     }
 
+    public void RegisterAlias(string alias, TsModule module, string path)
+    {
+        if (string.IsNullOrWhiteSpace(alias) || _modules.ContainsKey(alias))
+            return;
+        _modules[alias] = module;
+        _modulePaths[alias] = path;
+    }
+
     public TsModule? GetModule(string name)
     {
         return _modules.TryGetValue(name, out var module) && module.IsActive ? module : null;
@@ -87,6 +95,13 @@ public sealed class TsModuleManager
     public async Task<TsModule> LoadModuleAsync(string filePath)
     {
         var module = await CompileModuleAsync(filePath, _registry.NextGenerationId());
+        _registry.Register(filePath, module);
+        return module;
+    }
+
+    public TsModule RegisterCompiledModule(string moduleName, string filePath, BytecodeModule bytecode, int generationId)
+    {
+        var module = new TsModule(moduleName, filePath, bytecode, generationId);
         _registry.Register(filePath, module);
         return module;
     }

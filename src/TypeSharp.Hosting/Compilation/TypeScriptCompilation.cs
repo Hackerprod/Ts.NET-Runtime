@@ -52,13 +52,15 @@ public sealed class TypeScriptCompilation
     private readonly DiagnosticBag _diagnostics = new();
     private readonly Dictionary<string, CompilationUnit> _units = new();
     private readonly Dictionary<string, CompiledModule> _compiledModules = new();
+    private readonly IReadOnlyDictionary<string, Symbol>? _globalSymbols;
 
     public DiagnosticBag Diagnostics => _diagnostics;
     public IReadOnlyDictionary<string, CompiledModule> CompiledModules => _compiledModules;
 
-    public TypeScriptCompilation(string sourceRoot)
+    public TypeScriptCompilation(string sourceRoot, IReadOnlyDictionary<string, Symbol>? globalSymbols = null)
     {
         _sourceRoot = Path.GetFullPath(sourceRoot);
+        _globalSymbols = globalSymbols;
     }
 
     public void AddSourceFile(string filePath)
@@ -80,7 +82,12 @@ public sealed class TypeScriptCompilation
 
         var relative = Path.GetRelativePath(fullRoot, fullPath);
         var withoutExt = Path.ChangeExtension(relative, null);
-        return withoutExt.Replace('\\', '/').TrimStart('/');
+        var moduleId = withoutExt.Replace('\\', '/').TrimStart('/');
+        if (moduleId.EndsWith("/main", StringComparison.Ordinal))
+            return moduleId[..^5];
+        if (moduleId == "main")
+            return Path.GetFileName(fullRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        return moduleId;
     }
 
     public void Parse()
@@ -231,6 +238,8 @@ public sealed class TypeScriptCompilation
             try
             {
                 var binder = new Binder();
+                if (_globalSymbols != null)
+                    binder.AddGlobalSymbols(_globalSymbols);
 
                 foreach (var (rawPath, modId) in unit.ImportMap)
                 {

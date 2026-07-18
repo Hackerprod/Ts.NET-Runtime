@@ -835,7 +835,7 @@ public sealed class Interpreter
 
                     var calleeName = strings[funcIdx];
 
-                    if (_hostFunctions.TryGetValue(calleeName, out var hostFunc))
+                    if (TryGetHostFunction(calleeName, out var hostFunc))
                     {
                         var hostArgs = new TsValue[argCount];
                         for (int i = argCount - 1; i >= 0; i--)
@@ -874,7 +874,7 @@ public sealed class Interpreter
                     var hostArgs = new TsValue[argCount];
                     for (int i = argCount - 1; i >= 0; i--)
                         hostArgs[i] = frame.Pop();
-                    if (_hostFunctions.TryGetValue(hostName, out var hostFunc))
+                    if (TryGetHostFunction(hostName, out var hostFunc))
                     {
                         var result = hostFunc(hostName, hostArgs);
                         frame.Push(result ?? TsValue.Null);
@@ -901,7 +901,7 @@ public sealed class Interpreter
                     int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var calleeName = strings[funcIdx];
 
-                    if (_hostFunctions.TryGetValue(calleeName, out var hostFunc))
+                    if (TryGetHostFunction(calleeName, out var hostFunc))
                     {
                         var hostArgs = new TsValue[argCount];
                         for (int i = argCount - 1; i >= 0; i--)
@@ -1331,6 +1331,26 @@ public sealed class Interpreter
             return false;
         cache.TryAdd(instructionOffset, calleeIndex);
         return true;
+    }
+
+    private bool TryGetHostFunction(string name, out HostFunctionDelegate function)
+    {
+        if (_hostFunctions.TryGetValue(name, out function!))
+            return true;
+
+        var matches = _hostFunctions
+            .Where(pair => pair.Key.EndsWith($".{name}", StringComparison.Ordinal))
+            .Select(pair => pair.Value)
+            .Take(2)
+            .ToArray();
+        if (matches.Length == 1)
+        {
+            function = matches[0];
+            return true;
+        }
+
+        function = null!;
+        return false;
     }
 
     private static int ReadInt32(byte[] bytecode, ref int ip)

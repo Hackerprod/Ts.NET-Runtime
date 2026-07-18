@@ -2,10 +2,12 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using TypeSharp.Hosting.HotReload;
+using TypeSharp.Hosting.Compilation;
 using TypeSharp.Interop.HostExports;
 using TypeSharp.Runtime.Generations;
 using TypeSharp.Runtime.Modules;
 using TypeSharp.VM.Interpreter;
+using TypeSharp.VM.Bytecode;
 using TypeSharp.VM.Memory;
 
 namespace TypeSharp.Hosting;
@@ -59,8 +61,7 @@ public sealed class TypeSharpRuntimeBuilder
 
     public TypeSharpRuntimeBuilder RegisterHostFunction(string module, string name, Func<TsValue[], TsValue?> func)
     {
-        var desc = new HostFunctionDescriptor(module, name, typeof(void),
-            Type.EmptyTypes, func);
+        var desc = new HostFunctionDescriptor(module, name, typeof(object), null, func);
         _hostRegistry.RegisterFunction(desc);
         return this;
     }
@@ -73,6 +74,14 @@ public sealed class TypeSharpRuntimeBuilder
         foreach (var (key, desc) in _hostRegistry.Functions)
         {
             interpreter.RegisterHostFunction(key, (name, args) => desc.Implementation(args));
+        }
+        foreach (var group in _hostRegistry.Functions.Values.GroupBy(f => f.FunctionName, StringComparer.Ordinal))
+        {
+            if (group.Count() == 1)
+            {
+                var desc = group.Single();
+                interpreter.RegisterHostFunction(desc.FunctionName, (name, args) => desc.Implementation(args));
+            }
         }
 
         var filesToLoad = new List<string>();
@@ -88,9 +97,28 @@ public sealed class TypeSharpRuntimeBuilder
 
         filesToLoad.AddRange(_sourceFiles);
 
-        foreach (var file in filesToLoad)
+        if (filesToLoad.Count > 0)
         {
-            await moduleManager.LoadModuleAsync(file);
+            var sourceRoot = DetermineSourceRoot(filesToLoad, _sourceDirectories);
+            var compilation = new TypeScriptCompilation(sourceRoot, _hostRegistry.CreateGlobalSymbols());
+            foreach (var file in filesToLoad.Distinct(StringComparer.OrdinalIgnoreCase))
+                compilation.AddSourceFile(file);
+
+            var compiledModules = compilation.Compile();
+            if (compilation.Diagnostics.HasErrors)
+            {
+                var diagnostics = string.Join(Environment.NewLine, compilation.Diagnostics.GetErrors());
+                throw new InvalidOperationException($"Compilation failed:{Environment.NewLine}{diagnostics}");
+            }
+
+            int generationId = moduleManager.Registry.NextGenerationId();
+            foreach (var compiled in compiledModules.Values)
+            {
+                var module = moduleManager.RegisterCompiledModule(compiled.ModuleId, compiled.SourcePath, compiled.Bytecode, generationId);
+                var legacyAlias = Path.ChangeExtension(Path.GetRelativePath(Directory.GetCurrentDirectory(), compiled.SourcePath), null)
+                    .Replace('\\', '/').TrimStart('/');
+                moduleManager.Registry.RegisterAlias(legacyAlias, module, compiled.SourcePath);
+            }
         }
 
         HotReloadManager? hotReloadManager = null;
@@ -118,6 +146,29 @@ public sealed class TypeSharpRuntimeBuilder
         runtime.InitializeGeneration();
 
         return runtime;
+    }
+
+    private static string DetermineSourceRoot(IReadOnlyList<string> files, IReadOnlyList<string> sourceDirectories)
+    {
+        if (sourceDirectories.Count == 1)
+            return Path.GetFullPath(sourceDirectories[0]);
+
+        var directories = files.Select(file => Path.GetDirectoryName(Path.GetFullPath(file))!).ToList();
+        string root = directories.Aggregate(CommonDirectory);
+        if (files.Count == 1 && Path.GetFileNameWithoutExtension(files[0]) == "main")
+            root = Directory.GetParent(root)?.FullName ?? root;
+        return root;
+    }
+
+    private static string CommonDirectory(string left, string right)
+    {
+        var leftParts = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar).Split(Path.DirectorySeparatorChar);
+        var rightParts = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar).Split(Path.DirectorySeparatorChar);
+        int count = 0;
+        while (count < leftParts.Length && count < rightParts.Length &&
+               string.Equals(leftParts[count], rightParts[count], StringComparison.OrdinalIgnoreCase))
+            count++;
+        return string.Join(Path.DirectorySeparatorChar, leftParts.Take(count));
     }
 }
 
@@ -224,7 +275,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
                 var context = _interpreter.CreateContext();
                 try
                 {
-                    return _interpreter.Execute(mod.Bytecode, functionName, args, context);
+                    return _interpreter.Execute(CreateLinkedModule(generation), functionName, args, context);
                 }
                 finally
                 {
@@ -248,7 +299,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             module = await ImportAsync(moduleName);
         }
 
-        var result = _interpreter.Execute(module.Bytecode, functionName, tsArgs);
+        var result = _interpreter.Execute(CreateLinkedModule(lease.Generation), functionName, tsArgs);
 
         return (T)(TypeSharp.Interop.Marshalling.Marshaller.ToManaged(result ?? TsValue.Null, typeof(T)) ?? default(T)!);
     }
@@ -256,6 +307,12 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
     public TsValue? Invoke(string functionName, TsValue[]? args = null)
     {
         return InvokeWithLease(functionName, args);
+    }
+
+    private static BytecodeModule CreateLinkedModule(RuntimeGeneration generation)
+    {
+        var functions = generation.Modules.Values.SelectMany(module => module.Bytecode.Functions).ToArray();
+        return new BytecodeModule($"generation-{generation.Id}", functions);
     }
 
     public async Task<TsModule> ImportAsync(string moduleName)
@@ -322,7 +379,12 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             try
             {
                 // Candidate is never registered or visible until all gates pass.
-                var replacement = await _moduleManager.CompileModuleAsync(filePath, genId);
+                var compiledReplacement = await _moduleManager.CompileModuleAsync(filePath, genId);
+                var existing = previous?.Modules.Values.FirstOrDefault(module =>
+                    string.Equals(Path.GetFullPath(module.FilePath), Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase));
+                var replacement = existing == null
+                    ? compiledReplacement
+                    : new TsModule(existing.Name, filePath, compiledReplacement.Bytecode, genId);
                 var newModules = previous?.Modules.ToDictionary(pair => pair.Key, pair => pair.Value)
                     ?? new Dictionary<string, TsModule>();
                 newModules[replacement.Name] = replacement;
