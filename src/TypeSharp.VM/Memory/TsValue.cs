@@ -1,0 +1,272 @@
+using System.Collections.Concurrent;
+using TypeSharp.VM.Bytecode;
+
+namespace TypeSharp.VM.Memory;
+
+public abstract class TsValue
+{
+    public abstract TsValueType ValueType { get; }
+    public abstract object? RawValue { get; }
+
+    public static readonly TsNull Null = new();
+    public static readonly TsVoid Void = new();
+
+    public static TsValue FromInt32(int value) => new TsInt32Value(value);
+    public static TsValue FromInt64(long value) => new TsInt64Value(value);
+    public static TsValue FromFloat32(float value) => new TsFloat32Value(value);
+    public static TsValue FromFloat64(double value) => new TsFloat64Value(value);
+    public static TsValue FromString(string value) => new TsStringValue(value);
+    public static TsValue FromBool(bool value) => new TsBoolValue(value);
+    public static TsValue FromObject(TsObject value) => new TsObjectValue(value);
+    public static TsValue FromNull() => Null;
+
+    public override string ToString() => RawValue?.ToString() ?? "null";
+}
+
+public enum TsValueType
+{
+    Void, Null, Bool, Int32, Int64, Float32, Float64, String, Object, Array, Map
+}
+
+public sealed class TsVoid : TsValue
+{
+    public override TsValueType ValueType => TsValueType.Void;
+    public override object? RawValue => null;
+}
+
+public sealed class TsNull : TsValue
+{
+    public override TsValueType ValueType => TsValueType.Null;
+    public override object? RawValue => null;
+}
+
+public sealed class TsBoolValue : TsValue
+{
+    public bool Value { get; }
+    public override TsValueType ValueType => TsValueType.Bool;
+    public override object? RawValue => Value;
+    public TsBoolValue(bool value) => Value = value;
+}
+
+public sealed class TsInt32Value : TsValue
+{
+    public int Value { get; }
+    public override TsValueType ValueType => TsValueType.Int32;
+    public override object? RawValue => Value;
+    public TsInt32Value(int value) => Value = value;
+}
+
+public sealed class TsInt64Value : TsValue
+{
+    public long Value { get; }
+    public override TsValueType ValueType => TsValueType.Int64;
+    public override object? RawValue => Value;
+    public TsInt64Value(long value) => Value = value;
+}
+
+public sealed class TsFloat32Value : TsValue
+{
+    public float Value { get; }
+    public override TsValueType ValueType => TsValueType.Float32;
+    public override object? RawValue => Value;
+    public TsFloat32Value(float value) => Value = value;
+}
+
+public sealed class TsFloat64Value : TsValue
+{
+    public double Value { get; }
+    public override TsValueType ValueType => TsValueType.Float64;
+    public override object? RawValue => Value;
+    public TsFloat64Value(double value) => Value = value;
+}
+
+public sealed class TsStringValue : TsValue
+{
+    public string Value { get; }
+    public override TsValueType ValueType => TsValueType.String;
+    public override object? RawValue => Value;
+    public TsStringValue(string value) => Value = value;
+}
+
+public sealed class TsObjectValue : TsValue
+{
+    public TsObject Value { get; }
+    public override TsValueType ValueType => TsValueType.Object;
+    public override object? RawValue => Value;
+    public TsObjectValue(TsObject value) => Value = value;
+}
+
+public sealed class TsArrayValue : TsValue
+{
+    public TsArray Value { get; }
+    public override TsValueType ValueType => TsValueType.Array;
+    public override object? RawValue => Value;
+    public TsArrayValue(TsArray value) => Value = value;
+}
+
+// Runtime objects
+public sealed class TsObject
+{
+    public string TypeName { get; }
+    public Dictionary<string, TsValue> Fields { get; } = new();
+    private int _generationId;
+
+    public TsObject(string typeName, int generationId = 0)
+    {
+        TypeName = typeName;
+        _generationId = generationId;
+    }
+
+    public TsValue GetField(string name) =>
+        Fields.TryGetValue(name, out var val) ? val : TsValue.Null;
+
+    public void SetField(string name, TsValue value) =>
+        Fields[name] = value;
+}
+
+public sealed class TsArray
+{
+    private TsValue[] _elements;
+    private int _count;
+
+    public int Count => _count;
+    public int Capacity => _elements.Length;
+
+    public TsArray(int initialCapacity = 4)
+    {
+        _elements = new TsValue[initialCapacity];
+        _count = 0;
+    }
+
+    public TsValue Get(int index)
+    {
+        if (index < 0 || index >= _count) return TsValue.Null;
+        return _elements[index];
+    }
+
+    public void Set(int index, TsValue value)
+    {
+        if (index < 0) return;
+        EnsureCapacity(index + 1);
+        _elements[index] = value;
+        if (index >= _count) _count = index + 1;
+    }
+
+    public void Add(TsValue value)
+    {
+        EnsureCapacity(_count + 1);
+        _elements[_count++] = value;
+    }
+
+    private void EnsureCapacity(int required)
+    {
+        if (required <= _elements.Length) return;
+        int newCapacity = Math.Max(_elements.Length * 2, required);
+        var newElements = new TsValue[newCapacity];
+        Array.Copy(_elements, newElements, _count);
+        _elements = newElements;
+    }
+}
+
+public sealed class TsMap
+{
+    private readonly Dictionary<string, TsValue> _entries = new();
+
+    public int Count => _entries.Count;
+
+    public TsValue Get(string key) =>
+        _entries.TryGetValue(key, out var val) ? val : TsValue.Null;
+
+    public void Set(string key, TsValue value) =>
+        _entries[key] = value;
+
+    public bool Contains(string key) => _entries.ContainsKey(key);
+
+    public bool Remove(string key) => _entries.Remove(key);
+}
+
+// Frame for VM execution
+public sealed class CallFrame
+{
+    public BytecodeFunction Function { get; }
+    public TsValue[] Locals { get; }
+    public TsValue[] Stack { get; }
+    public int StackPointer { get; set; }
+    public int InstructionPointer;
+    public CallFrame? Caller { get; set; }
+
+    public CallFrame(BytecodeFunction function, CallFrame? caller = null)
+    {
+        Function = function;
+        Locals = new TsValue[function.LocalCount + function.ParameterCount];
+        Stack = new TsValue[256]; // fixed stack size for now
+        StackPointer = 0;
+        InstructionPointer = 0;
+        Caller = caller;
+
+        for (int i = 0; i < Locals.Length; i++)
+            Locals[i] = TsValue.Null;
+    }
+
+    public void Push(TsValue value)
+    {
+        if (StackPointer >= Stack.Length)
+            throw new InvalidOperationException("Stack overflow");
+        Stack[StackPointer++] = value;
+    }
+
+    public TsValue Pop()
+    {
+        if (StackPointer <= 0)
+            throw new InvalidOperationException("Stack underflow");
+        return Stack[--StackPointer];
+    }
+
+    public TsValue Peek() => StackPointer > 0 ? Stack[StackPointer - 1] : TsValue.Null;
+}
+
+// Heap for object allocation
+public sealed class TsHeap
+{
+    private readonly ConcurrentBag<TsObject> _objects = new();
+    private readonly ConcurrentBag<TsArray> _arrays = new();
+    private long _nextId;
+    private long _bytesAllocated;
+    private readonly long _maxBytes;
+
+    public long ObjectsCreated => Interlocked.Read(ref _nextId);
+    public long BytesAllocated => Interlocked.Read(ref _bytesAllocated);
+
+    public TsHeap(long maxBytes = 64 * 1024 * 1024)
+    {
+        _maxBytes = maxBytes;
+    }
+
+    public TsObject AllocateObject(string typeName)
+    {
+        var obj = new TsObject(typeName, (int)Interlocked.Increment(ref _nextId));
+        Interlocked.Add(ref _bytesAllocated, 256); // rough estimate
+        return obj;
+    }
+
+    public TsArray AllocateArray(int initialCapacity = 4)
+    {
+        var arr = new TsArray(initialCapacity);
+        Interlocked.Add(ref _bytesAllocated, initialCapacity * 8 + 64);
+        return arr;
+    }
+
+    public TsMap AllocateMap()
+    {
+        var map = new TsMap();
+        Interlocked.Add(ref _bytesAllocated, 128);
+        return map;
+    }
+
+    public void Collect()
+    {
+        // Simple GC - in production would use generational collection
+    }
+
+    public bool IsOverLimit() => Interlocked.Read(ref _bytesAllocated) > _maxBytes;
+}

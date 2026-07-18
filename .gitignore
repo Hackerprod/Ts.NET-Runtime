@@ -1,0 +1,21 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.nupkg
+*.snupkg
+project.lock.json
+project.fragment.lock.json
+
+## Rider / VS
+.idea/
+*.DotSettings.user
+
+## NuGet
+packages/
+
+## OS
+Thumbs.db
+.DS_Store

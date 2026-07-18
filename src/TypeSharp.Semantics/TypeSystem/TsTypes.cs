@@ -1,0 +1,359 @@
+using TypeSharp.Syntax;
+
+namespace TypeSharp.Semantics.TypeSystem;
+
+public abstract class TsType : IEquatable<TsType>
+{
+    public abstract string Name { get; }
+    public abstract bool IsValueType { get; }
+    public abstract bool IsReferenceType { get; }
+
+    public virtual bool Equals(TsType? other) => GetType() == other?.GetType() && Name == other.Name;
+    public override bool Equals(object? obj) => Equals(obj as TsType);
+    public override int GetHashCode() => HashCode.Combine(GetType(), Name);
+    public override string ToString() => Name;
+
+    public virtual bool IsAssignableTo(TsType other) => Equals(other);
+
+    // Primitive type singletons
+    public static readonly TsPrimitiveType Void = new("void", true);
+    public static readonly TsPrimitiveType Bool = new("bool", true);
+    public static readonly TsPrimitiveType Int8 = new("int8", true);
+    public static readonly TsPrimitiveType UInt8 = new("uint8", true);
+    public static readonly TsPrimitiveType Int16 = new("int16", true);
+    public static readonly TsPrimitiveType UInt16 = new("uint16", true);
+    public static readonly TsPrimitiveType Int32 = new("int32", true);
+    public static readonly TsPrimitiveType UInt32 = new("uint32", true);
+    public static readonly TsPrimitiveType Int64 = new("int64", true);
+    public static readonly TsPrimitiveType UInt64 = new("uint64", true);
+    public static readonly TsPrimitiveType Float32 = new("float32", true);
+    public static readonly TsPrimitiveType Float64 = new("float64", true);
+    public static readonly TsPrimitiveType Decimal = new("decimal", true);
+    public static readonly TsPrimitiveType BigInt = new("bigint", true);
+    public static readonly TsPrimitiveType String = new("string", false);
+    public static readonly TsPrimitiveType Bytes = new("bytes", false);
+    public static readonly TsPrimitiveType DateTime = new("datetime", false);
+    public static readonly TsPrimitiveType Guid = new("guid", false);
+    public static readonly TsPrimitiveType Number = new("number", true); // alias for float64
+
+    public static TsType FromToken(TokenKind kind) => kind switch
+    {
+        TokenKind.VoidKeyword => Void,
+        TokenKind.BoolKeyword => Bool,
+        TokenKind.Int8Keyword => Int8,
+        TokenKind.UInt8Keyword => UInt8,
+        TokenKind.Int16Keyword => Int16,
+        TokenKind.UInt16Keyword => UInt16,
+        TokenKind.Int32Keyword => Int32,
+        TokenKind.UInt32Keyword => UInt32,
+        TokenKind.Int64Keyword => Int64,
+        TokenKind.UInt64Keyword => UInt64,
+        TokenKind.Float32Keyword => Float32,
+        TokenKind.Float64Keyword => Float64,
+        TokenKind.DecimalKeyword => Decimal,
+        TokenKind.BigintKeyword => BigInt,
+        TokenKind.StringKeyword => String,
+        TokenKind.BytesKeyword => Bytes,
+        TokenKind.DateTimeKeyword => DateTime,
+        TokenKind.GuidKeyword => Guid,
+        TokenKind.NumberKeyword => Number,
+        _ => throw new ArgumentException($"Token kind {kind} is not a primitive type")
+    };
+
+    public bool IsNumeric => this is TsPrimitiveType p && p.IsNumericType;
+}
+
+public sealed class TsPrimitiveType : TsType
+{
+    public override string Name { get; }
+    public override bool IsValueType { get; }
+    public override bool IsReferenceType => !IsValueType;
+    public bool IsNumericType { get; }
+
+    internal TsPrimitiveType(string name, bool isValueType)
+    {
+        Name = name;
+        IsValueType = isValueType;
+        IsNumericType = name is "int8" or "uint8" or "int16" or "uint16" or
+            "int32" or "uint32" or "int64" or "uint64" or
+            "float32" or "float64" or "decimal" or "bigint" or "number";
+    }
+}
+
+public sealed class TsClassType : TsType
+{
+    public override string Name { get; }
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+    public TsClassType? BaseType { get; set; }
+    public List<TsType> ImplementedInterfaces { get; } = new();
+    public Dictionary<string, TsField> Fields { get; } = new();
+    public Dictionary<string, TsProperty> Properties { get; } = new();
+    public Dictionary<string, TsMethod> Methods { get; } = new();
+    public TsMethod? Constructor { get; set; }
+    public List<TsTypeParameter> TypeParameters { get; } = new();
+    public int GenerationId { get; set; }
+
+    public TsClassType(string name)
+    {
+        Name = name;
+    }
+
+    public override bool IsAssignableTo(TsType other)
+    {
+        if (Equals(other)) return true;
+        if (BaseType != null) return BaseType.IsAssignableTo(other);
+        return ImplementedInterfaces.Any(i => i.IsAssignableTo(other));
+    }
+}
+
+public sealed class TsInterfaceType : TsType
+{
+    public override string Name { get; }
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+    public Dictionary<string, TsProperty> Properties { get; } = new();
+    public Dictionary<string, TsMethod> Methods { get; } = new();
+    public List<TsType> ExtendedInterfaces { get; } = new();
+    public List<TsTypeParameter> TypeParameters { get; } = new();
+    public bool IsStructural { get; set; } = true;
+
+    public TsInterfaceType(string name)
+    {
+        Name = name;
+    }
+
+    public override bool IsAssignableTo(TsType other)
+    {
+        if (Equals(other)) return true;
+        if (other is TsInterfaceType iface)
+        {
+            return iface.Properties.All(p =>
+                Properties.ContainsKey(p.Key) &&
+                Properties[p.Key].Type.IsAssignableTo(p.Value.Type));
+        }
+        return false;
+    }
+}
+
+public sealed class TsEnumType : TsType
+{
+    public override string Name { get; }
+    public override bool IsValueType => true;
+    public override bool IsReferenceType => false;
+    public Dictionary<string, TsEnumMember> Members { get; } = new();
+
+    public TsEnumType(string name)
+    {
+        Name = name;
+    }
+}
+
+public sealed class TsArrayType : TsType
+{
+    public TsType ElementType { get; }
+    public override string Name => $"{ElementType}[]";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+
+    public TsArrayType(TsType elementType)
+    {
+        ElementType = elementType;
+    }
+
+    public override bool IsAssignableTo(TsType other)
+    {
+        if (other is TsArrayType arr) return ElementType.IsAssignableTo(arr.ElementType);
+        return base.IsAssignableTo(other);
+    }
+}
+
+public sealed class TsMapType : TsType
+{
+    public TsType KeyType { get; }
+    public TsType ValueType { get; }
+    public override string Name => $"Map<{KeyType}, {ValueType}>";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+
+    public TsMapType(TsType keyType, TsType valueType)
+    {
+        KeyType = keyType;
+        ValueType = valueType;
+    }
+}
+
+public sealed class TsNullableType : TsType
+{
+    public TsType ElementType { get; }
+    public override string Name => $"{ElementType}?";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+
+    public TsNullableType(TsType elementType)
+    {
+        ElementType = elementType;
+    }
+
+    public override bool IsAssignableTo(TsType other)
+    {
+        if (other is TsNullableType nullable) return ElementType.IsAssignableTo(nullable.ElementType);
+        return ElementType.IsAssignableTo(other);
+    }
+}
+
+public sealed class TsPromiseType : TsType
+{
+    public TsType ElementType { get; }
+    public override string Name => $"Promise<{ElementType}>";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+
+    public TsPromiseType(TsType elementType)
+    {
+        ElementType = elementType;
+    }
+}
+
+public sealed class TsFunctionType : TsType
+{
+    public List<TsParameter> Parameters { get; }
+    public TsType ReturnType { get; }
+    public override string Name => $"({string.Join(", ", Parameters.Select(p => p.Type.Name))}) => {ReturnType.Name}";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+
+    public TsFunctionType(List<TsParameter> parameters, TsType returnType)
+    {
+        Parameters = parameters;
+        ReturnType = returnType;
+    }
+}
+
+public sealed class TsUnionType : TsType
+{
+    public List<TsType> Types { get; }
+    public override string Name => string.Join(" | ", Types.Select(t => t.Name));
+    public override bool IsValueType => Types.All(t => t.IsValueType);
+    public override bool IsReferenceType => Types.Any(t => t.IsReferenceType);
+
+    public TsUnionType(List<TsType> types)
+    {
+        Types = types;
+    }
+
+    public override bool IsAssignableTo(TsType other)
+    {
+        return Types.Any(t => t.IsAssignableTo(other));
+    }
+}
+
+public sealed class TsTypeParameter : TsType
+{
+    public string ParameterName { get; }
+    public override string Name => ParameterName;
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+    public TsType? Constraint { get; set; }
+
+    public TsTypeParameter(string parameterName)
+    {
+        ParameterName = parameterName;
+    }
+}
+
+public sealed class TsGenericType : TsType
+{
+    public TsType Definition { get; }
+    public List<TsType> TypeArguments { get; }
+    public override string Name => $"{Definition.Name}<{string.Join(", ", TypeArguments.Select(t => t.Name))}>";
+    public override bool IsValueType => Definition.IsValueType;
+    public override bool IsReferenceType => Definition.IsReferenceType;
+
+    public TsGenericType(TsType definition, List<TsType> typeArguments)
+    {
+        Definition = definition;
+        TypeArguments = typeArguments;
+    }
+}
+
+// Members
+public sealed class TsField
+{
+    public string Name { get; }
+    public TsType Type { get; }
+    public bool IsReadonly { get; set; }
+    public bool IsStatic { get; set; }
+    public TsAccessModifier AccessModifier { get; set; }
+
+    public TsField(string name, TsType type)
+    {
+        Name = name;
+        Type = type;
+    }
+}
+
+public sealed class TsProperty
+{
+    public string Name { get; }
+    public TsType Type { get; }
+    public bool IsReadonly { get; set; }
+    public TsAccessModifier AccessModifier { get; set; }
+
+    public TsProperty(string name, TsType type)
+    {
+        Name = name;
+        Type = type;
+    }
+}
+
+public sealed class TsMethod
+{
+    public string Name { get; }
+    public TsType ReturnType { get; }
+    public List<TsParameter> Parameters { get; }
+    public bool IsStatic { get; set; }
+    public bool IsAsync { get; set; }
+    public TsAccessModifier AccessModifier { get; set; }
+
+    public TsMethod(string name, TsType returnType, List<TsParameter> parameters)
+    {
+        Name = name;
+        ReturnType = returnType;
+        Parameters = parameters;
+    }
+}
+
+public sealed class TsParameter
+{
+    public string Name { get; }
+    public TsType Type { get; }
+    public bool HasDefault { get; set; }
+    public object? DefaultValue { get; set; }
+
+    public TsParameter(string name, TsType type)
+    {
+        Name = name;
+        Type = type;
+    }
+}
+
+public sealed class TsEnumMember
+{
+    public string Name { get; }
+    public int Value { get; set; }
+
+    public TsEnumMember(string name, int value)
+    {
+        Name = name;
+        Value = value;
+    }
+}
+
+public enum TsAccessModifier
+{
+    Public,
+    Private,
+    Protected,
+    Internal,
+}
