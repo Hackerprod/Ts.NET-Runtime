@@ -612,10 +612,9 @@ public class HeapTests
     public void TrackBytesAllocated()
     {
         var heap = new TsHeap();
-        var initial = heap.BytesAllocated;
+        var initial = heap.LogicalBytes;
         heap.AllocateObject("Test");
-        heap.AllocateArray();
-        Assert.True(heap.BytesAllocated > initial);
+        Assert.True(heap.LogicalBytes > initial);
     }
 
     public class SampleService

@@ -22,16 +22,69 @@ TypeScript Syntax (.ts files)
   Native Execution
 ```
 
-## Key Differences from TypeScript/JavaScript
+## Feature Status
 
-- **Real types at runtime**: `int32`, `uint64`, `float64`, `decimal` are real VM types, not just compile-time hints
-- **No prototype chains**: Classes have stable structure, field offsets known at compile time
-- **No implicit coercions**: `"hello" + 5` is a compile error
-- **No `undefined` propagation**: Nullability is explicit (`User?`)
-- **Reified generics**: `Repository<User>` knows about `User` at runtime
-- **Native .NET interop**: Direct call to C# methods without marshalling through JS
-- **Hot reload**: Generational module reloading with state migration
-- **Sandboxed execution**: Per-module permissions, instruction limits, memory limits
+### Implemented
+
+- Custom lexer/parser for TypeScript syntax (classes, functions, control flow, literals)
+- Type system with primitive types (`int32`, `uint64`, `float64`, `decimal`, etc.)
+- Typed IR (Intermediate Representation) with 105 opcodes
+- Bytecode compiler with branch patching and constant pooling
+- VM interpreter with typed stack, call frames, and instruction limit enforcement
+- Class support: constructors, fields, methods, `this` reference
+- Object literals and property access
+- String concatenation, numeric arithmetic, boolean logic
+- `decimal` type with full arithmetic and comparison opcodes
+- `int64`/`uint64` types with branch instruction support
+- Throw/catch statement support
+- Type checking: no implicit coercion (`"hello" + 5` is a compile error)
+- Argument count/type validation at bind time
+- Boolean condition warnings in `if`/`while`
+- Host interop: `[TsExport]` attribute for selective method export
+- Host interop: `ExportMode` (ExplicitOnly, Public, All)
+- Host interop: `Task<T>`/`ValueTask<T>` async support
+- Host interop: decimal, ulong, DTO object marshalling
+- Per-execution allocation budget (logical tracking, .NET GC handles physical memory)
+- Hot reload: generational module reloading with type compatibility checks
+- Module system with canonical file-based naming
+- Runtime limits: instruction count, memory budget, recursion depth, timeout
+- Multi-targeting: `net8.0` + `net9.0`
+- 82 passing tests (syntax, VM, integration)
+
+### Experimental
+
+- Hot reload with instance state migration
+- `TypeSharpProxy` for host function invocation from TS code
+- `DynamicHostProxy` for interface-based host function access
+- Permission system (TOML-based per-module permissions)
+
+### Planned
+
+- JIT compilation (expression trees -> native code)
+- Reified generics (`Repository<User>` runtime type info)
+- Nullability (`User?`) with explicit checks
+- Cross-module imports with type checking
+- Interface implementation validation
+- Virtual method dispatch
+- Generics with type constraints
+- `for...of` / `for...in` loops
+- Destructuring assignment
+- Spread operator
+- Async/await syntax in TS source
+- NuGet packages for public consumption
+- VS Code extension
+- Benchmarks suite
+
+### Not Supported
+
+- JavaScript/TypeScript standard library compatibility
+- Dynamic typing / `any` type
+- Prototype chains
+- `undefined` propagation
+- Implicit type coercion
+- Runtime eval()
+- CommonJS/ESM module loading from npm
+- Browser execution
 
 ## Primitive Types
 
@@ -41,12 +94,12 @@ int8         System.SByte
 uint8        System.Byte
 int16        System.Int16
 uint16       System.UInt16
-int32        System.Int32
+int32        System.Int32  (also aliased as `number` where unambiguous)
 uint32       System.UInt32
 int64        System.Int64
 uint64       System.UInt64
 float32      System.Single
-float64      System.Double (also aliased as `number`)
+float64      System.Double
 decimal      System.Decimal
 string       System.String
 bytes        System.Byte[]
@@ -116,11 +169,10 @@ TypeSharp/
   TypeSharp.Syntax/       Lexer, Parser, SyntaxTree
   TypeSharp.Semantics/    TypeSystem, Binder, Symbols, Diagnostics
   TypeSharp.IR/           Instructions, ControlFlow, Optimizations
-  TypeSharp.VM/           Bytecode, Interpreter, Memory, Scheduler
+  TypeSharp.VM/           Bytecode, Interpreter, Memory
   TypeSharp.Runtime/      Objects, Collections, Modules, Generations
   TypeSharp.Interop/      HostExports, Marshalling, Proxies
-  TypeSharp.Jit/          ExpressionTrees, ILBackend (planned)
-  TypeSharp.Hosting/      RuntimeBuilder, HotReload, DI
+  TypeSharp.Hosting/      RuntimeBuilder, HotReload, CLI
 ```
 
 ## Hot Reload

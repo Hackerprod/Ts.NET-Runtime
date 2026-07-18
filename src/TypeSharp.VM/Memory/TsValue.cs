@@ -254,14 +254,17 @@ public sealed class CallFrame
 // Heap for object allocation
 public sealed class TsHeap
 {
-    private readonly ConcurrentBag<TsObject> _objects = new();
-    private readonly ConcurrentBag<TsArray> _arrays = new();
-    private long _nextId;
-    private long _bytesAllocated;
+    private long _logicalBytes;
     private readonly long _maxBytes;
+    private long _objectsCreated;
+    private long _arraysCreated;
+    private long _mapsCreated;
 
-    public long ObjectsCreated => Interlocked.Read(ref _nextId);
-    public long BytesAllocated => Interlocked.Read(ref _bytesAllocated);
+    public long LogicalBytes => Interlocked.Read(ref _logicalBytes);
+    public long ObjectsCreated => Interlocked.Read(ref _objectsCreated);
+    public long ArraysCreated => Interlocked.Read(ref _arraysCreated);
+    public long MapsCreated => Interlocked.Read(ref _mapsCreated);
+    public long MaxBytes => _maxBytes;
 
     public TsHeap(long maxBytes = 64 * 1024 * 1024)
     {
@@ -270,29 +273,39 @@ public sealed class TsHeap
 
     public TsObject AllocateObject(string typeName)
     {
-        var obj = new TsObject(typeName, (int)Interlocked.Increment(ref _nextId));
-        Interlocked.Add(ref _bytesAllocated, 256); // rough estimate
-        return obj;
+        Interlocked.Add(ref _logicalBytes, 128);
+        Interlocked.Increment(ref _objectsCreated);
+        return new TsObject(typeName);
+    }
+
+    public TsObject AllocateObject(string typeName, int id)
+    {
+        Interlocked.Add(ref _logicalBytes, 128);
+        Interlocked.Increment(ref _objectsCreated);
+        return new TsObject(typeName, id);
     }
 
     public TsArray AllocateArray(int initialCapacity = 4)
     {
-        var arr = new TsArray(initialCapacity);
-        Interlocked.Add(ref _bytesAllocated, initialCapacity * 8 + 64);
-        return arr;
+        Interlocked.Add(ref _logicalBytes, 64 + (long)initialCapacity * 8);
+        Interlocked.Increment(ref _arraysCreated);
+        return new TsArray(initialCapacity);
     }
 
     public TsMap AllocateMap()
     {
-        var map = new TsMap();
-        Interlocked.Add(ref _bytesAllocated, 128);
-        return map;
+        Interlocked.Add(ref _logicalBytes, 64);
+        Interlocked.Increment(ref _mapsCreated);
+        return new TsMap();
     }
 
-    public void Collect()
+    public bool IsOverLimit() => Interlocked.Read(ref _logicalBytes) > _maxBytes;
+
+    public void Reset()
     {
-        // Simple GC - in production would use generational collection
+        Interlocked.Exchange(ref _logicalBytes, 0);
+        Interlocked.Exchange(ref _objectsCreated, 0);
+        Interlocked.Exchange(ref _arraysCreated, 0);
+        Interlocked.Exchange(ref _mapsCreated, 0);
     }
-
-    public bool IsOverLimit() => Interlocked.Read(ref _bytesAllocated) > _maxBytes;
 }

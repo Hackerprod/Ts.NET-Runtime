@@ -1,0 +1,26 @@
+<Project>
+  <PropertyGroup Condition="'$(IsTestProject)' != 'true'">
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(IsTestProject)' == 'true'">
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(IsTestProject)' != 'true'">
+    <PackageId>TypeSharp.$(MSBuildProjectName)</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>TypeSharp Contributors</Authors>
+    <Description>TypeSharp - TypeScript syntax on .NET runtime with custom parser, type system, IR, bytecode VM, and optional JIT.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/Hackerprod/Ts.NET-Runtime.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(IsTestProject)' != 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>
