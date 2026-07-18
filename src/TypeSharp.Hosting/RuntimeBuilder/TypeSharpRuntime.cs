@@ -1,3 +1,7 @@
+using System.Collections.Concurrent;
+using System.Collections.Immutable;
+using System.Diagnostics;
+using TypeSharp.Hosting.HotReload;
 using TypeSharp.Interop.HostExports;
 using TypeSharp.Runtime.Generations;
 using TypeSharp.Runtime.Modules;
@@ -59,13 +63,11 @@ public sealed class TypeSharpRuntimeBuilder
         var interpreter = new Interpreter(_limits);
         var moduleManager = new TsModuleManager(interpreter);
 
-        // Register host functions in interpreter
         foreach (var (key, desc) in _hostRegistry.Functions)
         {
             interpreter.RegisterHostFunction(desc.FunctionName, (name, args) => desc.Implementation(args));
         }
 
-        // Load source files
         var filesToLoad = new List<string>();
 
         foreach (var dir in _sourceDirectories)
@@ -79,7 +81,6 @@ public sealed class TypeSharpRuntimeBuilder
 
         filesToLoad.AddRange(_sourceFiles);
 
-        // Compile and register all modules
         foreach (var file in filesToLoad)
         {
             await moduleManager.LoadModuleAsync(file);
@@ -91,12 +92,16 @@ public sealed class TypeSharpRuntimeBuilder
             hotReloadManager = new HotReloadManager();
         }
 
-        return new TypeSharpRuntime(
+        var runtime = new TypeSharpRuntime(
             interpreter,
             moduleManager,
             _hostRegistry,
             hotReloadManager,
             _limits);
+
+        runtime.InitializeGeneration();
+
+        return runtime;
     }
 }
 
@@ -109,10 +114,14 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
     private readonly VMRuntimeLimits _limits;
     private readonly FileSystemWatcher? _fileWatcher;
     private readonly SemaphoreSlim _reloadLock = new(1, 1);
+    private RuntimeGeneration? _activeGeneration;
+    private int _nextGenerationId;
     private bool _disposed;
 
     public ModuleRegistry Modules => _moduleManager.Registry;
     public HotReloadManager? HotReload => _hotReloadManager;
+    public RuntimeGeneration? ActiveGeneration => _activeGeneration;
+    public int NextGenerationId => Interlocked.Increment(ref _nextGenerationId);
 
     internal TypeSharpRuntime(
         Interpreter interpreter,
@@ -126,6 +135,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         _hostRegistry = hostRegistry;
         _hotReloadManager = hotReloadManager;
         _limits = limits;
+        _nextGenerationId = 0;
 
         if (_hotReloadManager != null)
         {
@@ -135,27 +145,67 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         }
     }
 
-    public async Task<TsModule> ImportAsync(string moduleName)
+    public void InitializeGeneration()
     {
-        var module = _moduleManager.Registry.GetModule(moduleName);
-        if (module != null) return module;
-
-        // Try to find and load the file
-        var files = _moduleManager.Registry.Modules.Values
-            .Select(m => m.FilePath)
-            .Concat(Directory.GetFiles(".", "*.ts", SearchOption.AllDirectories))
-            .Distinct();
-
-        foreach (var file in files)
+        var modules = new Dictionary<string, TsModule>();
+        foreach (var mod in _moduleManager.Registry.GetActiveModules())
         {
-            if (Path.GetFileNameWithoutExtension(file) == moduleName ||
-                file.Replace("\\", "/").EndsWith($"{moduleName}.ts"))
+            modules[mod.Name] = mod;
+        }
+
+        int genId = NextGenerationId;
+        var gen = new RuntimeGeneration(genId, modules)
+        {
+            IsCurrent = true,
+            SwappedAt = DateTime.UtcNow
+        };
+
+        var previous = _activeGeneration;
+        Interlocked.Exchange(ref _activeGeneration, gen);
+
+        if (previous != null)
+        {
+            previous.IsCurrent = false;
+        }
+    }
+
+    public GenerationLease? AcquireGeneration()
+    {
+        var gen = _activeGeneration;
+        if (gen == null || !gen.IsCurrent)
+            return null;
+
+        return new GenerationLease(gen);
+    }
+
+    public TsValue? InvokeWithLease(string functionName, TsValue[]? args = null)
+    {
+        using var lease = AcquireGeneration();
+        if (lease == null)
+            throw new InvalidOperationException("No active generation");
+
+        return ExecuteWithGeneration(lease.Generation, functionName, args);
+    }
+
+    private TsValue? ExecuteWithGeneration(RuntimeGeneration generation, string functionName, TsValue[]? args)
+    {
+        foreach (var mod in generation.Modules.Values)
+        {
+            if (mod.Bytecode.FunctionIndex.ContainsKey(functionName))
             {
-                return await _moduleManager.LoadModuleAsync(file);
+                var context = _interpreter.CreateContext();
+                try
+                {
+                    return _interpreter.Execute(mod.Bytecode, functionName, args, context);
+                }
+                finally
+                {
+                    context.Dispose();
+                }
             }
         }
 
-        throw new InvalidOperationException($"Module '{moduleName}' not found");
+        throw new InvalidOperationException($"Function '{functionName}' not found in generation {generation.Id}");
     }
 
     public async Task<T> InvokeAsync<T>(string moduleName, string functionName, params object[] args)
@@ -182,6 +232,28 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         throw new InvalidOperationException($"Function '{functionName}' not found in any module");
     }
 
+    public async Task<TsModule> ImportAsync(string moduleName)
+    {
+        var module = _moduleManager.Registry.GetModule(moduleName);
+        if (module != null) return module;
+
+        var files = _moduleManager.Registry.Modules.Values
+            .Select(m => m.FilePath)
+            .Concat(Directory.GetFiles(".", "*.ts", SearchOption.AllDirectories))
+            .Distinct();
+
+        foreach (var file in files)
+        {
+            if (Path.GetFileNameWithoutExtension(file) == moduleName ||
+                file.Replace("\\", "/").EndsWith($"{moduleName}.ts"))
+            {
+                return await _moduleManager.LoadModuleAsync(file);
+            }
+        }
+
+        throw new InvalidOperationException($"Module '{moduleName}' not found");
+    }
+
     public void WatchDirectory(string path)
     {
         if (_fileWatcher == null)
@@ -205,39 +277,49 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             if (!_hotReloadManager.HasChanges(e.FullPath, source))
                 return;
 
-            var gen = _hotReloadManager.BeginNewGeneration();
+            var previous = _activeGeneration;
+            int genId = NextGenerationId;
 
             try
             {
                 await _moduleManager.LoadModuleAsync(e.FullPath);
                 _hotReloadManager.CommitSourceHash(e.FullPath, source);
 
-                // Deactivate old modules with same names
-                var newModule = _moduleManager.Registry.Modules.Values
-                    .Where(m => m.GenerationId == gen.GenerationId)
-                    .ToList();
-
-                foreach (var mod in newModule)
+                var newModules = new Dictionary<string, TsModule>();
+                foreach (var mod in _moduleManager.Registry.GetActiveModules())
                 {
-                    var oldModules = _moduleManager.Registry.Modules.Values
-                        .Where(m => m.GenerationId < gen.GenerationId &&
-                                    m.Name == mod.Name && m.IsActive)
-                        .ToList();
-
-                    foreach (var old in oldModules)
-                    {
-                        old.IsActive = false;
-                    }
+                    newModules[mod.Name] = mod;
                 }
 
-                System.Diagnostics.Debug.WriteLine(
-                    $"[HotReload] Reloaded {Path.GetFileName(e.FullPath)} (gen {gen.GenerationId})");
+                var candidate = new RuntimeGeneration(genId, newModules);
+
+                if (!candidate.Validate())
+                    return;
+
+                if (previous != null)
+                    previous.IsCurrent = false;
+
+                Interlocked.Exchange(ref _activeGeneration, candidate);
+                candidate.IsCurrent = true;
+                candidate.SwappedAt = DateTime.UtcNow;
+
+                ModuleReloaded?.Invoke(this, new ModuleReloadedEventArgs(
+                    Path.GetFileNameWithoutExtension(e.FullPath), genId));
+
+                Debug.WriteLine($"[HotReload] Reloaded {Path.GetFileName(e.FullPath)} (gen {genId})");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"[HotReload] Failed to reload {Path.GetFileName(e.FullPath)}: {ex.Message}");
-                gen.IsActive = false;
+                if (previous != null)
+                {
+                    Interlocked.Exchange(ref _activeGeneration, previous);
+                    previous.IsCurrent = true;
+                }
+
+                ReloadError?.Invoke(this, new ModuleReloadErrorEventArgs(
+                    Path.GetFileNameWithoutExtension(e.FullPath), ex.Message));
+
+                Debug.WriteLine($"[HotReload] Failed to reload {Path.GetFileName(e.FullPath)}: {ex.Message}");
             }
         }
         finally
@@ -245,6 +327,9 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             _reloadLock.Release();
         }
     }
+
+    public event EventHandler<ModuleReloadedEventArgs>? ModuleReloaded;
+    public event EventHandler<ModuleReloadErrorEventArgs>? ReloadError;
 
     public async ValueTask DisposeAsync()
     {

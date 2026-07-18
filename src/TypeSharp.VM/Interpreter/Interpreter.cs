@@ -12,23 +12,73 @@ public sealed class VMRuntimeLimits
     public int MaximumRecursionDepth { get; set; } = 256;
 }
 
-public sealed class VMScheduler
+public sealed class ExecutionContext : IDisposable
 {
-    private readonly ConcurrentDictionary<int, CancellationTokenSource> _runningFrames = new();
-    private int _nextId;
+    private readonly CancellationTokenSource _cts;
+    private bool _disposed;
 
-    public int Schedule(CallFrame frame, CancellationToken ct)
+    public long InstructionCount { get; set; }
+    public Stack<CallFrame> CallStack { get; } = new();
+    public CancellationToken CancellationToken => _cts.Token;
+    public TsHeap Heap { get; }
+    public VMRuntimeLimits Limits { get; }
+
+    public ExecutionContext(VMRuntimeLimits limits, TsHeap heap)
     {
-        int id = Interlocked.Increment(ref _nextId);
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _runningFrames[id] = cts;
-        return id;
+        Limits = limits;
+        Heap = heap;
+        _cts = new CancellationTokenSource(limits.ExecutionTimeout);
     }
 
-    public void Complete(int id)
+    public void IncrementInstruction()
     {
-        if (_runningFrames.TryRemove(id, out var cts))
-            cts.Dispose();
+        InstructionCount++;
+        if (InstructionCount > Limits.MaximumInstructions)
+            throw new InvalidOperationException("Execution limit exceeded");
+    }
+
+    public void CheckRecursionDepth()
+    {
+        if (CallStack.Count > Limits.MaximumRecursionDepth)
+            throw new InvalidOperationException("Maximum recursion depth exceeded");
+    }
+
+    public void CheckMemory()
+    {
+        if (Heap.IsOverLimit())
+            throw new InvalidOperationException("Memory limit exceeded");
+    }
+
+    public void CheckCancellation()
+    {
+        CancellationToken.ThrowIfCancellationRequested();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _cts.Dispose();
+    }
+}
+
+public sealed class ExecutionLease : IDisposable
+{
+    private readonly ExecutionContext _context;
+    private bool _disposed;
+
+    public ExecutionContext Context => _context;
+
+    public ExecutionLease(ExecutionContext context)
+    {
+        _context = context;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _context.Dispose();
     }
 }
 
@@ -38,11 +88,7 @@ public sealed class Interpreter
 {
     private readonly TsHeap _heap;
     private readonly VMRuntimeLimits _limits;
-    private readonly VMScheduler _scheduler;
     private readonly Dictionary<string, HostFunctionDelegate> _hostFunctions = new();
-    private readonly Stack<CallFrame> _callStack = new();
-    private long _instructionCount;
-    private CancellationToken _cancellationToken;
 
     public TsHeap Heap => _heap;
 
@@ -50,7 +96,6 @@ public sealed class Interpreter
     {
         _limits = limits ?? new VMRuntimeLimits();
         _heap = new TsHeap(_limits.MaximumMemoryBytes);
-        _scheduler = new VMScheduler();
     }
 
     public void RegisterHostFunction(string name, HostFunctionDelegate func)
@@ -58,44 +103,51 @@ public sealed class Interpreter
         _hostFunctions[name] = func;
     }
 
-    public TsValue? Execute(BytecodeModule module, string entryPoint, TsValue[]? args = null)
+    public ExecutionContext CreateContext()
     {
-        _cancellationToken = new CancellationTokenSource(_limits.ExecutionTimeout).Token;
-
-        if (!module.FunctionIndex.TryGetValue(entryPoint, out int funcIdx))
-            throw new InvalidOperationException($"Entry point '{entryPoint}' not found");
-
-        var func = module.Functions[funcIdx];
-        var frame = new CallFrame(func);
-
-        if (args != null)
-        {
-            for (int i = 0; i < Math.Min(args.Length, func.ParameterCount); i++)
-                frame.Locals[i] = args[i];
-        }
-
-        _callStack.Push(frame);
-        return ExecuteFrame(frame, module);
+        return new ExecutionContext(_limits, _heap);
     }
 
-    private TsValue? ExecuteFrame(CallFrame frame, BytecodeModule module)
+    public TsValue? Execute(BytecodeModule module, string entryPoint, TsValue[]? args = null, ExecutionContext? context = null)
+    {
+        bool ownsContext = context == null;
+        var ctx = context ?? CreateContext();
+
+        try
+        {
+            if (!module.FunctionIndex.TryGetValue(entryPoint, out int funcIdx))
+                throw new InvalidOperationException($"Entry point '{entryPoint}' not found");
+
+            var func = module.Functions[funcIdx];
+            var frame = new CallFrame(func);
+
+            if (args != null)
+            {
+                for (int i = 0; i < Math.Min(args.Length, func.ParameterCount); i++)
+                    frame.Locals[i] = args[i];
+            }
+
+            ctx.CallStack.Push(frame);
+            return ExecuteFrame(frame, module, ctx);
+        }
+        finally
+        {
+            if (ownsContext)
+                ctx.Dispose();
+        }
+    }
+
+    private TsValue? ExecuteFrame(CallFrame frame, BytecodeModule module, ExecutionContext ctx)
     {
         var bytecode = frame.Function.Instructions;
         var strings = frame.Function.StringConstants;
 
         while (frame.InstructionPointer < bytecode.Length)
         {
-            _instructionCount++;
-            if (_instructionCount > _limits.MaximumInstructions)
-                throw new InvalidOperationException("Execution limit exceeded");
-
-            if (_callStack.Count > _limits.MaximumRecursionDepth)
-                throw new InvalidOperationException("Maximum recursion depth exceeded");
-
-            if (_heap.IsOverLimit())
-                throw new InvalidOperationException("Memory limit exceeded");
-
-            _cancellationToken.ThrowIfCancellationRequested();
+            ctx.IncrementInstruction();
+            ctx.CheckRecursionDepth();
+            ctx.CheckMemory();
+            ctx.CheckCancellation();
 
             byte op = bytecode[frame.InstructionPointer++];
 
@@ -463,15 +515,14 @@ public sealed class Interpreter
                         for (int i = argCount - 1; i >= 0; i--)
                             newFrame.Locals[i] = frame.Pop();
 
-                        _callStack.Push(newFrame);
-                        var result = ExecuteFrame(newFrame, module);
-                        _callStack.Pop();
+                        ctx.CallStack.Push(newFrame);
+                        var result = ExecuteFrame(newFrame, module, ctx);
+                        ctx.CallStack.Pop();
 
                         frame.Push(result ?? TsValue.Null);
                     }
                     else
                     {
-                        // Unknown function - pop args and push null
                         for (int i = 0; i < argCount; i++) frame.Pop();
                         frame.Push(TsValue.Null);
                     }
@@ -495,7 +546,7 @@ public sealed class Interpreter
                     int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var typeName = strings[typeIdx];
 
-                    var obj = _heap.AllocateObject(typeName);
+                    var obj = ctx.Heap.AllocateObject(typeName);
 
                     string ctorName = $"{typeName}::.ctor";
                     if (module.FunctionIndex.TryGetValue(ctorName, out int ctorIdx))
@@ -507,9 +558,9 @@ public sealed class Interpreter
                         for (int i = 0; i < argCount; i++)
                             ctorFrame.Locals[i + 1] = frame.Pop();
 
-                        _callStack.Push(ctorFrame);
-                        ExecuteFrame(ctorFrame, module);
-                        _callStack.Pop();
+                        ctx.CallStack.Push(ctorFrame);
+                        ExecuteFrame(ctorFrame, module, ctx);
+                        ctx.CallStack.Pop();
                     }
                     else
                     {
