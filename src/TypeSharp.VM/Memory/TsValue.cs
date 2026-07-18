@@ -113,6 +113,14 @@ public sealed class TsArrayValue : TsValue
     public TsArrayValue(TsArray value) => Value = value;
 }
 
+public sealed class TsMapValue : TsValue
+{
+    public TsMap Value { get; }
+    public override TsValueType ValueType => TsValueType.Map;
+    public override object? RawValue => Value;
+    public TsMapValue(TsMap value) => Value = value;
+}
+
 // Runtime objects
 public sealed class TsObject
 {
