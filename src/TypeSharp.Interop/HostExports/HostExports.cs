@@ -128,6 +128,38 @@ public sealed class HostRegistry
         var result = method.Invoke(instance, managedArgs);
 
         if (result == null) return null;
+
+        if (result is Task<object> taskObj)
+        {
+            taskObj.Wait();
+            var taskResult = taskObj.Result;
+            return TypeSharp.Interop.Marshalling.Marshaller.FromManaged(taskResult);
+        }
+
+        var resultType = result.GetType();
+        if (resultType.IsGenericType)
+        {
+            var genericDef = resultType.GetGenericTypeDefinition();
+            if (genericDef == typeof(Task<>) || genericDef == typeof(ValueTask<>))
+            {
+                var getResultProperty = resultType.GetProperty("Result");
+                var taskResult = getResultProperty?.GetValue(result);
+                return TypeSharp.Interop.Marshalling.Marshaller.FromManaged(taskResult);
+            }
+        }
+
+        if (result is Task nonGenericTask)
+        {
+            nonGenericTask.Wait();
+            return null;
+        }
+
+        if (result is ValueTask valueTask)
+        {
+            valueTask.AsTask().Wait();
+            return null;
+        }
+
         return TypeSharp.Interop.Marshalling.Marshaller.FromManaged(result);
     }
 }

@@ -8,50 +8,88 @@ public static class Marshaller
     {
         if (value == null) return TsValue.Null;
 
+        if (value is TsValue tv) return tv;
+
         return value switch
         {
             bool b => new TsBoolValue(b),
             int i => TsValue.FromInt32(i),
             long l => TsValue.FromInt64(l),
             ulong ul => TsValue.FromUInt64(ul),
-            uint ui => TsValue.FromInt32((int)ui),
+            uint ui => TsValue.FromInt64(ui),
             ushort us => TsValue.FromInt32(us),
             short s => TsValue.FromInt32(s),
             byte bt => TsValue.FromInt32(bt),
             sbyte sbt => TsValue.FromInt32(sbt),
             float f => TsValue.FromFloat32(f),
             double d => TsValue.FromFloat64(d),
-            decimal dec => TsValue.FromFloat64((double)dec),
+            decimal dec => TsValue.FromDecimal(dec),
             string str => TsValue.FromString(str),
             Guid g => TsValue.FromString(g.ToString()),
             DateTime dt => TsValue.FromString(dt.ToString("O")),
             DateTimeOffset dto => TsValue.FromString(dto.ToString("O")),
             byte[] bytes => TsValue.FromString(Convert.ToBase64String(bytes)),
-            TsValue tv => tv,
-            _ => TsValue.FromString(value.ToString() ?? ""),
+            _ => WrapAsObject(value),
         };
+    }
+
+    private static TsValue WrapAsObject(object value)
+    {
+        var obj = new TsObject(value.GetType().Name);
+        var type = value.GetType();
+        var properties = type.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+
+        foreach (var prop in properties)
+        {
+            if (prop.CanRead)
+            {
+                try
+                {
+                    var propValue = prop.GetValue(value);
+                    obj.SetField(prop.Name, FromManaged(propValue));
+                }
+                catch
+                {
+                    obj.SetField(prop.Name, TsValue.Null);
+                }
+            }
+        }
+
+        return new TsObjectValue(obj);
     }
 
     public static object? ToManaged(TsValue value, Type targetType)
     {
         if (value is TsNull) return null;
+        if (value is TsVoid) return null;
+
+        if (targetType == typeof(TsValue))
+            return value;
+
+        if (targetType == typeof(object))
+            return value.RawValue ?? value.ToString();
 
         if (targetType == typeof(bool) || targetType == typeof(bool?))
             return value is TsBoolValue bv ? bv.Value : false;
 
         if (targetType == typeof(int) || targetType == typeof(int?))
-            return value is TsInt32Value iv ? iv.Value : 0;
+            return value is TsInt32Value iv ? iv.Value :
+                   value is TsFloat64Value dv ? (int)dv.Value : 0;
 
         if (targetType == typeof(long) || targetType == typeof(long?))
             return value is TsInt64Value lv ? lv.Value :
-                   value is TsInt32Value iv2 ? iv2.Value : 0L;
+                   value is TsInt32Value iv ? iv.Value :
+                   value is TsFloat64Value dv ? (long)dv.Value : 0L;
 
         if (targetType == typeof(ulong) || targetType == typeof(ulong?))
             return value is TsUInt64Value uv ? uv.Value :
-                   value is TsInt64Value lv ? (ulong)lv.Value : 0UL;
+                   value is TsInt64Value lv ? (ulong)lv.Value :
+                   value is TsInt32Value iv ? (ulong)iv.Value :
+                   value is TsFloat64Value dv ? (ulong)dv.Value : 0UL;
 
         if (targetType == typeof(uint) || targetType == typeof(uint?))
-            return value is TsInt32Value iv ? (uint)iv.Value : 0U;
+            return value is TsInt32Value iv ? (uint)iv.Value :
+                   value is TsInt64Value lv ? (uint)lv.Value : 0U;
 
         if (targetType == typeof(short) || targetType == typeof(short?))
             return value is TsInt32Value iv ? (short)iv.Value : (short)0;
@@ -74,7 +112,8 @@ public static class Marshaller
                    value is TsFloat32Value fv ? fv.Value : 0.0;
 
         if (targetType == typeof(decimal) || targetType == typeof(decimal?))
-            return value is TsFloat64Value dv ? (decimal)dv.Value : 0m;
+            return value is TsDecimalValue decv ? decv.Value :
+                   value is TsFloat64Value dv ? (decimal)dv.Value : 0m;
 
         if (targetType == typeof(string))
             return value is TsStringValue sv ? sv.Value : value.ToString();
@@ -107,9 +146,6 @@ public static class Marshaller
             return Array.Empty<byte>();
         }
 
-        if (targetType == typeof(TsValue))
-            return value;
-
         return value.ToString();
     }
 
@@ -118,10 +154,7 @@ public static class Marshaller
         var result = new TsValue[args.Length];
         for (int i = 0; i < args.Length; i++)
         {
-            if (i < parameterTypes.Length)
-                result[i] = FromManaged(args[i]);
-            else
-                result[i] = FromManaged(args[i]);
+            result[i] = FromManaged(args[i]);
         }
         return result;
     }

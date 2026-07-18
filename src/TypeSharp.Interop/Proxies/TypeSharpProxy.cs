@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Reflection.Emit;
 using TypeSharp.Interop.HostExports;
 using TypeSharp.Interop.Marshalling;
 using TypeSharp.Runtime.Objects;
@@ -10,63 +9,37 @@ namespace TypeSharp.Interop.Proxies;
 public sealed class HostProxyGenerator
 {
     private readonly HostRegistry _registry;
-    private readonly ModuleBuilder _moduleBuilder;
 
     public HostProxyGenerator(HostRegistry registry)
     {
         _registry = registry;
-        var assemblyName = new AssemblyName("TypeSharp.DynamicProxies");
-        var assemblyBuilder = AssemblyBuilder.DefineDynamicAssembly(assemblyName, AssemblyBuilderAccess.Run);
-        _moduleBuilder = assemblyBuilder.DefineDynamicModule("Proxies");
     }
 
-    public object GenerateInterfaceProxy(Type interfaceType)
+    public object GenerateInterfaceProxy(Type interfaceType, string moduleName)
     {
-        var typeName = $"Proxy_{interfaceType.Name}_{Guid.NewGuid():N}";
-        var typeBuilder = _moduleBuilder.DefineType(typeName,
-            TypeAttributes.Public | TypeAttributes.Class,
-            null,
-            new[] { interfaceType });
+        return new DynamicHostProxy(_registry, interfaceType, moduleName);
+    }
+}
 
-        var methods = interfaceType.GetMethods();
-        foreach (var method in methods)
-        {
-            var parameters = method.GetParameters();
-            var paramTypes = parameters.Select(p => p.ParameterType).ToArray();
+public sealed class DynamicHostProxy
+{
+    private readonly HostRegistry _registry;
+    private readonly Type _interfaceType;
+    private readonly string _moduleName;
 
-            var methodBuilder = typeBuilder.DefineMethod(method.Name,
-                MethodAttributes.Public | MethodAttributes.Virtual,
-                method.ReturnType,
-                paramTypes);
+    public DynamicHostProxy(HostRegistry registry, Type interfaceType, string moduleName)
+    {
+        _registry = registry;
+        _interfaceType = interfaceType;
+        _moduleName = moduleName;
+    }
 
-            var il = methodBuilder.GetILGenerator();
-
-            // Create TsValue array from arguments
-            il.Emit(OpCodes.Ldc_I4, paramTypes.Length);
-            il.Emit(OpCodes.Newarr, typeof(TsValue));
-
-            for (int i = 0; i < paramTypes.Length; i++)
-            {
-                il.Emit(OpCodes.Dup);
-                il.Emit(OpCodes.Ldc_I4, i);
-                il.Emit(OpCodes.Ldarg, i + 1);
-                il.Emit(OpCodes.Call, typeof(Marshaller).GetMethod("FromManaged")!);
-                il.Emit(OpCodes.Stelem_Ref);
-            }
-
-            // Call host function
-            il.Emit(OpCodes.Ldstr, "");
-            il.Emit(OpCodes.Ldstr, method.Name);
-            il.Emit(OpCodes.Callvirt, typeof(HostRegistry).GetMethod("GetFunction")!);
-
-            // Extract and convert result
-            il.Emit(OpCodes.Pop);
-            il.Emit(OpCodes.Ldnull);
-            il.Emit(OpCodes.Ret);
-        }
-
-        var proxyType = typeBuilder.CreateType()!;
-        return Activator.CreateInstance(proxyType)!;
+    public object? InvokeMethod(string methodName, params TsValue[] args)
+    {
+        var desc = _registry.GetFunction(_moduleName, methodName);
+        if (desc == null)
+            throw new MissingMethodException(_moduleName, methodName);
+        return desc.Implementation(args);
     }
 }
 

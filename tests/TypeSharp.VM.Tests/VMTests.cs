@@ -3,6 +3,8 @@ using TypeSharp.VM.Interpreter;
 using TypeSharp.VM.Memory;
 using TypeSharp.IR;
 using TypeSharp.Interop.HostExports;
+using TypeSharp.Interop.Marshalling;
+using TypeSharp.Interop.Proxies;
 using Xunit;
 
 namespace TypeSharp.VM.Tests;
@@ -676,5 +678,289 @@ public class HeapTests
         registry.RegisterObject("math", service, ExportMode.ExplicitOnly);
 
         Assert.False(registry.Functions.ContainsKey("math.Subtract"));
+    }
+}
+
+public class InteropTests
+{
+    public class MathService
+    {
+        [TsExport("add")]
+        public int Add(int a, int b) => a + b;
+
+        [TsExport("multiply")]
+        public int Multiply(int a, int b) => a * b;
+
+        [TsExport("get_decimal")]
+        public decimal GetDecimal() => 123.456m;
+
+        [TsExport("get_ulong")]
+        public ulong GetUlong() => ulong.MaxValue;
+
+        [TsExport("echo_string")]
+        public string EchoString(string s) => s;
+
+        [TsExport("get_async_value")]
+        public Task<int> GetAsyncValue() => Task.FromResult(42);
+
+        [TsExport("get_async_string")]
+        public ValueTask<string> GetAsyncString() => new ValueTask<string>("hello");
+
+        [TsExport("get_void_task")]
+        public Task DoWorkAsync()
+        {
+            return Task.CompletedTask;
+        }
+
+        [TsExport("is_even")]
+        public bool IsEven(int n) => n % 2 == 0;
+    }
+
+    public class StringService
+    {
+        [TsExport("get")]
+        public string Get(string key) => $"value:{key}";
+
+        [TsExport("concat")]
+        public string Concat(string a, string b) => a + b;
+    }
+
+    [Fact]
+    public void ModuleIdentity_UsesFullKey()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+
+        var desc = registry.GetFunction("math", "add");
+        Assert.NotNull(desc);
+        Assert.Equal("math", desc.ModuleName);
+        Assert.Equal("add", desc.FunctionName);
+    }
+
+    [Fact]
+    public void NoCollision_DifferentModulesSameMethodName()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+        registry.RegisterObject("strings", new StringService(), ExportMode.ExplicitOnly);
+
+        var mathGet = registry.GetFunction("math", "add");
+        var stringGet = registry.GetFunction("strings", "get");
+
+        Assert.NotNull(mathGet);
+        Assert.NotNull(stringGet);
+        Assert.NotEqual(mathGet.Implementation, stringGet.Implementation);
+    }
+
+    [Fact]
+    public void InterpreterRegistration_UsesFullKey()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+        registry.RegisterObject("strings", new StringService(), ExportMode.ExplicitOnly);
+
+        var proxy = new TypeSharpProxy(registry);
+
+        var mathResult = proxy.InvokeHostFunction("math", "add", new[] { TsValue.FromInt32(3), TsValue.FromInt32(4) });
+        Assert.Equal(7, ((TsInt32Value)mathResult!).Value);
+
+        var stringResult = proxy.InvokeHostFunction("strings", "get", new[] { TsValue.FromString("key1") });
+        Assert.Equal("value:key1", ((TsStringValue)stringResult!).Value);
+
+        var crossResult = proxy.InvokeHostFunction("math", "get_decimal", Array.Empty<TsValue>());
+        Assert.NotNull(crossResult);
+        Assert.Equal(123.456m, ((TsDecimalValue)crossResult!).Value);
+    }
+
+    [Fact]
+    public void DecimalMarshalling_RoundTrip()
+    {
+        var input = 123.456m;
+        var tsValue = Marshaller.FromManaged(input);
+        Assert.IsType<TsDecimalValue>(tsValue);
+
+        var output = Marshaller.ToManaged(tsValue, typeof(decimal));
+        Assert.Equal(input, output);
+    }
+
+    [Fact]
+    public void DecimalMarshalling_PreservesPrecision()
+    {
+        var input = 123456789.123456789m;
+        var tsValue = Marshaller.FromManaged(input);
+        var output = Marshaller.ToManaged(tsValue, typeof(decimal));
+        Assert.Equal(input, output);
+    }
+
+    [Fact]
+    public void UInt64Marshalling_RoundTrip()
+    {
+        var input = ulong.MaxValue;
+        var tsValue = Marshaller.FromManaged(input);
+        Assert.IsType<TsUInt64Value>(tsValue);
+
+        var output = Marshaller.ToManaged(tsValue, typeof(ulong));
+        Assert.Equal(input, output);
+    }
+
+    [Fact]
+    public void UInt64Marshalling_FromInt32()
+    {
+        var tsValue = TsValue.FromInt32(42);
+        var output = Marshaller.ToManaged(tsValue, typeof(ulong));
+        Assert.Equal(42UL, output);
+    }
+
+    [Fact]
+    public void DTO_WrapsAsObject()
+    {
+        var dto = new { Name = "test", Value = 42 };
+        var tsValue = Marshaller.FromManaged(dto);
+
+        Assert.IsType<TsObjectValue>(tsValue);
+        var obj = ((TsObjectValue)tsValue).Value;
+        Assert.Equal("test", ((TsStringValue)obj.GetField("Name")).Value);
+        Assert.Equal(42, ((TsInt32Value)obj.GetField("Value")).Value);
+    }
+
+    [Fact]
+    public void AsyncMethod_ReturnsResult()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+
+        var desc = registry.GetFunction("math", "get_async_value");
+        Assert.NotNull(desc);
+
+        var result = desc!.Implementation(Array.Empty<TsValue>());
+        Assert.NotNull(result);
+        Assert.Equal(42, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void AsyncMethod_ValueTask_ReturnsResult()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+
+        var desc = registry.GetFunction("math", "get_async_string");
+        Assert.NotNull(desc);
+
+        var result = desc!.Implementation(Array.Empty<TsValue>());
+        Assert.NotNull(result);
+        Assert.Equal("hello", ((TsStringValue)result!).Value);
+    }
+
+    [Fact]
+    public void AsyncMethod_VoidTask_DoesNotThrow()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+
+        var desc = registry.GetFunction("math", "get_void_task");
+        Assert.NotNull(desc);
+
+        var ex = Record.Exception(() => desc!.Implementation(Array.Empty<TsValue>()));
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void Proxy_InvokesCorrectModule()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+        registry.RegisterObject("strings", new StringService(), ExportMode.ExplicitOnly);
+
+        var proxy = new TypeSharpProxy(registry);
+
+        var mathResult = proxy.InvokeHostFunction("math", "add", new[] { TsValue.FromInt32(10), TsValue.FromInt32(20) });
+        Assert.NotNull(mathResult);
+        Assert.Equal(30, ((TsInt32Value)mathResult!).Value);
+
+        var stringResult = proxy.InvokeHostFunction("strings", "get", new[] { TsValue.FromString("foo") });
+        Assert.NotNull(stringResult);
+        Assert.Equal("value:foo", ((TsStringValue)stringResult!).Value);
+    }
+
+    [Fact]
+    public void Proxy_MissingFunction_ReturnsNull()
+    {
+        var registry = new HostRegistry();
+        var proxy = new TypeSharpProxy(registry);
+
+        var result = proxy.InvokeHostFunction("nonexistent", "func", Array.Empty<TsValue>());
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void InvokeHostFunction_IsEven_True()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+
+        var desc = registry.GetFunction("math", "is_even");
+        Assert.NotNull(desc);
+
+        var result = desc!.Implementation(new[] { TsValue.FromInt32(4) });
+        Assert.NotNull(result);
+        Assert.True(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
+    public void InvokeHostFunction_IsEven_False()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+
+        var desc = registry.GetFunction("math", "is_even");
+        Assert.NotNull(desc);
+
+        var result = desc!.Implementation(new[] { TsValue.FromInt32(3) });
+        Assert.NotNull(result);
+        Assert.False(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
+    public void DynamicHostProxy_Invokes()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+
+        var generator = new HostProxyGenerator(registry);
+        var proxy = generator.GenerateInterfaceProxy(typeof(MathService), "math");
+
+        var result = ((DynamicHostProxy)proxy).InvokeMethod("add", TsValue.FromInt32(5), TsValue.FromInt32(7));
+        Assert.NotNull(result);
+        Assert.Equal(12, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void DecimalMarshalling_ViaHostFunction()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+
+        var desc = registry.GetFunction("math", "get_decimal");
+        Assert.NotNull(desc);
+
+        var result = desc!.Implementation(Array.Empty<TsValue>());
+        Assert.NotNull(result);
+        Assert.IsType<TsDecimalValue>(result);
+        Assert.Equal(123.456m, ((TsDecimalValue)result!).Value);
+    }
+
+    [Fact]
+    public void UInt64Marshalling_ViaHostFunction()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterObject("math", new MathService(), ExportMode.ExplicitOnly);
+
+        var desc = registry.GetFunction("math", "get_ulong");
+        Assert.NotNull(desc);
+
+        var result = desc!.Implementation(Array.Empty<TsValue>());
+        Assert.NotNull(result);
+        Assert.IsType<TsUInt64Value>(result);
+        Assert.Equal(ulong.MaxValue, ((TsUInt64Value)result!).Value);
     }
 }

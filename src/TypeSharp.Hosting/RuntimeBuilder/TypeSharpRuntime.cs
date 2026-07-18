@@ -65,7 +65,7 @@ public sealed class TypeSharpRuntimeBuilder
 
         foreach (var (key, desc) in _hostRegistry.Functions)
         {
-            interpreter.RegisterHostFunction(desc.FunctionName, (name, args) => desc.Implementation(args));
+            interpreter.RegisterHostFunction(key, (name, args) => desc.Implementation(args));
         }
 
         var filesToLoad = new List<string>();
