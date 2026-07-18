@@ -1,5 +1,7 @@
 using TypeSharp.Hosting;
 using TypeSharp.Hosting.Compilation;
+using TypeSharp.Hosting.HotReload;
+using TypeSharp.Runtime.Generations;
 using TypeSharp.VM.Memory;
 using Xunit;
 
@@ -75,6 +77,140 @@ public class IntegrationTests
         await using var runtime = await builder.BuildAsync();
 
         Assert.NotNull(runtime);
+    }
+
+    [Fact]
+    public async Task HotReload_PublishesValidatedCandidateAndRollsBack()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_reload_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "app.ts");
+        try
+        {
+            File.WriteAllText(file, "function value(): int32 { return 1; }");
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .EnableHotReload()
+                .BuildAsync();
+
+            Assert.Equal(1, ((TsInt32Value)runtime.Invoke("value")!).Value);
+            var initial = runtime.ActiveGeneration;
+
+            File.WriteAllText(file, "function value(): int32 { return 2; }");
+            Assert.True(await runtime.ReloadAsync(file));
+            Assert.Equal(2, ((TsInt32Value)runtime.Invoke("value")!).Value);
+            Assert.NotSame(initial, runtime.ActiveGeneration);
+            Assert.Contains(initial!, runtime.RetiredGenerations);
+
+            File.WriteAllText(file, "function value(): string { return 3; }");
+            Assert.False(await runtime.ReloadAsync(file));
+            Assert.Equal(2, ((TsInt32Value)runtime.Invoke("value")!).Value);
+
+            Assert.True(await runtime.RollbackAsync());
+            Assert.Equal(1, ((TsInt32Value)runtime.Invoke("value")!).Value);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task HotReload_CanaryRejectsCandidateWithoutPublishing()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_canary_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "app.ts");
+        try
+        {
+            File.WriteAllText(file, "function value(): int32 { return 1; }");
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .EnableHotReload()
+                .ConfigureHotReload(options => options.Canary = _ => false)
+                .BuildAsync();
+
+            File.WriteAllText(file, "function value(): int32 { return 2; }");
+            Assert.False(await runtime.ReloadAsync(file));
+            Assert.Equal(1, ((TsInt32Value)runtime.Invoke("value")!).Value);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task HotReload_GenerationLeaseTracksActiveExecutions()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_lease_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "app.ts");
+        try
+        {
+            File.WriteAllText(file, "function value(): int32 { return 1; }");
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .EnableHotReload()
+                .BuildAsync();
+
+            var generation = runtime.ActiveGeneration!;
+            using (runtime.AcquireGeneration())
+                Assert.Equal(1, generation.ActiveExecutions);
+            Assert.Equal(0, generation.ActiveExecutions);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task HotReload_RunsExplicitMigratorBeforePublish()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_migrate_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "app.ts");
+        try
+        {
+            var migrator = new TrackingMigrator();
+            File.WriteAllText(file, "function value(): int32 { return 1; }");
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .EnableHotReload()
+                .ConfigureHotReload(options => options.Migrators.Add(migrator))
+                .BuildAsync();
+
+            File.WriteAllText(file, "function value(): int32 { return 2; }");
+            Assert.True(await runtime.ReloadAsync(file));
+            Assert.True(migrator.WasMigrated);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task HotReload_RetainsLeasedGenerationUntilExecutionCompletes()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_retain_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "app.ts");
+        try
+        {
+            File.WriteAllText(file, "function value(): int32 { return 1; }");
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .EnableHotReload()
+                .ConfigureHotReload(options => options.RetainedGenerations = 0)
+                .BuildAsync();
+
+            using (runtime.AcquireGeneration())
+            {
+                File.WriteAllText(file, "function value(): int32 { return 2; }");
+                Assert.True(await runtime.ReloadAsync(file));
+                Assert.Single(runtime.RetiredGenerations);
+            }
+
+            Assert.Empty(runtime.RetiredGenerations);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    private sealed class TrackingMigrator : IGenerationMigrator
+    {
+        public bool WasMigrated { get; private set; }
+        public bool CanMigrate(RuntimeGeneration previous, RuntimeGeneration candidate) => true;
+        public void Migrate(RuntimeGeneration previous, RuntimeGeneration candidate) => WasMigrated = true;
     }
 }
 

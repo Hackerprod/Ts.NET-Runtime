@@ -86,6 +86,13 @@ public sealed class TsModuleManager
 
     public async Task<TsModule> LoadModuleAsync(string filePath)
     {
+        var module = await CompileModuleAsync(filePath, _registry.NextGenerationId());
+        _registry.Register(filePath, module);
+        return module;
+    }
+
+    public async Task<TsModule> CompileModuleAsync(string filePath, int generationId)
+    {
         string source = await File.ReadAllTextAsync(filePath);
         string modulePath = Path.GetFullPath(filePath);
         string moduleName = Path.ChangeExtension(modulePath, null)
@@ -128,12 +135,7 @@ public sealed class TsModuleManager
 
         var bytecodeModule = TypeSharp.VM.Bytecode.BytecodeCompiler.Compile(moduleIR);
 
-        int genId = _registry.NextGenerationId();
-        var module = new TsModule(moduleName, filePath, bytecodeModule, genId);
-
-        _registry.Register(filePath, module);
-
-        return module;
+        return new TsModule(moduleName, filePath, bytecodeModule, generationId);
     }
 
     public TsValue? ExecuteModule(TsModule module, string entryPoint, TsValue[]? args = null)

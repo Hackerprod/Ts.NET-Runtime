@@ -6,6 +6,7 @@ public sealed class HotReloadService : IDisposable
     private readonly Timer _debounceTimer;
     private readonly HashSet<string> _pendingChanges = new();
     private readonly SemaphoreSlim _debounceLock = new(1, 1);
+    private readonly TimeSpan _debounceInterval;
     private FileSystemWatcher? _watcher;
     private bool _disposed;
 
@@ -15,7 +16,7 @@ public sealed class HotReloadService : IDisposable
     public HotReloadService(TypeSharpRuntime runtime, TimeSpan? debounceInterval = null)
     {
         _runtime = runtime;
-        var interval = debounceInterval ?? TimeSpan.FromMilliseconds(300);
+        _debounceInterval = debounceInterval ?? TimeSpan.FromMilliseconds(300);
         _debounceTimer = new Timer(OnDebounceElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
         _runtime.ModuleReloaded += OnModuleReloaded;
@@ -75,7 +76,7 @@ public sealed class HotReloadService : IDisposable
             _debounceLock.Release();
         }
 
-        _debounceTimer.Change(TimeSpan.FromMilliseconds(300), Timeout.InfiniteTimeSpan);
+        _debounceTimer.Change(_debounceInterval, Timeout.InfiniteTimeSpan);
     }
 
     private async void OnDebounceElapsed(object? state)
@@ -96,9 +97,7 @@ public sealed class HotReloadService : IDisposable
         {
             try
             {
-                _runtime.WatchDirectory(Path.GetDirectoryName(filePath) ?? ".");
-                var watcher = new FileSystemWatcher();
-                await Task.Delay(10);
+                await _runtime.ReloadAsync(filePath);
             }
             catch (Exception ex)
             {
@@ -123,9 +122,9 @@ public sealed class HotReloadService : IDisposable
         if (_disposed) return;
         _disposed = true;
 
+        StopWatching();
         _debounceTimer.Dispose();
         _debounceLock.Dispose();
-        StopWatching();
 
         _runtime.ModuleReloaded -= OnModuleReloaded;
         _runtime.ReloadError -= OnReloadError;

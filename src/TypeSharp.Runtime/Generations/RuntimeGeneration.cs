@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using TypeSharp.Runtime.Modules;
 using TypeSharp.VM.Interpreter;
@@ -9,37 +8,33 @@ namespace TypeSharp.Runtime.Generations;
 public sealed class RuntimeGeneration
 {
     public int Id { get; }
-    public IReadOnlyDictionary<string, TsModule> Modules { get; }
-    public int ActiveExecutions { get; private set; }
-    public bool IsCurrent { get; set; }
+    public ImmutableDictionary<string, TsModule> Modules { get; }
+    public int ActiveExecutions => Volatile.Read(ref _activeExecutions);
+    public bool IsCurrent => Volatile.Read(ref _isCurrent) != 0;
     public DateTime CreatedAt { get; }
     public DateTime? SwappedAt { get; set; }
-    private readonly object _lock = new();
+    private int _activeExecutions;
+    private int _isCurrent;
 
     public RuntimeGeneration(int id, IReadOnlyDictionary<string, TsModule> modules)
     {
         Id = id;
-        Modules = modules;
+        Modules = modules.ToImmutableDictionary(StringComparer.Ordinal);
         CreatedAt = DateTime.UtcNow;
-        IsCurrent = false;
     }
 
     public void IncrementExecutions()
     {
-        lock (_lock)
-        {
-            ActiveExecutions++;
-        }
+        Interlocked.Increment(ref _activeExecutions);
     }
 
     public void DecrementExecutions()
     {
-        lock (_lock)
-        {
-            if (ActiveExecutions > 0)
-                ActiveExecutions--;
-        }
+        Interlocked.Decrement(ref _activeExecutions);
     }
+
+    public void MarkCurrent() => Interlocked.Exchange(ref _isCurrent, 1);
+    public void MarkRetired() => Interlocked.Exchange(ref _isCurrent, 0);
 
     public bool Validate()
     {
@@ -79,13 +74,15 @@ public sealed class RuntimeGeneration
 public sealed class GenerationLease : IDisposable
 {
     private readonly RuntimeGeneration _generation;
+    private readonly Action? _onDisposed;
     private bool _disposed;
 
     public RuntimeGeneration Generation => _generation;
 
-    public GenerationLease(RuntimeGeneration generation)
+    public GenerationLease(RuntimeGeneration generation, Action? onDisposed = null)
     {
         _generation = generation;
+        _onDisposed = onDisposed;
         _generation.IncrementExecutions();
     }
 
@@ -94,5 +91,6 @@ public sealed class GenerationLease : IDisposable
         if (_disposed) return;
         _disposed = true;
         _generation.DecrementExecutions();
+        _onDisposed?.Invoke();
     }
 }
