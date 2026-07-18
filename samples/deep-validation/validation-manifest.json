@@ -1,0 +1,7 @@
+{
+  "name": "TypeSharp Deep Validation",
+  "round": 2,
+  "script_files": 38,
+  "target_framework": "net8.0",
+  "test_cases": 106
+}

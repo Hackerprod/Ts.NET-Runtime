@@ -124,12 +124,25 @@ public sealed class BoundMemberAccessExpression : BoundNode
 {
     public BoundNode Object { get; }
     public Symbol Member { get; }
+    public bool IsNullConditional { get; }
 
-    public BoundMemberAccessExpression(BoundNode obj, Symbol member)
-        : base(BoundNodeKind.MemberAccessExpression, member.Type)
+    public BoundMemberAccessExpression(BoundNode obj, Symbol member, bool isNullConditional = false, TsType? resultType = null)
+        : base(BoundNodeKind.MemberAccessExpression, resultType ?? member.Type)
     {
         Object = obj;
         Member = member;
+        IsNullConditional = isNullConditional;
+    }
+}
+
+public sealed class BoundArrayLiteralExpression : BoundNode
+{
+    public List<BoundNode> Elements { get; }
+
+    public BoundArrayLiteralExpression(List<BoundNode> elements, TsType type)
+        : base(BoundNodeKind.ArrayLiteralExpression, type)
+    {
+        Elements = elements;
     }
 }
 

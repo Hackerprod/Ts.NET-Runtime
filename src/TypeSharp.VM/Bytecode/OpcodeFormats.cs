@@ -117,6 +117,8 @@ public static class Opcodes
     public const byte CmpNeU64                 = 0x4D;
     public const byte CmpLtU64                 = 0x4E;
     public const byte CmpLeU64                 = 0x4F;
+    public const byte CmpGtU64                 = 0x68;
+    public const byte CmpGeU64                 = 0x69;
 
     public const byte CmpEqF64                 = 0x50;
     public const byte CmpNeF64                 = 0x51;
@@ -166,6 +168,11 @@ public static class Opcodes
     public const byte Await                    = 0x86;
 
     public const byte Throw                    = 0x87;
+
+    public const byte LoadElement              = 0x88;
+    public const byte StoreElement             = 0x89;
+    public const byte EnterTry                 = 0x8A;
+    public const byte LeaveTry                 = 0x8B;
 
     public const byte ConvI32I64               = 0x90;
     public const byte ConvI64I32               = 0x91;
@@ -277,6 +284,9 @@ public static class OpcodeFormats
         Reg(0x60); Reg(0x61); Reg(0x62); Reg(0x63);
         Reg(0x64); Reg(0x65); Reg(0x66); Reg(0x67);
 
+        // ── U64 ordered comparison (upper half) ──
+        Reg(0x68); Reg(0x69);
+
         // ── Control flow ──
         Reg(0x70, OperandKind.Branch);  // BRANCH
         Reg(0x71, OperandKind.Branch);  // BRANCH_TRUE
@@ -304,6 +314,14 @@ public static class OpcodeFormats
 
         // ── Exception ──
         Reg(0x87);                       // THROW
+
+        // ── Array elements ──
+        Reg(0x88);                       // LOAD_ELEMENT
+        Reg(0x89);                       // STORE_ELEMENT
+
+        // ── Exception regions ──
+        Reg(0x8A, OperandKind.Branch);   // ENTER_TRY (handler offset)
+        Reg(0x8B);                       // LEAVE_TRY
 
         // ── Convert ──
         Reg(0x90); Reg(0x91); Reg(0x92); Reg(0x93);

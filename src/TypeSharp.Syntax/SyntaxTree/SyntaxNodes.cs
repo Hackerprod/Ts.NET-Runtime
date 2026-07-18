@@ -19,6 +19,7 @@ public enum SyntaxNodeType
     AwaitExpression,
     TypeofExpression,
     ObjectLiteralExpression,
+    ArrayLiteralExpression,
 
     // Statements
     ExpressionStatement,
@@ -360,6 +361,19 @@ public sealed class ObjectPropertySyntax : SyntaxNode
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => new[] { Value };
+}
+
+public sealed class ArrayLiteralExpressionSyntax : ExpressionSyntax
+{
+    public List<ExpressionSyntax> Elements { get; }
+
+    public ArrayLiteralExpressionSyntax(List<ExpressionSyntax> elements, SourceRange range)
+        : base(SyntaxNodeType.ArrayLiteralExpression, range)
+    {
+        Elements = elements;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => Elements.Cast<SyntaxNode>();
 }
 
 public sealed class ObjectLiteralExpressionSyntax : ExpressionSyntax

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/TypeSharp.Hosting/TypeSharp.Hosting.csproj" />
+    <ProjectReference Include="../../src/TypeSharp.Runtime/TypeSharp.Runtime.csproj" />
+    <ProjectReference Include="../../src/TypeSharp.Interop/TypeSharp.Interop.csproj" />
+    <ProjectReference Include="../../src/TypeSharp.VM/TypeSharp.VM.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="scripts/**/*.ts" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

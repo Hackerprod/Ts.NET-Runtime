@@ -254,6 +254,8 @@ public static class BytecodeCompiler
             case Opcode.CmpNe_U64: writer.Write(Opcodes.CmpNeU64); break;
             case Opcode.CmpLt_U64: writer.Write(Opcodes.CmpLtU64); break;
             case Opcode.CmpLe_U64: writer.Write(Opcodes.CmpLeU64); break;
+            case Opcode.CmpGt_U64: writer.Write(Opcodes.CmpGtU64); break;
+            case Opcode.CmpGe_U64: writer.Write(Opcodes.CmpGeU64); break;
 
             // ── F64 comparison ──
             case Opcode.CmpEq_F64: writer.Write(Opcodes.CmpEqF64); break;
@@ -362,6 +364,13 @@ public static class BytecodeCompiler
                 writer.Write(Opcodes.NewArray);
                 writer.WriteInt32(instr.Operand0);
                 break;
+            case Opcode.LoadElement: writer.Write(Opcodes.LoadElement); break;
+            case Opcode.StoreElement: writer.Write(Opcodes.StoreElement); break;
+            case Opcode.EnterTry:
+                writer.Write(Opcodes.EnterTry);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.LeaveTry: writer.Write(Opcodes.LeaveTry); break;
             case Opcode.NewMap: writer.Write(Opcodes.NewMap); break;
             case Opcode.TypeCheck:
                 writer.Write(Opcodes.TypeCheck);

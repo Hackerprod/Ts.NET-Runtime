@@ -87,6 +87,10 @@ public sealed class MethodSymbol : Symbol
     public bool IsStatic { get; set; }
     public TypeSystem.TsAccessModifier AccessModifier { get; set; }
 
+    // Class that actually declares the method (may be a base class of the
+    // receiver's static type); codegen targets this class for dispatch.
+    public string? DeclaringClassName { get; set; }
+
     public MethodSymbol(string name, TypeSystem.TsType returnType, SourceRange location)
         : base(name, returnType, location) { }
 }
@@ -98,6 +102,9 @@ public sealed class FunctionSymbol : Symbol
     public bool IsAsync { get; set; }
     public bool IsExported { get; set; }
     public bool HasDynamicSignature { get; set; }
+
+    // Set on import aliases: the exported function name to call at runtime.
+    public string? TargetName { get; set; }
 
     public FunctionSymbol(string name, TypeSystem.TsType returnType, SourceRange location)
         : base(name, returnType, location) { }

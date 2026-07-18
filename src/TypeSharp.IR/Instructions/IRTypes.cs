@@ -65,6 +65,12 @@ public enum Opcode
     NewObject,
     NewArray,
     NewMap,
+    LoadElement,
+    StoreElement,
+
+    // Exception regions
+    EnterTry,
+    LeaveTry,
 
     // Cast/Convert
     Conv_I32_I64,
@@ -150,7 +156,7 @@ public sealed class BasicBlock
     public Instruction LastInstruction => Instructions[^1];
 
     public bool EndsInBranch => Instructions.Count > 0 &&
-        (LastInstruction.Opcode is Opcode.Branch or Opcode.BranchTrue or Opcode.BranchFalse or Opcode.Return or Opcode.ReturnVoid or Opcode.Throw);
+        (LastInstruction.Opcode is Opcode.Branch or Opcode.Return or Opcode.ReturnVoid or Opcode.Throw);
 }
 
 public sealed class FunctionIR

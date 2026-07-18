@@ -109,6 +109,10 @@ public sealed class Interpreter
 
     public ExecutionContext CreateContext()
     {
+        // The logical allocation budget is a per-execution limit, not a
+        // lifetime counter — reset the ledger, keep the shared heap so host
+        // functions allocating through Interpreter.Heap still count.
+        _heap.Reset();
         return new ExecutionContext(_limits, _heap);
     }
 
@@ -134,7 +138,16 @@ public sealed class Interpreter
             }
 
             ctx.CallStack.Push(frame);
-            return ExecuteFrame(frame, module, ctx);
+            try
+            {
+                return ExecuteFrame(frame, module, ctx);
+            }
+            catch (TsThrownException thrown)
+            {
+                // Uncaught script throw crossing into the host surfaces as a
+                // plain InvalidOperationException with the thrown message.
+                throw new InvalidOperationException(thrown.Message);
+            }
         }
         finally
         {
@@ -144,6 +157,29 @@ public sealed class Interpreter
     }
 
     private TsValue? ExecuteFrame(CallFrame frame, BytecodeModule module, ExecutionContext ctx)
+    {
+        while (true)
+        {
+            try
+            {
+                return ExecuteFrameCore(frame, module, ctx);
+            }
+            catch (TsThrownException thrown)
+            {
+                // Dispatch to the innermost active handler of THIS frame;
+                // otherwise let the exception unwind to the calling frame.
+                if (frame.TryHandlers is not { Count: > 0 })
+                    throw;
+
+                var handler = frame.TryHandlers.Pop();
+                frame.StackPointer = handler.StackDepth;
+                frame.Push(thrown.Value);
+                frame.InstructionPointer = handler.HandlerOffset;
+            }
+        }
+    }
+
+    private TsValue? ExecuteFrameCore(CallFrame frame, BytecodeModule module, ExecutionContext ctx)
     {
         var bytecode = frame.Function.Instructions;
         var strings = frame.Function.StringConstants;
@@ -629,6 +665,20 @@ public sealed class Interpreter
                     frame.Push(new TsBoolValue(AsUInt64(left) <= AsUInt64(right)));
                     break;
                 }
+                case Opcodes.CmpGtU64: // CMP_GT_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsUInt64(left) > AsUInt64(right)));
+                    break;
+                }
+                case Opcodes.CmpGeU64: // CMP_GE_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsUInt64(left) >= AsUInt64(right)));
+                    break;
+                }
 
                 // ── F64 comparison ──
 
@@ -853,15 +903,21 @@ public sealed class Interpreter
                             newFrame.Locals[i] = frame.Pop();
 
                         ctx.CallStack.Push(newFrame);
-                        var result = ExecuteFrame(newFrame, module, ctx);
-                        ctx.CallStack.Pop();
+                        TsValue? result;
+                        try
+                        {
+                            result = ExecuteFrame(newFrame, module, ctx);
+                        }
+                        finally
+                        {
+                            ctx.CallStack.Pop();
+                        }
 
                         frame.Push(result ?? TsValue.Null);
                     }
                     else
                     {
-                        for (int i = 0; i < argCount; i++) frame.Pop();
-                        frame.Push(TsValue.Null);
+                        throw new InvalidOperationException($"Function '{calleeName}' not found");
                     }
                     break;
                 }
@@ -917,14 +973,20 @@ public sealed class Interpreter
                         for (int i = argCount - 1; i >= 0; i--)
                             newFrame.Locals[i] = frame.Pop();
                         ctx.CallStack.Push(newFrame);
-                        var result = ExecuteFrame(newFrame, module, ctx);
-                        ctx.CallStack.Pop();
+                        TsValue? result;
+                        try
+                        {
+                            result = ExecuteFrame(newFrame, module, ctx);
+                        }
+                        finally
+                        {
+                            ctx.CallStack.Pop();
+                        }
                         frame.Push(result ?? TsValue.Null);
                     }
                     else
                     {
-                        for (int i = 0; i < argCount; i++) frame.Pop();
-                        frame.Push(TsValue.Null);
+                        throw new InvalidOperationException($"Function '{calleeName}' not found");
                     }
                     break;
                 }
@@ -946,12 +1008,18 @@ public sealed class Interpreter
                         var ctorFrame = new CallFrame(ctorFunc, frame);
 
                         ctorFrame.Locals[0] = TsValue.FromObject(obj);
-                        for (int i = 0; i < argCount; i++)
-                            ctorFrame.Locals[i + 1] = frame.Pop();
+                        for (int i = argCount; i >= 1; i--)
+                            ctorFrame.Locals[i] = frame.Pop();
 
                         ctx.CallStack.Push(ctorFrame);
-                        ExecuteFrame(ctorFrame, module, ctx);
-                        ctx.CallStack.Pop();
+                        try
+                        {
+                            ExecuteFrame(ctorFrame, module, ctx);
+                        }
+                        finally
+                        {
+                            ctx.CallStack.Pop();
+                        }
                     }
                     else
                     {
@@ -966,9 +1034,49 @@ public sealed class Interpreter
                 {
                     int capacity = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var arr = ctx.Heap.AllocateArray(capacity);
-                    for (int i = 0; i < capacity; i++)
+                    for (int i = capacity - 1; i >= 0; i--)
                         arr.Set(i, frame.Pop());
                     frame.Push(new TsArrayValue(arr));
+                    break;
+                }
+
+                case Opcodes.LoadElement: // LOAD_ELEMENT
+                {
+                    var index = frame.Pop();
+                    var target = frame.Pop();
+                    if (target is TsArrayValue arrVal)
+                        frame.Push(arrVal.Value.Get(AsInt32(index)));
+                    else if (target is TsNull)
+                        throw new InvalidOperationException("Cannot index a null value");
+                    else
+                        frame.Push(TsValue.Null);
+                    break;
+                }
+
+                case Opcodes.StoreElement: // STORE_ELEMENT
+                {
+                    var value = frame.Pop();
+                    var index = frame.Pop();
+                    var target = frame.Pop();
+                    if (target is TsArrayValue arrVal)
+                        arrVal.Value.Set(AsInt32(index), value);
+                    else if (target is TsNull)
+                        throw new InvalidOperationException("Cannot index a null value");
+                    break;
+                }
+
+                case Opcodes.EnterTry: // ENTER_TRY
+                {
+                    int handlerOffset = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    frame.TryHandlers ??= new Stack<TryHandler>();
+                    frame.TryHandlers.Push(new TryHandler(handlerOffset, frame.StackPointer));
+                    break;
+                }
+
+                case Opcodes.LeaveTry: // LEAVE_TRY
+                {
+                    if (frame.TryHandlers is { Count: > 0 })
+                        frame.TryHandlers.Pop();
                     break;
                 }
 
@@ -1014,8 +1122,7 @@ public sealed class Interpreter
                 case Opcodes.Throw: // THROW
                 {
                     var val = frame.Pop();
-                    var msg = val is TsStringValue sv ? sv.Value : val.ToString();
-                    throw new InvalidOperationException(msg);
+                    throw new TsThrownException(val);
                 }
 
                 // ── Type/Null checks ──

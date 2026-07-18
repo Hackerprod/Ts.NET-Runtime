@@ -125,7 +125,9 @@ public sealed class HostRegistry
 
     public void RegisterObject<T>(string moduleName, T instance, ExportMode mode = ExportMode.ExplicitOnly) where T : class
     {
-        var type = typeof(T);
+        // Reflect over the runtime type: callers often pass the instance as
+        // `object`, and typeof(T) would then see no exported methods at all.
+        var type = instance.GetType();
         var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
 
         foreach (var method in methods)

@@ -148,7 +148,7 @@ public sealed class TypeSharpRuntimeBuilder
         return runtime;
     }
 
-    private static string DetermineSourceRoot(IReadOnlyList<string> files, IReadOnlyList<string> sourceDirectories)
+    internal static string DetermineSourceRoot(IReadOnlyList<string> files, IReadOnlyList<string> sourceDirectories)
     {
         if (sourceDirectories.Count == 1)
             return Path.GetFullPath(sourceDirectories[0]);
@@ -160,7 +160,7 @@ public sealed class TypeSharpRuntimeBuilder
         return root;
     }
 
-    private static string CommonDirectory(string left, string right)
+    internal static string CommonDirectory(string left, string right)
     {
         var leftParts = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar).Split(Path.DirectorySeparatorChar);
         var rightParts = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar).Split(Path.DirectorySeparatorChar);
@@ -379,7 +379,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             try
             {
                 // Candidate is never registered or visible until all gates pass.
-                var compiledReplacement = await _moduleManager.CompileModuleAsync(filePath, genId);
+                var compiledReplacement = CompileWithRuntimeContext(filePath, genId, previous);
                 var existing = previous?.Modules.Values.FirstOrDefault(module =>
                     string.Equals(Path.GetFullPath(module.FilePath), Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase));
                 var replacement = existing == null
@@ -429,6 +429,42 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         {
             _reloadLock.Release();
         }
+    }
+
+    // Reload compiles must see the same world the original build saw: host
+    // global symbols plus every sibling module, so imports and host calls
+    // keep binding after a file changes.
+    private TsModule CompileWithRuntimeContext(string filePath, int generationId, RuntimeGeneration? previous)
+    {
+        var fullPath = Path.GetFullPath(filePath);
+        var files = new List<string> { fullPath };
+        if (previous != null)
+        {
+            foreach (var module in previous.Modules.Values)
+            {
+                var modulePath = Path.GetFullPath(module.FilePath);
+                if (!files.Contains(modulePath, StringComparer.OrdinalIgnoreCase))
+                    files.Add(modulePath);
+            }
+        }
+
+        var sourceRoot = TypeSharpRuntimeBuilder.DetermineSourceRoot(files, Array.Empty<string>());
+        var compilation = new TypeScriptCompilation(sourceRoot, _hostRegistry.CreateGlobalSymbols());
+        foreach (var file in files)
+            compilation.AddSourceFile(file);
+
+        var compiled = compilation.Compile();
+        if (compilation.Diagnostics.HasErrors)
+        {
+            var diagnostics = string.Join(Environment.NewLine, compilation.Diagnostics.GetErrors());
+            throw new InvalidOperationException($"Compilation failed:{Environment.NewLine}{diagnostics}");
+        }
+
+        var target = compiled.Values.FirstOrDefault(module =>
+            string.Equals(Path.GetFullPath(module.SourcePath), fullPath, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"Reload did not produce a module for '{filePath}'");
+
+        return new TsModule(target.ModuleId, fullPath, target.Bytecode, generationId);
     }
 
     public Task<bool> RollbackAsync()

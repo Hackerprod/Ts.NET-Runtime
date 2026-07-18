@@ -47,23 +47,25 @@ public sealed class Binder
         });
         _classTypes["Console"] = consoleType;
 
+        // Builtin collection members are dynamically typed until reified
+        // generics land; Any keeps argument validation from rejecting them.
         var listType = new TsClassType("List");
         listType.Methods["add"] = new TsMethod("add", TsType.Void, new List<TsParameter>
         {
-            new("item", TsType.Void)
+            new("item", TsType.Any)
         });
-        listType.Methods["firstOrNull"] = new TsMethod("firstOrNull", TsType.Void, new List<TsParameter>());
+        listType.Methods["firstOrNull"] = new TsMethod("firstOrNull", TsType.Any, new List<TsParameter>());
         _classTypes["List"] = listType;
 
         var mapType = new TsClassType("Map");
         mapType.Methods["set"] = new TsMethod("set", TsType.Void, new List<TsParameter>
         {
-            new("key", TsType.Void),
-            new("value", TsType.Void)
+            new("key", TsType.Any),
+            new("value", TsType.Any)
         });
-        mapType.Methods["get"] = new TsMethod("get", TsType.Void, new List<TsParameter>
+        mapType.Methods["get"] = new TsMethod("get", TsType.Any, new List<TsParameter>
         {
-            new("key", TsType.Void)
+            new("key", TsType.Any)
         });
         _classTypes["Map"] = mapType;
     }
@@ -71,6 +73,19 @@ public sealed class Binder
     public BoundSourceFile Bind(SourceFileSyntax sourceFile)
     {
         var members = new List<BoundNode>();
+
+        // Pass 1: type declarations are hoisted so annotations anywhere in the
+        // file (including function signatures) resolve against real types.
+        // Shells first so members/bases can reference types in any order.
+        foreach (var member in sourceFile.Members)
+            PreDeclareTypeShell(member);
+        foreach (var member in sourceFile.Members)
+            PreDeclareTypeMembers(member);
+
+        // Pass 2: function signatures are hoisted so forward references and
+        // mutual recursion resolve against complete signatures before bodies bind.
+        foreach (var function in sourceFile.Members.OfType<FunctionDeclarationSyntax>())
+            DeclareFunctionSignature(function);
 
         foreach (var member in sourceFile.Members)
         {
@@ -80,6 +95,49 @@ public sealed class Binder
         }
 
         return new BoundSourceFile(sourceFile.FileName, members);
+    }
+
+    private void PreDeclareTypeShell(SyntaxNode member)
+    {
+        switch (member)
+        {
+            case ClassDeclarationSyntax cls when !_classTypes.ContainsKey(cls.Name):
+                _classTypes[cls.Name] = new TsClassType(cls.Name);
+                break;
+            case InterfaceDeclarationSyntax iface when !_interfaceTypes.ContainsKey(iface.Name):
+                _interfaceTypes[iface.Name] = new TsInterfaceType(iface.Name);
+                break;
+            case EnumDeclarationSyntax en when !_enumTypes.ContainsKey(en.Name):
+                _enumTypes[en.Name] = new TsEnumType(en.Name);
+                break;
+        }
+    }
+
+    private void PreDeclareTypeMembers(SyntaxNode member)
+    {
+        switch (member)
+        {
+            case ClassDeclarationSyntax cls:
+                if (cls.BaseType != null && ResolveType(cls.BaseType) is TsClassType baseClass &&
+                    _classTypes.TryGetValue(cls.Name, out var classType))
+                    classType.BaseType = baseClass;
+                break;
+
+            case InterfaceDeclarationSyntax iface:
+            {
+                var ifaceType = _interfaceTypes[iface.Name];
+                foreach (var m in iface.Members)
+                {
+                    if (m is FieldDeclarationSyntax field)
+                        ifaceType.Properties[field.Name] = new TsProperty(field.Name, ResolveType(field.TypeAnnotation));
+                    else if (m is MethodDeclarationSyntax method)
+                        ifaceType.Methods[method.Name] = new TsMethod(method.Name,
+                            ResolveType(method.ReturnType) ?? TsType.Void,
+                            method.Parameters.Select(p => new TsParameter(p.Name, ResolveType(p.TypeAnnotation))).ToList());
+                }
+                break;
+            }
+        }
     }
 
     private BoundNode? BindNode(SyntaxNode node)
@@ -99,29 +157,14 @@ public sealed class Binder
 
     private BoundFunctionDeclaration BindFunction(FunctionDeclarationSyntax func)
     {
-        var returnType = ResolveType(func.ReturnType) ?? TsType.Void;
-
-        var sym = new FunctionSymbol(func.Name, returnType, func.Range)
-        {
-            IsAsync = func.IsAsync,
-            IsExported = func.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword)
-        };
-
-        foreach (var p in func.Parameters)
-        {
-            var paramType = ResolveType(p.TypeAnnotation);
-            var paramSym = new ParameterSymbol(p.Name, paramType, p.Range);
-            sym.Parameters.Add(paramSym);
-        }
-
-        _symbolTable.Define(sym);
+        var sym = _symbolTable.Lookup(func.Name) as FunctionSymbol ?? DeclareFunctionSignature(func);
         _symbolTable.PushScope();
 
         foreach (var p in sym.Parameters)
             _symbolTable.Define(p);
 
         var prevReturnType = _currentFunctionReturnType;
-        _currentFunctionReturnType = returnType;
+        _currentFunctionReturnType = sym.Type;
         var body = BindNode(func.Body);
         _currentFunctionReturnType = prevReturnType;
 
@@ -130,12 +173,31 @@ public sealed class Binder
         return new BoundFunctionDeclaration(sym, body!);
     }
 
+    private FunctionSymbol DeclareFunctionSignature(FunctionDeclarationSyntax func)
+    {
+        if (_symbolTable.Lookup(func.Name) is FunctionSymbol existing)
+            return existing;
+
+        var sym = new FunctionSymbol(func.Name, ResolveType(func.ReturnType) ?? TsType.Void, func.Range)
+        {
+            IsAsync = func.IsAsync,
+            IsExported = func.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword)
+        };
+        foreach (var parameter in func.Parameters)
+            sym.Parameters.Add(new ParameterSymbol(parameter.Name, ResolveType(parameter.TypeAnnotation), parameter.Range));
+        _symbolTable.Define(sym);
+        return sym;
+    }
+
     private BoundClassDeclaration BindClass(ClassDeclarationSyntax cls)
     {
-        var classType = new TsClassType(cls.Name);
-        _classTypes[cls.Name] = classType;
+        if (!_classTypes.TryGetValue(cls.Name, out var classType))
+        {
+            classType = new TsClassType(cls.Name);
+            _classTypes[cls.Name] = classType;
+        }
 
-        if (cls.BaseType != null)
+        if (cls.BaseType != null && classType.BaseType == null)
         {
             var baseType = ResolveType(cls.BaseType);
             if (baseType is TsClassType baseClass)
@@ -305,8 +367,11 @@ public sealed class Binder
 
     private BoundInterfaceDeclaration BindInterface(InterfaceDeclarationSyntax iface)
     {
-        var ifaceType = new TsInterfaceType(iface.Name);
-        _interfaceTypes[iface.Name] = ifaceType;
+        if (!_interfaceTypes.TryGetValue(iface.Name, out var ifaceType))
+        {
+            ifaceType = new TsInterfaceType(iface.Name);
+            _interfaceTypes[iface.Name] = ifaceType;
+        }
 
         var sym = new InterfaceSymbol(iface.Name, ifaceType, iface.Range)
         {
@@ -336,7 +401,8 @@ public sealed class Binder
 
     private BoundEnumDeclaration BindEnum(EnumDeclarationSyntax en)
     {
-        var enumType = new TsEnumType(en.Name);
+        if (!_enumTypes.TryGetValue(en.Name, out var enumType))
+            enumType = new TsEnumType(en.Name);
         int value = 0;
         foreach (var member in en.Members)
         {
@@ -436,7 +502,8 @@ public sealed class Binder
         var copy = new FunctionSymbol(name, source.Type, location)
         {
             IsAsync = source.IsAsync,
-            IsExported = source.IsExported
+            IsExported = source.IsExported,
+            TargetName = source.TargetName ?? source.Name
         };
         foreach (var parameter in source.Parameters)
             copy.Parameters.Add(new ParameterSymbol(parameter.Name, parameter.Type, parameter.Location));
@@ -550,12 +617,7 @@ public sealed class Binder
     private BoundIfStatement BindIf(IfStatementSyntax ifStmt)
     {
         var condition = BindExpression(ifStmt.Condition);
-        if (condition.Type != TsType.Bool && condition.Type != TsType.Void)
-        {
-            _diagnostics.Warning(
-                $"Condition has type '{condition.Type}', expected 'bool'",
-                ifStmt.Condition.Range.Start);
-        }
+        ValidateCondition(condition, ifStmt.Condition.Range.Start);
         var thenBranch = BindStatement(ifStmt.ThenBranch);
         var elseBranch = ifStmt.ElseBranch != null ? BindStatement(ifStmt.ElseBranch) : null;
         return new BoundIfStatement(condition, thenBranch, elseBranch);
@@ -564,14 +626,20 @@ public sealed class Binder
     private BoundWhileStatement BindWhile(WhileStatementSyntax whileStmt)
     {
         var condition = BindExpression(whileStmt.Condition);
-        if (condition.Type != TsType.Bool && condition.Type != TsType.Void)
-        {
-            _diagnostics.Warning(
-                $"Condition has type '{condition.Type}', expected 'bool'",
-                whileStmt.Condition.Range.Start);
-        }
+        ValidateCondition(condition, whileStmt.Condition.Range.Start);
         var body = BindStatement(whileStmt.Body);
         return new BoundWhileStatement(condition, body);
+    }
+
+    private void ValidateCondition(BoundNode condition, SourceLocation location)
+    {
+        if (condition.Type != TsType.Bool && condition.Type != TsType.Void &&
+            condition.Type is not TsAnyType && condition.Type is not TsNullableType)
+        {
+            _diagnostics.Error(
+                $"Condition has type '{condition.Type}', expected 'bool'",
+                location, DiagnosticCode.TS2016);
+        }
     }
 
     private BoundNode BindFor(ForStatementSyntax forStmt)
@@ -646,6 +714,7 @@ public sealed class Binder
             SuperExpressionSyntax superExpr => BindSuper(superExpr),
             AwaitExpressionSyntax awaitExpr => BindAwait(awaitExpr),
             ObjectLiteralExpressionSyntax objLit => BindObjectLiteral(objLit),
+            ArrayLiteralExpressionSyntax arrLit => BindArrayLiteral(arrLit),
             IndexExpressionSyntax indexExpr => BindIndexExpression(indexExpr),
             _ => throw new InvalidOperationException($"Unexpected expression type: {expr.NodeType}")
         };
@@ -880,7 +949,7 @@ public sealed class Binder
                 }
                 else if (current.Methods.TryGetValue(member.MemberName, out var method))
                 {
-                    memberSym = new MethodSymbol(member.MemberName, method.ReturnType, member.Range);
+                    memberSym = CreateMethodSymbol(method, current.Name, member.Range);
                 }
                 else if (current.Properties.TryGetValue(member.MemberName, out var prop))
                 {
@@ -896,7 +965,7 @@ public sealed class Binder
             }
             else if (ifaceType.Methods.TryGetValue(member.MemberName, out var method))
             {
-                memberSym = new MethodSymbol(member.MemberName, method.ReturnType, member.Range);
+                memberSym = CreateMethodSymbol(method, null, member.Range);
             }
         }
 
@@ -910,13 +979,49 @@ public sealed class Binder
             ? new TsNullableType(memberSym.Type)
             : memberSym.Type;
 
-        return new BoundMemberAccessExpression(obj, memberSym);
+        return new BoundMemberAccessExpression(obj, memberSym, member.IsNullConditional, resultType);
+    }
+
+    private static MethodSymbol CreateMethodSymbol(TsMethod method, string? declaringClass, SourceRange range)
+    {
+        var sym = new MethodSymbol(method.Name, method.ReturnType, range)
+        {
+            DeclaringClassName = declaringClass
+        };
+        foreach (var p in method.Parameters)
+            sym.Parameters.Add(new ParameterSymbol(p.Name, p.Type, range));
+        return sym;
     }
 
     private BoundAssignmentExpression BindAssignment(AssignmentExpressionSyntax assign)
     {
         var target = BindExpression(assign.Target);
         var value = BindExpression(assign.Value);
+
+        // Compound assignments (`x += y`) desugar to `x = x <op> y`.
+        var compoundOp = assign.OperatorToken.Kind switch
+        {
+            TokenKind.PlusEquals => TokenKind.Plus,
+            TokenKind.MinusEquals => TokenKind.Minus,
+            TokenKind.StarEquals => TokenKind.Star,
+            TokenKind.SlashEquals => TokenKind.Slash,
+            TokenKind.PercentEquals => TokenKind.Percent,
+            TokenKind.AmpersandEquals => TokenKind.Ampersand,
+            TokenKind.PipeEquals => TokenKind.Pipe,
+            TokenKind.CaretEquals => TokenKind.Caret,
+            _ => (TokenKind?)null
+        };
+        if (compoundOp is TokenKind op)
+        {
+            var resultType = InferBinaryResultType(target.Type, value.Type, op);
+            if (resultType == TsType.Void && target.Type != TsType.Void && value.Type != TsType.Void)
+            {
+                _diagnostics.Error(
+                    $"Operator '{assign.OperatorToken.Text}' cannot be applied to types '{target.Type}' and '{value.Type}'",
+                    assign.OperatorToken.Location);
+            }
+            value = new BoundBinaryExpression(target, op, value, resultType);
+        }
 
         if (target is BoundVariableExpression varExpr && varExpr.Symbol is LocalSymbol local && local.IsConst)
         {
@@ -938,6 +1043,7 @@ public sealed class Binder
     private BoundConditionalExpression BindConditional(ConditionalExpressionSyntax cond)
     {
         var condition = BindExpression(cond.Condition);
+        ValidateCondition(condition, cond.Condition.Range.Start);
         var whenTrue = BindExpression(cond.WhenTrue);
         var whenFalse = BindExpression(cond.WhenFalse);
 
@@ -952,6 +1058,30 @@ public sealed class Binder
     {
         var type = ResolveType(newExpr.Type);
         var args = newExpr.Arguments.Select(BindExpression).ToList();
+
+        if (type is TsClassType { Constructor: not null } ctorClass)
+        {
+            var ctorParams = ctorClass.Constructor.Parameters;
+            if (args.Count != ctorParams.Count)
+            {
+                _diagnostics.Error(
+                    $"Constructor of '{ctorClass.Name}' expects {ctorParams.Count} argument(s) but got {args.Count}",
+                    newExpr.Range.Start);
+            }
+            else
+            {
+                for (int i = 0; i < args.Count; i++)
+                {
+                    if (!TsType.IsCompatibleWith(args[i].Type, ctorParams[i].Type))
+                    {
+                        _diagnostics.Error(
+                            $"Argument {i + 1}: cannot assign '{args[i].Type}' to constructor parameter '{ctorParams[i].Name}' of type '{ctorParams[i].Type}'",
+                            newExpr.Range.Start);
+                    }
+                }
+            }
+        }
+
         return new BoundNewExpression(type, args);
     }
 
@@ -988,18 +1118,47 @@ public sealed class Binder
     private BoundObjectLiteralExpression BindObjectLiteral(ObjectLiteralExpressionSyntax objLit, TsType? expectedType = null)
     {
         var properties = new List<BoundObjectPropertyNode>();
-        TsType resultType = new TsClassType("Object");
+        var structuralType = new TsClassType("Object");
+        TsType resultType = structuralType;
 
         if (expectedType is TsInterfaceType ifaceType)
         {
             resultType = ifaceType;
             foreach (var prop in objLit.Properties)
             {
-                TsType propType = TsType.Void;
-                if (ifaceType.Properties.TryGetValue(prop.Key, out var ifaceProp))
-                    propType = ifaceProp.Type;
-                var value = BindExpression(prop.Value);
-                properties.Add(new BoundObjectPropertyNode(prop.Key, value, propType));
+                if (!ifaceType.Properties.TryGetValue(prop.Key, out var ifaceProp))
+                {
+                    _diagnostics.Error(
+                        $"Object literal property '{prop.Key}' does not exist on interface '{ifaceType.Name}'",
+                        prop.Range.Start);
+                    var unknownValue = BindExpression(prop.Value);
+                    properties.Add(new BoundObjectPropertyNode(prop.Key, unknownValue, unknownValue.Type));
+                    continue;
+                }
+
+                var value = prop.Value is ObjectLiteralExpressionSyntax nested
+                    ? BindObjectLiteral(nested, ifaceProp.Type)
+                    : BindExpression(prop.Value);
+
+                if (!TsType.IsCompatibleWith(value.Type, ifaceProp.Type))
+                {
+                    _diagnostics.Error(
+                        $"Property '{prop.Key}': cannot assign '{value.Type}' to '{ifaceProp.Type}'",
+                        prop.Range.Start);
+                }
+                properties.Add(new BoundObjectPropertyNode(prop.Key, value, ifaceProp.Type));
+            }
+
+            foreach (var required in ifaceType.Properties.Values)
+            {
+                if (required.Type is TsNullableType)
+                    continue;
+                if (!objLit.Properties.Any(p => p.Key == required.Name))
+                {
+                    _diagnostics.Error(
+                        $"Property '{required.Name}' is missing in object literal for interface '{ifaceType.Name}'",
+                        objLit.Range.Start);
+                }
             }
         }
         else
@@ -1008,17 +1167,51 @@ public sealed class Binder
             {
                 var value = BindExpression(prop.Value);
                 properties.Add(new BoundObjectPropertyNode(prop.Key, value, value.Type));
+                structuralType.Fields[prop.Key] = new TsField(prop.Key, value.Type);
             }
         }
 
         return new BoundObjectLiteralExpression(properties, resultType);
     }
 
+    private BoundArrayLiteralExpression BindArrayLiteral(ArrayLiteralExpressionSyntax arrLit)
+    {
+        var elements = arrLit.Elements.Select(BindExpression).ToList();
+        var elementType = elements.Count > 0 ? elements[0].Type : TsType.Any;
+
+        for (int i = 1; i < elements.Count; i++)
+        {
+            if (!TsType.IsCompatibleWith(elements[i].Type, elementType))
+            {
+                _diagnostics.Error(
+                    $"Array element {i + 1} has type '{elements[i].Type}', expected '{elementType}'",
+                    arrLit.Elements[i].Range.Start);
+            }
+        }
+
+        return new BoundArrayLiteralExpression(elements, new TsArrayType(elementType));
+    }
+
     private BoundIndexExpression BindIndexExpression(IndexExpressionSyntax indexExpr)
     {
         var obj = BindExpression(indexExpr.Object);
         var index = BindExpression(indexExpr.Index);
-        return new BoundIndexExpression(obj, index, TsType.Void);
+
+        var resultType = obj.Type switch
+        {
+            TsArrayType arr => arr.ElementType,
+            TsMapType map => new TsNullableType(map.ValueType),
+            _ => TsType.Any
+        };
+
+        if (obj.Type is TsArrayType && index.Type is not TsPrimitiveType { IsNumericType: true } &&
+            index.Type is not TsAnyType)
+        {
+            _diagnostics.Error($"Array index must be numeric, got '{index.Type}'",
+                indexExpr.Index.Range.Start);
+        }
+
+        return new BoundIndexExpression(obj, index, resultType);
     }
 
     // Type resolution
@@ -1066,12 +1259,19 @@ public sealed class Binder
     // Type inference helpers
     private static TsType InferBinaryResultType(TsType left, TsType right, TokenKind op)
     {
-        if (left is TsAnyType && right is not TsAnyType)
-            return right;
-        if (right is TsAnyType && left is not TsAnyType)
-            return left;
         if (left is TsAnyType || right is TsAnyType)
-            return TsType.Any;
+        {
+            // Comparisons stay bool; arithmetic on a dynamic operand stays
+            // dynamic so declared annotations (e.g. int64) keep accepting it.
+            return op switch
+            {
+                TokenKind.DoubleEquals or TokenKind.StrictNotEquals or
+                TokenKind.NotEquals or TokenKind.LessThan or TokenKind.GreaterThan or
+                TokenKind.LessOrEqual or TokenKind.GreaterOrEqual or
+                TokenKind.AmpersandAmpersand or TokenKind.PipePipe => TsType.Bool,
+                _ => TsType.Any
+            };
+        }
 
         return op switch
         {

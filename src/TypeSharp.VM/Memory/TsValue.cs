@@ -211,6 +211,22 @@ public sealed class TsMap
     public bool Remove(string key) => _entries.Remove(key);
 }
 
+// Raised by the THROW opcode; carries the thrown script value so
+// try/catch handlers can rebind it. Guard-rail exceptions (limits,
+// verification) deliberately do NOT use this type and stay uncatchable.
+public sealed class TsThrownException : InvalidOperationException
+{
+    public TsValue Value { get; }
+
+    public TsThrownException(TsValue value)
+        : base(value is TsStringValue s ? s.Value : value.ToString() ?? "error")
+    {
+        Value = value;
+    }
+}
+
+public readonly record struct TryHandler(int HandlerOffset, int StackDepth);
+
 // Frame for VM execution
 public sealed class CallFrame
 {
@@ -220,6 +236,7 @@ public sealed class CallFrame
     public int StackPointer { get; set; }
     public int InstructionPointer;
     public CallFrame? Caller { get; set; }
+    public Stack<TryHandler>? TryHandlers;
 
     public CallFrame(BytecodeFunction function, CallFrame? caller = null)
     {

@@ -99,6 +99,7 @@ public static class BytecodeVerifier
             case Opcodes.Branch:
             case Opcodes.BranchTrue:
             case Opcodes.BranchFalse:
+            case Opcodes.EnterTry:
             {
                 int first = ReadInt32(code, offset);
                 if (first < 0 || first > function.Instructions.Length) Fail(function, $"branch target {first} is out of range");

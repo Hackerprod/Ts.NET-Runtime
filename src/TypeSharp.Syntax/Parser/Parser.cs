@@ -160,6 +160,7 @@ public sealed class Parser
 
         while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
         {
+            int loopStart = _position;
             var memberName = ExpectIdentifier();
             ExpressionSyntax? value = null;
             if (Check(TokenKind.Equals))
@@ -170,6 +171,7 @@ public sealed class Parser
             var loc = new SourceRange(Peek(-1).Location, Peek().Location);
             members.Add(new EnumMemberSyntax(memberName, value, loc));
             if (Check(TokenKind.Comma)) Advance();
+            if (_position == loopStart) Advance();
         }
 
         Expect(TokenKind.CloseBrace);
@@ -209,6 +211,7 @@ public sealed class Parser
             Expect(TokenKind.OpenBrace);
             while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
             {
+                int loopStart = _position;
                 var impName = ExpectIdentifier();
                 string? alias = null;
                 if (Check(TokenKind.AsKeyword))
@@ -219,6 +222,7 @@ public sealed class Parser
                 imports.Add(new NamedImportSyntax(impName, alias,
                     new SourceRange(Peek(-1).Location, Peek().Location)));
                 if (Check(TokenKind.Comma)) Advance();
+                if (_position == loopStart) Advance();
             }
             Expect(TokenKind.CloseBrace);
         }
@@ -241,8 +245,10 @@ public sealed class Parser
 
         while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
         {
+            int loopStart = _position;
             var member = ParseClassMember();
             if (member != null) members.Add(member);
+            if (_position == loopStart) Advance();
         }
 
         Expect(TokenKind.CloseBrace);
@@ -260,7 +266,7 @@ public sealed class Parser
             return ParseMethodOrProperty(mods);
         }
 
-        if (Check(TokenKind.Identifier))
+        if (IsMemberNameToken(Peek().Kind))
         {
             return ParseMethodOrProperty(mods);
         }
@@ -282,7 +288,7 @@ public sealed class Parser
 
     private SyntaxNode ParseMethodOrProperty(List<SyntaxToken> mods)
     {
-        var name = ExpectIdentifier();
+        var name = ExpectMemberName();
 
         if (Check(TokenKind.OpenParen))
         {
@@ -321,6 +327,7 @@ public sealed class Parser
 
         while (!Check(TokenKind.CloseParen) && !IsAtEnd())
         {
+            int loopStart = _position;
             var name = ExpectIdentifier();
             var type = ParseTypeAnnotation();
             ExpressionSyntax? defaultVal = null;
@@ -332,6 +339,8 @@ public sealed class Parser
             var paramRange = new SourceRange(Peek(-1).Location, Peek().Location);
             parameters.Add(new ParameterSyntax(name, type, defaultVal, paramRange));
             if (Check(TokenKind.Comma)) Advance();
+            // Malformed input must not stall the cursor; skip the bad token.
+            if (_position == loopStart) Advance();
         }
 
         Expect(TokenKind.CloseParen);
@@ -346,6 +355,7 @@ public sealed class Parser
         Advance();
         while (!Check(TokenKind.GreaterThan) && !IsAtEnd())
         {
+            int loopStart = _position;
             var name = ExpectIdentifier();
             var param = new GenericParameterSyntax(name, Peek().Location);
             if (Check(TokenKind.ExtendsKeyword))
@@ -355,6 +365,7 @@ public sealed class Parser
             }
             result.Add(param);
             if (Check(TokenKind.Comma)) Advance();
+            if (_position == loopStart) Advance();
         }
         Expect(TokenKind.GreaterThan);
         return result;
@@ -364,6 +375,13 @@ public sealed class Parser
     public TypeSyntax ParseType()
     {
         var type = ParsePrimaryType();
+
+        while (Check(TokenKind.OpenBracket) && Peek(1).Kind == TokenKind.CloseBracket)
+        {
+            Advance();
+            Advance();
+            type = new ArrayTypeSyntax(type, new SourceRange(type.Range.Start, Peek(-1).Location));
+        }
 
         if (Check(TokenKind.Question))
         {
@@ -442,8 +460,10 @@ public sealed class Parser
             Advance();
             while (!Check(TokenKind.GreaterThan) && !IsAtEnd())
             {
+                int loopStart = _position;
                 type.TypeArguments.Add(ParseType());
                 if (Check(TokenKind.Comma)) Advance();
+                if (_position == loopStart) Advance();
             }
             Expect(TokenKind.GreaterThan);
         }
@@ -484,7 +504,9 @@ public sealed class Parser
 
         while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
         {
+            int loopStart = _position;
             statements.Add(ParseStatement());
+            if (_position == loopStart) Advance();
         }
 
         var closeBrace = Expect(TokenKind.CloseBrace);
@@ -872,14 +894,14 @@ public sealed class Parser
             else if (Check(TokenKind.Dot))
             {
                 Advance();
-                var member = ExpectIdentifier();
+                var member = ExpectMemberName();
                 expr = new MemberAccessExpressionSyntax(expr, member, false,
                     new SourceRange(expr.Range.Start, Peek(-1).Location));
             }
             else if (Check(TokenKind.QuestionDot))
             {
                 Advance();
-                var member = ExpectIdentifier();
+                var member = ExpectMemberName();
                 expr = new MemberAccessExpressionSyntax(expr, member, true,
                     new SourceRange(expr.Range.Start, Peek(-1).Location));
             }
@@ -967,17 +989,15 @@ public sealed class Parser
 
         while (!Check(TokenKind.CloseBracket) && !IsAtEnd())
         {
+            int loopStart = _position;
             elements.Add(ParseExpression());
             if (Check(TokenKind.Comma)) Advance();
+            if (_position == loopStart) Advance();
         }
 
         Expect(TokenKind.CloseBracket);
-
-        if (elements.Count == 0)
-            return new LiteralExpressionSyntax(new Token(TokenKind.OpenBracket, "[]", openBracket.Location),
-                new SourceRange(openBracket.Location, Peek(-1).Location));
-
-        return elements[0];
+        return new ArrayLiteralExpressionSyntax(elements,
+            new SourceRange(openBracket.Location, Peek(-1).Location));
     }
 
     private ObjectLiteralExpressionSyntax ParseObjectLiteral()
@@ -987,12 +1007,14 @@ public sealed class Parser
 
         while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
         {
-            var key = ExpectIdentifier();
+            int loopStart = _position;
+            var key = ExpectMemberName();
             Expect(TokenKind.Colon);
             var value = ParseExpression();
             var propRange = new SourceRange(Peek(-1).Location, Peek().Location);
             properties.Add(new ObjectPropertySyntax(key, value, propRange));
             if (Check(TokenKind.Comma)) Advance();
+            if (_position == loopStart) Advance();
         }
 
         var closeBrace = Expect(TokenKind.CloseBrace);
@@ -1037,6 +1059,26 @@ public sealed class Parser
     private string ExpectIdentifier()
     {
         if (!Check(TokenKind.Identifier))
+        {
+            Diagnostics.Add(new Diagnostic(
+                DiagnosticSeverity.Error,
+                $"Expected identifier, got {Peek().Kind}",
+                Peek().Location));
+            return Peek().Text;
+        }
+        return Advance().Text;
+    }
+
+    // Member positions (object keys, `.name`, class/interface members) accept
+    // keyword-shaped names like `number` or `type` the way TypeScript does.
+    private static bool IsMemberNameToken(TokenKind kind) =>
+        kind == TokenKind.Identifier || IsTypeKeyword(kind) ||
+        kind is TokenKind.TypeKeyword or TokenKind.FromKeyword or TokenKind.AsKeyword or
+        TokenKind.OfKeyword or TokenKind.MatchKeyword;
+
+    private string ExpectMemberName()
+    {
+        if (!IsMemberNameToken(Peek().Kind))
         {
             Diagnostics.Add(new Diagnostic(
                 DiagnosticSeverity.Error,
