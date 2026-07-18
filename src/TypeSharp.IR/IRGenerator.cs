@@ -171,6 +171,10 @@ public sealed class IRGenerator
                 GenerateFor(forStmt);
                 break;
 
+            case BoundThrowStatement throwStmt:
+                GenerateThrow(throwStmt);
+                break;
+
             case BoundFunctionDeclaration func:
                 GenerateFunction(func);
                 break;
@@ -287,6 +291,12 @@ public sealed class IRGenerator
         _currentBlock = afterBlock;
     }
 
+    private void GenerateThrow(BoundThrowStatement throwStmt)
+    {
+        GenerateExpression(throwStmt.Expression);
+        EmitThrow();
+    }
+
     private void GenerateExpression(BoundNode expr)
     {
         switch (expr)
@@ -352,6 +362,10 @@ public sealed class IRGenerator
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_F32, 0, 0, Convert.ToSingle(lit.Value)));
                 }
+                else if (lit.Type == TsType.Decimal)
+                {
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Decimal, 0, 0, Convert.ToDecimal(lit.Value)));
+                }
                 else
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_F64, 0, 0, Convert.ToDouble(lit.Value)));
@@ -403,7 +417,8 @@ public sealed class IRGenerator
         {
             TokenKind.Minus => unary.Operand.Type == TsType.Int32 ? Opcode.Neg_I32 :
                               unary.Operand.Type == TsType.Int64 ? Opcode.Neg_I64 :
-                              unary.Operand.Type == TsType.Float32 ? Opcode.Neg_F32 : Opcode.Neg_F64,
+                              unary.Operand.Type == TsType.Float32 ? Opcode.Neg_F32 :
+                              unary.Operand.Type == TsType.Decimal ? Opcode.Neg_Decimal : Opcode.Neg_F64,
             TokenKind.Bang => Opcode.Not_Bool,
             _ => Opcode.Nop
         };
@@ -549,6 +564,9 @@ public sealed class IRGenerator
     private void EmitAwait() =>
         _currentBlock!.Instructions.Add(new Instruction(Opcode.Await));
 
+    private void EmitThrow() =>
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Throw));
+
     private int GetLocalIndex(LocalSymbol local)
     {
         if (!_localMap.TryGetValue(local.Name, out int index))
@@ -613,6 +631,22 @@ public sealed class IRGenerator
             TokenKind.Minus => Opcode.Sub_F64,
             TokenKind.Star => Opcode.Mul_F64,
             TokenKind.Slash => Opcode.Div_F64,
+            _ => Opcode.Nop
+        };
+
+        if (type == TsType.Decimal) return op switch
+        {
+            TokenKind.Plus => Opcode.Add_Decimal,
+            TokenKind.Minus => Opcode.Sub_Decimal,
+            TokenKind.Star => Opcode.Mul_Decimal,
+            TokenKind.Slash => Opcode.Div_Decimal,
+            TokenKind.Percent => Opcode.Mod_Decimal,
+            TokenKind.DoubleEquals or TokenKind.StrictNotEquals => Opcode.CmpEq_Decimal,
+            TokenKind.NotEquals => Opcode.CmpNe_Decimal,
+            TokenKind.LessThan => Opcode.CmpLt_Decimal,
+            TokenKind.LessOrEqual => Opcode.CmpLe_Decimal,
+            TokenKind.GreaterThan => Opcode.CmpGt_Decimal,
+            TokenKind.GreaterOrEqual => Opcode.CmpGe_Decimal,
             _ => Opcode.Nop
         };
 

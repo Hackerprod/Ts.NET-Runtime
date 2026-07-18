@@ -196,6 +196,14 @@ public sealed class Lexer
             return tokI64;
         }
 
+        if (Peek() == 'm')
+        {
+            _position++;
+            _column++;
+            decimal decValue = decimal.Parse(text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture);
+            return new Token(TokenKind.FloatLiteral, text + "m", start, decValue);
+        }
+
         _column += text.Length;
 
         object value;

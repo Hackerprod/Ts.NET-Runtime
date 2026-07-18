@@ -19,6 +19,7 @@ public abstract class TsValue
     public static TsValue FromString(string value) => new TsStringValue(value);
     public static TsValue FromBool(bool value) => new TsBoolValue(value);
     public static TsValue FromObject(TsObject value) => new TsObjectValue(value);
+    public static TsValue FromDecimal(decimal value) => new TsDecimalValue(value);
     public static TsValue FromNull() => Null;
 
     public override string ToString() => RawValue?.ToString() ?? "null";
@@ -26,7 +27,7 @@ public abstract class TsValue
 
 public enum TsValueType
 {
-    Void, Null, Bool, Int32, Int64, UInt64, Float32, Float64, String, Object, Array, Map
+    Void, Null, Bool, Int32, Int64, UInt64, Float32, Float64, Decimal, String, Object, Array, Map
 }
 
 public sealed class TsVoid : TsValue
@@ -87,6 +88,14 @@ public sealed class TsFloat64Value : TsValue
     public override TsValueType ValueType => TsValueType.Float64;
     public override object? RawValue => Value;
     public TsFloat64Value(double value) => Value = value;
+}
+
+public sealed class TsDecimalValue : TsValue
+{
+    public decimal Value { get; }
+    public override TsValueType ValueType => TsValueType.Decimal;
+    public override object? RawValue => Value;
+    public TsDecimalValue(decimal value) => Value = value;
 }
 
 public sealed class TsStringValue : TsValue

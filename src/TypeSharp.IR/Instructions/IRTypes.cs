@@ -21,12 +21,12 @@ public enum Opcode
     Shr_I32, Shr_I64,
 
     // Comparison
-    CmpEq_I32, CmpEq_I64, CmpEq_U64, CmpEq_F32, CmpEq_F64,
-    CmpNe_I32, CmpNe_I64, CmpNe_U64, CmpNe_F32, CmpNe_F64,
-    CmpLt_I32, CmpLt_I64, CmpLt_U64, CmpLt_F32, CmpLt_F64,
-    CmpLe_I32, CmpLe_I64, CmpLe_U64, CmpLe_F32, CmpLe_F64,
-    CmpGt_I32, CmpGt_I64, CmpGt_U64, CmpGt_F32, CmpGt_F64,
-    CmpGe_I32, CmpGe_I64, CmpGe_U64, CmpGe_F32, CmpGe_F64,
+    CmpEq_I32, CmpEq_I64, CmpEq_U64, CmpEq_F32, CmpEq_F64, CmpEq_Decimal,
+    CmpNe_I32, CmpNe_I64, CmpNe_U64, CmpNe_F32, CmpNe_F64, CmpNe_Decimal,
+    CmpLt_I32, CmpLt_I64, CmpLt_U64, CmpLt_F32, CmpLt_F64, CmpLt_Decimal,
+    CmpLe_I32, CmpLe_I64, CmpLe_U64, CmpLe_F32, CmpLe_F64, CmpLe_Decimal,
+    CmpGt_I32, CmpGt_I64, CmpGt_U64, CmpGt_F32, CmpGt_F64, CmpGt_Decimal,
+    CmpGe_I32, CmpGe_I64, CmpGe_U64, CmpGe_F32, CmpGe_F64, CmpGe_Decimal,
 
     // Logical
     And_Bool, Or_Bool, Not_Bool,
@@ -37,6 +37,7 @@ public enum Opcode
     LoadConst_U64,
     LoadConst_F32,
     LoadConst_F64,
+    LoadConst_Decimal,
     LoadConst_String,
     LoadConst_Bool,
     LoadConst_Null,
@@ -78,6 +79,8 @@ public enum Opcode
     Conv_F64_U64,
     Conv_U64_I32,
     Conv_I32_U64,
+    Conv_F32_F64,
+    Conv_F64_F32,
 
     // Async
     Await,

@@ -520,8 +520,16 @@ public sealed class Binder
                 }
                 break;
             case TokenKind.FloatLiteral:
-                type = TsType.Float64;
-                value = lit.Token.Value ?? 0.0;
+                if (lit.Token.Value is decimal decVal)
+                {
+                    type = TsType.Decimal;
+                    value = decVal;
+                }
+                else
+                {
+                    type = TsType.Float64;
+                    value = lit.Token.Value ?? 0.0;
+                }
                 break;
             case TokenKind.StringLiteral:
                 type = TsType.String;

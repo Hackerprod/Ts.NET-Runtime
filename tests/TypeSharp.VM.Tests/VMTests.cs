@@ -366,6 +366,57 @@ public class InterpreterTests
         Assert.IsType<TsUInt64Value>(result);
         Assert.Equal(300UL, ((TsUInt64Value)result).Value);
     }
+
+    [Fact]
+    public void ExecuteDecimalArithmetic()
+    {
+        var code = @"
+            function main(): decimal {
+                const a: decimal = 1.5m;
+                const b: decimal = 2.5m;
+                return a + b;
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsDecimalValue>(result);
+        Assert.Equal(4.0m, ((TsDecimalValue)result).Value);
+    }
+
+    [Fact]
+    public void ExecuteDecimalMultiply()
+    {
+        var code = @"
+            function main(): decimal {
+                const a: decimal = 3m;
+                const b: decimal = 7m;
+                return a * b;
+            }
+        ";
+
+        var result = Run(code, "main");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsDecimalValue>(result);
+        Assert.Equal(21.0m, ((TsDecimalValue)result).Value);
+    }
+
+    [Fact]
+    public void ExecuteThrowString()
+    {
+        var code = @"
+            function main(): string {
+                throw ""something broke"";
+            }
+        ";
+
+        var ex = Record.Exception(() => Run(code, "main"));
+        Assert.NotNull(ex);
+        Assert.IsType<InvalidOperationException>(ex);
+        Assert.Contains("something broke", ex.Message);
+    }
 }
 
 public class BytecodeTests

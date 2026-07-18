@@ -12,9 +12,11 @@ public sealed class BytecodeFunction
     public string[] StringConstants { get; }
     public long[] IntegerConstants { get; }
     public double[] DoubleConstants { get; }
+    public decimal[] DecimalConstants { get; }
 
     public BytecodeFunction(string name, byte[] instructions, int parameterCount, int localCount,
-        bool isAsync, string[] stringConstants, long[] integerConstants, double[] doubleConstants)
+        bool isAsync, string[] stringConstants, long[] integerConstants, double[] doubleConstants,
+        decimal[]? decimalConstants = null)
     {
         Name = name;
         Instructions = instructions;
@@ -24,6 +26,7 @@ public sealed class BytecodeFunction
         StringConstants = stringConstants;
         IntegerConstants = integerConstants;
         DoubleConstants = doubleConstants;
+        DecimalConstants = decimalConstants ?? Array.Empty<decimal>();
     }
 }
 
@@ -62,6 +65,7 @@ public static class BytecodeCompiler
     private const byte OP_LOAD_CONST_BOOL = 0x06;
     private const byte OP_LOAD_CONST_NULL = 0x07;
     private const byte OP_LOAD_CONST_U64 = 0x08;
+    private const byte OP_LOAD_CONST_DECIMAL = 0x09;
 
     // ── Variables ──
     private const byte OP_LOAD_LOCAL = 0x10;
@@ -178,6 +182,7 @@ public static class BytecodeCompiler
     private const byte OP_CALL_HOST = 0x74;
     private const byte OP_RETURN = 0x75;
     private const byte OP_RETURN_VOID = 0x76;
+    private const byte OP_CALL_VIRT = 0x77;
 
     // ── Object ──
     private const byte OP_NEW_OBJECT = 0x80;
@@ -219,6 +224,22 @@ public static class BytecodeCompiler
     private const byte OP_TYPE_CHECK = 0xA0;
     private const byte OP_NULL_CHECK = 0xA1;
 
+    // ── Decimal arithmetic ──
+    private const byte OP_ADD_DECIMAL = 0xB0;
+    private const byte OP_SUB_DECIMAL = 0xB1;
+    private const byte OP_MUL_DECIMAL = 0xB2;
+    private const byte OP_DIV_DECIMAL = 0xB3;
+    private const byte OP_MOD_DECIMAL = 0xB4;
+    private const byte OP_NEG_DECIMAL = 0xB5;
+
+    // ── Decimal comparison ──
+    private const byte OP_CMP_EQ_DECIMAL = 0xB6;
+    private const byte OP_CMP_NE_DECIMAL = 0xB7;
+    private const byte OP_CMP_LT_DECIMAL = 0xB8;
+    private const byte OP_CMP_LE_DECIMAL = 0xB9;
+    private const byte OP_CMP_GT_DECIMAL = 0xBA;
+    private const byte OP_CMP_GE_DECIMAL = 0xBB;
+
     // ────────────────────────────────────────────────────────
     //  Compile entry point
     // ────────────────────────────────────────────────────────
@@ -242,6 +263,7 @@ public static class BytecodeCompiler
         var stringConstants = CollectStringConstants(function);
         var intConstants = Array.Empty<long>();
         var doubleConstants = Array.Empty<double>();
+        var decimalConstants = CollectDecimalConstants(function);
 
         var blockStarts = new Dictionary<int, int>();
 
@@ -265,7 +287,8 @@ public static class BytecodeCompiler
             function.IsAsync,
             stringConstants,
             intConstants,
-            doubleConstants);
+            doubleConstants,
+            decimalConstants);
     }
 
     // ────────────────────────────────────────────────────────
@@ -488,6 +511,46 @@ public static class BytecodeCompiler
             case Opcode.Conv_F64_U64: writer.Write(OP_CONV_F64_U64); break;
             case Opcode.Conv_U64_I32: writer.Write(OP_CONV_U64_I32); break;
             case Opcode.Conv_I32_U64: writer.Write(OP_CONV_I32_U64); break;
+            case Opcode.Conv_F32_F64: writer.Write(OP_CONV_F32_F64); break;
+            case Opcode.Conv_F64_F32: writer.Write(OP_CONV_F64_F32); break;
+
+            // ── Decimal arithmetic ──
+            case Opcode.Add_Decimal: writer.Write(OP_ADD_DECIMAL); break;
+            case Opcode.Sub_Decimal: writer.Write(OP_SUB_DECIMAL); break;
+            case Opcode.Mul_Decimal: writer.Write(OP_MUL_DECIMAL); break;
+            case Opcode.Div_Decimal: writer.Write(OP_DIV_DECIMAL); break;
+            case Opcode.Mod_Decimal: writer.Write(OP_MOD_DECIMAL); break;
+            case Opcode.Neg_Decimal: writer.Write(OP_NEG_DECIMAL); break;
+
+            // ── Decimal comparison ──
+            case Opcode.CmpEq_Decimal: writer.Write(OP_CMP_EQ_DECIMAL); break;
+            case Opcode.CmpNe_Decimal: writer.Write(OP_CMP_NE_DECIMAL); break;
+            case Opcode.CmpLt_Decimal: writer.Write(OP_CMP_LT_DECIMAL); break;
+            case Opcode.CmpLe_Decimal: writer.Write(OP_CMP_LE_DECIMAL); break;
+            case Opcode.CmpGt_Decimal: writer.Write(OP_CMP_GT_DECIMAL); break;
+            case Opcode.CmpGe_Decimal: writer.Write(OP_CMP_GE_DECIMAL); break;
+
+            // ── Missing emit cases ──
+            case Opcode.LoadConst_Decimal:
+                writer.Write(OP_LOAD_CONST_DECIMAL);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.CallVirt:
+                writer.Write(OP_CALL_VIRT);
+                writer.WriteInt32(instr.Operand0);
+                writer.WriteInt32(instr.Operand1);
+                break;
+            case Opcode.Throw: writer.Write(OP_THROW); break;
+            case Opcode.NewArray:
+                writer.Write(OP_NEW_ARRAY);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.NewMap: writer.Write(OP_NEW_MAP); break;
+            case Opcode.TypeCheck:
+                writer.Write(OP_TYPE_CHECK);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.NullCheck: writer.Write(OP_NULL_CHECK); break;
 
             // ── DEFAULT: throw on unimplemented opcode ──
             default:
@@ -511,6 +574,7 @@ public static class BytecodeCompiler
                 {
                     if (instr.Opcode is Opcode.LoadConst_String or
                         Opcode.Call or
+                        Opcode.CallVirt or
                         Opcode.NewObject or
                         Opcode.LoadField or
                         Opcode.StoreField)
@@ -522,6 +586,23 @@ public static class BytecodeCompiler
             }
         }
         return strings.ToArray();
+    }
+
+    private static decimal[] CollectDecimalConstants(FunctionIR function)
+    {
+        var decimals = new List<decimal>();
+        foreach (var block in function.Blocks)
+        {
+            foreach (var instr in block.Instructions)
+            {
+                if (instr.Opcode == Opcode.LoadConst_Decimal)
+                {
+                    instr.Operand0 = decimals.Count;
+                    decimals.Add(Convert.ToDecimal(instr.OperandObject ?? 0m));
+                }
+            }
+        }
+        return decimals.ToArray();
     }
 
     // ────────────────────────────────────────────────────────
@@ -579,6 +660,15 @@ public static class BytecodeCompiler
                     break;
                 case OP_LOAD_FIELD:
                 case OP_STORE_FIELD:
+                case OP_LOAD_CONST_DECIMAL:
+                case OP_TYPE_CHECK:
+                    reader.ReadInt32();
+                    break;
+                case OP_CALL_VIRT:
+                    reader.ReadInt32();
+                    reader.ReadInt32();
+                    break;
+                case OP_NEW_ARRAY:
                     reader.ReadInt32();
                     break;
             }
@@ -607,6 +697,7 @@ public static class BytecodeCompiler
         public void WriteUInt64(ulong value) => _writer.Write(value);
         public void WriteFloat(float value) => _writer.Write(value);
         public void WriteDouble(double value) => _writer.Write(value);
+        public void WriteDecimal(decimal value) => _writer.Write(value);
 
         public byte[] ToArray() => _stream.ToArray();
     }

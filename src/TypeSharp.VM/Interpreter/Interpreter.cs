@@ -192,6 +192,14 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromUInt64(ReadUInt64(bytecode, ref frame.InstructionPointer)));
                     break;
 
+                case 0x09: // LOAD_CONST_DECIMAL
+                {
+                    var decimals = frame.Function.DecimalConstants;
+                    int idx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    frame.Push(TsValue.FromDecimal(decimals[idx]));
+                    break;
+                }
+
                 // ── Variables ──
 
                 case 0x10: // LOAD_LOCAL
@@ -878,6 +886,39 @@ public sealed class Interpreter
                     return null;
                 }
 
+                case 0x77: // CALL_VIRT
+                {
+                    int funcIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var calleeName = strings[funcIdx];
+
+                    if (_hostFunctions.TryGetValue(calleeName, out var hostFunc))
+                    {
+                        var hostArgs = new TsValue[argCount];
+                        for (int i = argCount - 1; i >= 0; i--)
+                            hostArgs[i] = frame.Pop();
+                        var result = hostFunc(calleeName, hostArgs);
+                        frame.Push(result ?? TsValue.Null);
+                    }
+                    else if (module.FunctionIndex.TryGetValue(calleeName, out int calleeIdx))
+                    {
+                        var calleeFunc = module.Functions[calleeIdx];
+                        var newFrame = new CallFrame(calleeFunc, frame);
+                        for (int i = argCount - 1; i >= 0; i--)
+                            newFrame.Locals[i] = frame.Pop();
+                        ctx.CallStack.Push(newFrame);
+                        var result = ExecuteFrame(newFrame, module, ctx);
+                        ctx.CallStack.Pop();
+                        frame.Push(result ?? TsValue.Null);
+                    }
+                    else
+                    {
+                        for (int i = 0; i < argCount; i++) frame.Pop();
+                        frame.Push(TsValue.Null);
+                    }
+                    break;
+                }
+
                 // ── Object ──
 
                 case 0x80: // NEW_OBJECT
@@ -967,6 +1008,130 @@ public sealed class Interpreter
                     throw new InvalidOperationException(msg);
                 }
 
+                // ── Type/Null checks ──
+
+                case 0xA0: // TYPE_CHECK
+                {
+                    int typeIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var typeName = strings[typeIdx];
+                    var val = frame.Peek();
+                    bool match = val switch
+                    {
+                        TsObjectValue obj => obj.Value.TypeName == typeName,
+                        TsStringValue => typeName == "string",
+                        TsInt32Value => typeName == "int32",
+                        TsInt64Value => typeName == "int64",
+                        TsUInt64Value => typeName == "uint64",
+                        TsFloat32Value => typeName == "float32",
+                        TsFloat64Value => typeName == "float64",
+                        TsDecimalValue => typeName == "decimal",
+                        TsBoolValue => typeName == "bool",
+                        TsNull => false,
+                        _ => false
+                    };
+                    frame.Push(new TsBoolValue(match));
+                    break;
+                }
+                case 0xA1: // NULL_CHECK
+                {
+                    var val = frame.Peek();
+                    frame.Push(new TsBoolValue(val is TsNull));
+                    break;
+                }
+
+                // ── Decimal arithmetic ──
+
+                case 0xB0: // ADD_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(TsValue.FromDecimal(AsDecimal(left) + AsDecimal(right)));
+                    break;
+                }
+                case 0xB1: // SUB_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(TsValue.FromDecimal(AsDecimal(left) - AsDecimal(right)));
+                    break;
+                }
+                case 0xB2: // MUL_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(TsValue.FromDecimal(AsDecimal(left) * AsDecimal(right)));
+                    break;
+                }
+                case 0xB3: // DIV_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    decimal r = AsDecimal(right);
+                    if (r == 0m) throw new InvalidOperationException("Division by zero");
+                    frame.Push(TsValue.FromDecimal(AsDecimal(left) / r));
+                    break;
+                }
+                case 0xB4: // MOD_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    decimal r = AsDecimal(right);
+                    if (r == 0m) throw new InvalidOperationException("Division by zero");
+                    frame.Push(TsValue.FromDecimal(AsDecimal(left) % r));
+                    break;
+                }
+                case 0xB5: // NEG_DECIMAL
+                {
+                    var val = frame.Pop();
+                    frame.Push(TsValue.FromDecimal(-AsDecimal(val)));
+                    break;
+                }
+
+                // ── Decimal comparison ──
+
+                case 0xB6: // CMP_EQ_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsDecimal(left) == AsDecimal(right)));
+                    break;
+                }
+                case 0xB7: // CMP_NE_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsDecimal(left) != AsDecimal(right)));
+                    break;
+                }
+                case 0xB8: // CMP_LT_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsDecimal(left) < AsDecimal(right)));
+                    break;
+                }
+                case 0xB9: // CMP_LE_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsDecimal(left) <= AsDecimal(right)));
+                    break;
+                }
+                case 0xBA: // CMP_GT_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsDecimal(left) > AsDecimal(right)));
+                    break;
+                }
+                case 0xBB: // CMP_GE_DECIMAL
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(AsDecimal(left) >= AsDecimal(right)));
+                    break;
+                }
+
                 // ── Convert ──
 
                 case 0x90: // CONV_I32_I64
@@ -1042,6 +1207,19 @@ public sealed class Interpreter
                     break;
                 }
 
+                case 0x9C: // CONV_F32_F64
+                {
+                    var val = frame.Pop();
+                    frame.Push(TsValue.FromFloat64(AsFloat32(val)));
+                    break;
+                }
+                case 0x9D: // CONV_F64_F32
+                {
+                    var val = frame.Pop();
+                    frame.Push(TsValue.FromFloat32((float)AsFloat64(val)));
+                    break;
+                }
+
                 default:
                     throw new InvalidOperationException($"Unknown opcode: 0x{op:X2}");
             }
@@ -1061,6 +1239,7 @@ public sealed class Interpreter
         TsUInt64Value v => unchecked((int)v.Value),
         TsFloat32Value v => (int)v.Value,
         TsFloat64Value v => (int)v.Value,
+        TsDecimalValue v => (int)v.Value,
         TsBoolValue v => v.Value ? 1 : 0,
         _ => 0
     };
@@ -1072,6 +1251,7 @@ public sealed class Interpreter
         TsUInt64Value v => unchecked((long)v.Value),
         TsFloat32Value v => (long)v.Value,
         TsFloat64Value v => (long)v.Value,
+        TsDecimalValue v => (long)v.Value,
         _ => 0
     };
 
@@ -1082,6 +1262,7 @@ public sealed class Interpreter
         TsUInt64Value v => v.Value,
         TsFloat32Value v => Convert.ToUInt64(v.Value),
         TsFloat64Value v => Convert.ToUInt64(v.Value),
+        TsDecimalValue v => Convert.ToUInt64(v.Value),
         _ => 0
     };
 
@@ -1092,6 +1273,7 @@ public sealed class Interpreter
         TsUInt64Value v => v.Value,
         TsFloat32Value v => v.Value,
         TsFloat64Value v => (float)v.Value,
+        TsDecimalValue v => (float)v.Value,
         _ => 0f
     };
 
@@ -1102,7 +1284,19 @@ public sealed class Interpreter
         TsUInt64Value v => v.Value,
         TsFloat32Value v => v.Value,
         TsFloat64Value v => v.Value,
+        TsDecimalValue v => (double)v.Value,
         _ => 0.0
+    };
+
+    private static decimal AsDecimal(TsValue value) => value switch
+    {
+        TsInt32Value v => v.Value,
+        TsInt64Value v => v.Value,
+        TsUInt64Value v => v.Value,
+        TsFloat32Value v => (decimal)v.Value,
+        TsFloat64Value v => (decimal)v.Value,
+        TsDecimalValue v => v.Value,
+        _ => 0m
     };
 
     private static bool AsBool(TsValue value) => value switch
@@ -1150,5 +1344,15 @@ public sealed class Interpreter
         double value = BitConverter.ToDouble(bytecode, ip);
         ip += 8;
         return value;
+    }
+
+    private static decimal ReadDecimal(byte[] bytecode, ref int ip)
+    {
+        int lo = BitConverter.ToInt32(bytecode, ip);
+        int mid = BitConverter.ToInt32(bytecode, ip + 4);
+        int hi = BitConverter.ToInt32(bytecode, ip + 8);
+        int flags = BitConverter.ToInt32(bytecode, ip + 12);
+        ip += 16;
+        return new decimal(new[] { lo, mid, hi, flags });
     }
 }
