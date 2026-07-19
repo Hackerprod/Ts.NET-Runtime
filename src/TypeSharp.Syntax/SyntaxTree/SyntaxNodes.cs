@@ -760,13 +760,15 @@ public sealed class FieldDeclarationSyntax : SyntaxNode
     public string Name { get; }
     public TypeSyntax TypeAnnotation { get; }
     public ExpressionSyntax? Initializer { get; }
+    public bool IsReadonly { get; }
 
-    public FieldDeclarationSyntax(string name, TypeSyntax typeAnnotation, ExpressionSyntax? initializer, SourceRange range)
+    public FieldDeclarationSyntax(string name, TypeSyntax typeAnnotation, ExpressionSyntax? initializer, SourceRange range, bool isReadonly = false)
         : base(SyntaxNodeType.FieldDeclaration, range)
     {
         Name = name;
         TypeAnnotation = typeAnnotation;
         Initializer = initializer;
+        IsReadonly = isReadonly;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -799,17 +801,24 @@ public sealed class ParameterSyntax : SyntaxNode
 {
     public string Name { get; }
     public TypeSyntax TypeAnnotation { get; }
+    public bool TypeWasInferred { get; }
     public ExpressionSyntax? DefaultValue { get; }
 
     // TypeScript constructor parameter properties: `constructor(private x: T)`
     // declares a field and assigns it from the parameter.
     public bool IsPropertyParameter { get; set; }
 
-    public ParameterSyntax(string name, TypeSyntax typeAnnotation, ExpressionSyntax? defaultValue, SourceRange range)
+    public ParameterSyntax(
+        string name,
+        TypeSyntax typeAnnotation,
+        ExpressionSyntax? defaultValue,
+        SourceRange range,
+        bool typeWasInferred = false)
         : base(SyntaxNodeType.Parameter, range)
     {
         Name = name;
         TypeAnnotation = typeAnnotation;
+        TypeWasInferred = typeWasInferred;
         DefaultValue = defaultValue;
     }
 

@@ -750,6 +750,12 @@ public sealed class IRGenerator
 
     private void GenerateVariableLoad(BoundVariableExpression varExpr)
     {
+        if (varExpr.Symbol is LocalSymbol { ConstantInitializer: BoundNode exportedConstant })
+        {
+            GenerateExpression(exportedConstant);
+            return;
+        }
+
         if (_moduleConstantInitializers.TryGetValue(varExpr.Symbol, out var moduleConstant))
         {
             GenerateExpression(moduleConstant);
@@ -954,6 +960,25 @@ public sealed class IRGenerator
     {
         if (call.Callee is BoundMemberAccessExpression memberAccess)
         {
+            if (memberAccess.Member is MethodSymbol { DeclaringClassName: null } structuralMethod)
+            {
+                GenerateExpression(memberAccess.Object);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, structuralMethod.Name));
+                for (int i = 0; i < call.Arguments.Count; i++)
+                    GenerateExpression(call.Arguments[i]);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.CallDynamic, call.Arguments.Count));
+                return;
+            }
+
+            if (memberAccess.Member is not MethodSymbol)
+            {
+                GenerateExpression(memberAccess);
+                for (int i = 0; i < call.Arguments.Count; i++)
+                    GenerateExpression(call.Arguments[i]);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.CallDynamic, call.Arguments.Count));
+                return;
+            }
+
             // Static namespace calls (Math.floor, console.log) have no
             // receiver value: skip the object load and pass args only.
             bool isStatic = memberAccess.Object is BoundVariableExpression { Symbol: ClassSymbol };

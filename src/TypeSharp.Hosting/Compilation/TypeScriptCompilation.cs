@@ -326,6 +326,9 @@ public sealed class TypeScriptCompilation
                 case BoundEnumDeclaration en when en.Symbol.IsExported:
                     exports[en.Symbol.Name] = en.Symbol;
                     break;
+                case BoundVariableDeclaration variable when variable.Symbol is LocalSymbol { IsExported: true }:
+                    exports[variable.Symbol.Name] = variable.Symbol;
+                    break;
             }
         }
 

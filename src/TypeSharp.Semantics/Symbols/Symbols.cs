@@ -1,4 +1,5 @@
 using TypeSharp.Syntax;
+using TypeSharp.Semantics.Binder;
 
 namespace TypeSharp.Semantics.Symbols;
 
@@ -40,6 +41,8 @@ public sealed class LocalSymbol : Symbol
 {
     public override SymbolKind Kind => SymbolKind.Local;
     public bool IsConst { get; set; }
+    public bool IsExported { get; set; }
+    public BoundNode? ConstantInitializer { get; set; }
 
     // Captured by a nested function: storage becomes a heap box so the
     // closure and the declaring frame share one mutable cell.

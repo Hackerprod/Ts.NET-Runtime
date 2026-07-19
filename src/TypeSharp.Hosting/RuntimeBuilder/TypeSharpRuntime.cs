@@ -266,7 +266,18 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         return ExecuteWithGeneration(lease.Generation, functionName, args);
     }
 
-    private TsValue? ExecuteWithGeneration(RuntimeGeneration generation, string functionName, TsValue[]? args)
+    public TypeSharpFunctionHandle CreateFunctionHandle(string functionName)
+    {
+        using var lease = AcquireGeneration()
+            ?? throw new InvalidOperationException("No active generation");
+
+        if (!lease.Generation.Modules.Values.Any(module => module.Bytecode.FunctionIndex.ContainsKey(functionName)))
+            throw new InvalidOperationException($"Function '{functionName}' not found in generation {lease.Generation.Id}");
+
+        return new TypeSharpFunctionHandle(this, lease.Generation, functionName);
+    }
+
+    internal TsValue? ExecuteWithGeneration(RuntimeGeneration generation, string functionName, TsValue[]? args)
     {
         foreach (var mod in generation.Modules.Values)
         {
@@ -311,8 +322,58 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
 
     private static BytecodeModule CreateLinkedModule(RuntimeGeneration generation)
     {
-        var functions = generation.Modules.Values.SelectMany(module => module.Bytecode.Functions).ToArray();
-        return new BytecodeModule($"generation-{generation.Id}", functions);
+        var functions = new List<BytecodeFunction>();
+        foreach (var module in generation.Modules.Values)
+        {
+            var renameMap = BuildPrivateFunctionRenameMap(module);
+            foreach (var function in module.Bytecode.Functions)
+            {
+                functions.Add(CloneLinkedFunction(function, renameMap));
+            }
+        }
+
+        return new BytecodeModule($"generation-{generation.Id}", functions.ToArray());
+    }
+
+    private static Dictionary<string, string> BuildPrivateFunctionRenameMap(TsModule module)
+    {
+        var prefix = ToLinkSafeName(module.Name);
+        return module.Bytecode.Functions
+            .Where(function => function.Name.StartsWith("$lambda_", StringComparison.Ordinal))
+            .ToDictionary(
+                function => function.Name,
+                function => $"$module_{prefix}_{function.Name}",
+                StringComparer.Ordinal);
+    }
+
+    private static BytecodeFunction CloneLinkedFunction(
+        BytecodeFunction function,
+        IReadOnlyDictionary<string, string> renameMap)
+    {
+        var name = renameMap.TryGetValue(function.Name, out var renamed)
+            ? renamed
+            : function.Name;
+        var stringConstants = function.StringConstants
+            .Select(value => renameMap.TryGetValue(value, out var replacement) ? replacement : value)
+            .ToArray();
+
+        return new BytecodeFunction(
+            name,
+            function.Instructions,
+            function.ParameterCount,
+            function.LocalCount,
+            function.IsAsync,
+            stringConstants,
+            function.IntegerConstants,
+            function.DoubleConstants,
+            function.DecimalConstants);
+    }
+
+    private static string ToLinkSafeName(string value)
+    {
+        var safe = new string(value.Select(ch =>
+            char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_').ToArray());
+        return string.IsNullOrWhiteSpace(safe) ? "module" : safe;
     }
 
     public async Task<TsModule> ImportAsync(string moduleName)

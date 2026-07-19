@@ -215,8 +215,10 @@ public sealed class Parser
         Expect(TokenKind.Equals);
         var type = ParseType();
         Expect(TokenKind.Semicolon);
-        return new TypeAliasDeclarationSyntax(name, type,
+        var alias = new TypeAliasDeclarationSyntax(name, type,
             new SourceRange(typeKw.Location, Peek(-1).Location));
+        alias.GenericParameters.AddRange(genericParams);
+        return alias;
     }
 
     private ImportDeclarationSyntax ParseImportDeclaration()
@@ -353,7 +355,8 @@ public sealed class Parser
         if (Check(TokenKind.Semicolon)) Advance();
         var fieldRange = new SourceRange(Peek(-1).Location, Peek().Location);
 
-        return new FieldDeclarationSyntax(name, type!, initializer, fieldRange);
+        bool isReadonly = mods.Any(m => m.Token.Kind == TokenKind.ReadonlyKeyword);
+        return new FieldDeclarationSyntax(name, type!, initializer, fieldRange, isReadonly);
     }
 
     private List<ParameterSyntax> ParseParameterList()
@@ -501,6 +504,12 @@ public sealed class Parser
             return new NamedTypeSyntax("null", nullTok.Location);
         }
 
+        if (Check(TokenKind.ConstKeyword))
+        {
+            var constTok = Advance();
+            return new NamedTypeSyntax("const", constTok.Location);
+        }
+
         // `new (…) => T` constructor types parse as plain function types.
         if (Check(TokenKind.NewKeyword) && Peek(1).Kind == TokenKind.OpenParen)
         {
@@ -550,11 +559,13 @@ public sealed class Parser
         {
             int loopStart = _position;
             var name = ExpectMemberName();
-            TypeSyntax paramType = Check(TokenKind.Colon)
+            bool typeWasInferred = !Check(TokenKind.Colon);
+            TypeSyntax paramType = !typeWasInferred
                 ? ParseTypeAnnotation()
                 : AnyType(Peek().Location);
             parameters.Add(new ParameterSyntax(name, paramType, null,
-                new SourceRange(Peek(-1).Location, Peek().Location)));
+                new SourceRange(Peek(-1).Location, Peek().Location),
+                typeWasInferred));
             if (Check(TokenKind.Comma)) Advance();
             if (_position == loopStart) Advance();
         }
@@ -1192,7 +1203,8 @@ public sealed class Parser
                 var lambdaParams = new List<ParameterSyntax>
                 {
                     new(paramToken.Text, AnyType(paramToken.Location), null,
-                        new SourceRange(paramToken.Location, paramToken.Location))
+                        new SourceRange(paramToken.Location, paramToken.Location),
+                        typeWasInferred: true)
                 };
                 var lambdaBody = ParseArrowBody();
                 return new LambdaExpressionSyntax(lambdaParams, null, lambdaBody, false,
@@ -1287,7 +1299,8 @@ public sealed class Parser
                 break;
             }
             var nameToken = Advance();
-            TypeSyntax paramType = Check(TokenKind.Colon)
+            bool typeWasInferred = !Check(TokenKind.Colon);
+            TypeSyntax paramType = !typeWasInferred
                 ? ParseTypeAnnotation()
                 : AnyType(nameToken.Location);
             ExpressionSyntax? defaultVal = null;
@@ -1297,7 +1310,8 @@ public sealed class Parser
                 defaultVal = ParseExpression();
             }
             parameters.Add(new ParameterSyntax(nameToken.Text, paramType, defaultVal,
-                new SourceRange(nameToken.Location, Peek(-1).Location)));
+                new SourceRange(nameToken.Location, Peek(-1).Location),
+                typeWasInferred));
             if (Check(TokenKind.Comma))
             {
                 Advance();

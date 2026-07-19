@@ -30,6 +30,8 @@ public abstract class TsType : IEquatable<TsType>
 
         if (IsImplicitNumericWidening(source, target)) return true;
 
+        if (SatisfiesStructuralContract(source, target)) return true;
+
         if (source.IsAssignableTo(target)) return true;
         if (target.IsAssignableTo(source)) return true;
 
@@ -42,6 +44,174 @@ public abstract class TsType : IEquatable<TsType>
             return true;
 
         return false;
+    }
+
+    private static bool SatisfiesStructuralContract(TsType source, TsType target)
+    {
+        source = UnwrapGenericDefinition(source);
+        target = UnwrapGenericDefinition(target);
+
+        return target switch
+        {
+            TsInterfaceType targetInterface => SatisfiesInterface(source, targetInterface),
+            TsFunctionType targetFunction when source is TsFunctionType sourceFunction =>
+                IsFunctionAssignable(sourceFunction, targetFunction),
+            _ => false
+        };
+    }
+
+    private static TsType UnwrapGenericDefinition(TsType type) =>
+        type is TsGenericType generic ? generic.Definition : type;
+
+    public static IReadOnlyDictionary<string, TsType> CreateGenericMap(
+        IReadOnlyList<TsTypeParameter> parameters,
+        IReadOnlyList<TsType> arguments)
+    {
+        var map = new Dictionary<string, TsType>(StringComparer.Ordinal);
+        for (int i = 0; i < parameters.Count && i < arguments.Count; i++)
+            map[parameters[i].Name] = arguments[i];
+        return map;
+    }
+
+    public static TsType Substitute(TsType type, IReadOnlyDictionary<string, TsType> genericArguments)
+    {
+        if (genericArguments.Count == 0)
+            return type;
+
+        return type switch
+        {
+            TsTypeParameter parameter when genericArguments.TryGetValue(parameter.Name, out var replacement) => replacement,
+            TsArrayType array => new TsArrayType(Substitute(array.ElementType, genericArguments)),
+            TsTupleType tuple => new TsTupleType(tuple.ElementTypes.Select(t => Substitute(t, genericArguments)).ToList()),
+            TsMapType map => new TsMapType(
+                Substitute(map.KeyType, genericArguments),
+                Substitute(map.ValueType, genericArguments)),
+            TsNullableType nullable => new TsNullableType(Substitute(nullable.ElementType, genericArguments)),
+            TsPromiseType promise => new TsPromiseType(Substitute(promise.ElementType, genericArguments)),
+            TsUnionType union => new TsUnionType(union.Types.Select(t => Substitute(t, genericArguments)).ToList()),
+            TsFunctionType function => new TsFunctionType(
+                function.Parameters.Select(p => new TsParameter(p.Name, Substitute(p.Type, genericArguments))
+                {
+                    HasDefault = p.HasDefault,
+                    DefaultValue = p.DefaultValue
+                }).ToList(),
+                Substitute(function.ReturnType, genericArguments)),
+            TsGenericType generic => new TsGenericType(
+                Substitute(generic.Definition, genericArguments),
+                generic.TypeArguments.Select(t => Substitute(t, genericArguments)).ToList()),
+            _ => type
+        };
+    }
+
+    private static bool SatisfiesInterface(TsType source, TsInterfaceType target)
+    {
+        foreach (var extended in target.ExtendedInterfaces.OfType<TsInterfaceType>())
+        {
+            if (!SatisfiesInterface(source, extended))
+                return false;
+        }
+
+        foreach (var required in target.Properties.Values)
+        {
+            if (!TryGetReadableMemberType(source, required.Name, out var actualType))
+                return required.Type is TsNullableType;
+            if (!IsCompatibleWith(actualType, required.Type))
+                return false;
+        }
+
+        foreach (var required in target.Methods.Values)
+        {
+            if (!TryGetMethod(source, required.Name, out var actualMethod))
+                return false;
+
+            var actualFunction = new TsFunctionType(actualMethod.Parameters, actualMethod.ReturnType);
+            var requiredFunction = new TsFunctionType(required.Parameters, required.ReturnType);
+            if (!IsFunctionAssignable(actualFunction, requiredFunction))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetReadableMemberType(TsType source, string name, out TsType type)
+    {
+        source = UnwrapGenericDefinition(source);
+
+        switch (source)
+        {
+            case TsClassType cls:
+                for (var current = cls; current != null; current = current.BaseType)
+                {
+                    if (current.Fields.TryGetValue(name, out var field))
+                    {
+                        type = field.Type;
+                        return true;
+                    }
+                    if (current.Properties.TryGetValue(name, out var property))
+                    {
+                        type = property.Type;
+                        return true;
+                    }
+                }
+                break;
+            case TsInterfaceType iface:
+                if (iface.Properties.TryGetValue(name, out var ifaceProperty))
+                {
+                    type = ifaceProperty.Type;
+                    return true;
+                }
+                foreach (var extended in iface.ExtendedInterfaces)
+                {
+                    if (TryGetReadableMemberType(extended, name, out type))
+                        return true;
+                }
+                break;
+        }
+
+        type = Void;
+        return false;
+    }
+
+    private static bool TryGetMethod(TsType source, string name, out TsMethod method)
+    {
+        source = UnwrapGenericDefinition(source);
+
+        switch (source)
+        {
+            case TsClassType cls:
+                for (var current = cls; current != null; current = current.BaseType)
+                {
+                    if (current.Methods.TryGetValue(name, out method!))
+                        return true;
+                }
+                break;
+            case TsInterfaceType iface:
+                if (iface.Methods.TryGetValue(name, out method!))
+                    return true;
+                foreach (var extended in iface.ExtendedInterfaces)
+                {
+                    if (TryGetMethod(extended, name, out method))
+                        return true;
+                }
+                break;
+        }
+
+        method = null!;
+        return false;
+    }
+
+    private static bool IsFunctionAssignable(TsFunctionType source, TsFunctionType target)
+    {
+        if (source.Parameters.Count != target.Parameters.Count)
+            return false;
+
+        for (int i = 0; i < source.Parameters.Count; i++)
+        {
+            if (!IsCompatibleWith(target.Parameters[i].Type, source.Parameters[i].Type))
+                return false;
+        }
+
+        return target.ReturnType.Equals(Void) || IsCompatibleWith(source.ReturnType, target.ReturnType);
     }
 
     // Lossless implicit widenings only: narrower ints into wider ints of the
@@ -214,7 +384,11 @@ public sealed class TsInterfaceType : TsType
         {
             return iface.Properties.All(p =>
                 Properties.ContainsKey(p.Key) &&
-                Properties[p.Key].Type.IsAssignableTo(p.Value.Type));
+                IsCompatibleWith(Properties[p.Key].Type, p.Value.Type)) &&
+                iface.Methods.All(m =>
+                    Methods.TryGetValue(m.Key, out var method) &&
+                    new TsFunctionType(method.Parameters, method.ReturnType).IsAssignableTo(
+                        new TsFunctionType(m.Value.Parameters, m.Value.ReturnType)));
         }
         return false;
     }
@@ -349,6 +523,27 @@ public sealed class TsFunctionType : TsType
     {
         Parameters = parameters;
         ReturnType = returnType;
+    }
+
+    public override bool IsAssignableTo(TsType other)
+    {
+        if (Equals(other)) return true;
+        if (other is not TsFunctionType target)
+            return false;
+        if (Parameters.Count != target.Parameters.Count)
+            return false;
+
+        for (int i = 0; i < Parameters.Count; i++)
+        {
+            // A callback that accepts a wider parameter type can stand in for
+            // one that will be called with a narrower type.
+            if (!IsCompatibleWith(target.Parameters[i].Type, Parameters[i].Type))
+                return false;
+        }
+
+        // TypeScript allows callbacks that return a value where void is
+        // expected; the caller is free to ignore that result.
+        return target.ReturnType.Equals(Void) || IsCompatibleWith(ReturnType, target.ReturnType);
     }
 }
 

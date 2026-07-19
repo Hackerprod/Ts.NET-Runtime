@@ -140,6 +140,402 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task IdiomaticCallbackRoute_CanUseExportedConstObjectAndInlineLambda()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_callback_route_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var generated = Path.Combine(dir, "generated.ts");
+        var framework = Path.Combine(dir, "framework.ts");
+        var app = Path.Combine(dir, "app.ts");
+        try
+        {
+            File.WriteAllText(generated, """
+                export interface Route {
+                    requestId: int32;
+                }
+
+                export const Result = {
+                    Success: 7
+                };
+
+                export const Routes = {
+                    Join: {
+                        requestId: 4006
+                    }
+                };
+                """);
+
+            File.WriteAllText(framework, """
+                import { Route } from "./generated";
+
+                export class HandlerContext {
+                    request: any;
+
+                    constructor() {
+                        this.request = {
+                            channelName: "Lobby",
+                            channelType: 3
+                        };
+                    }
+
+                    reply(response: any): void {
+                        record(response.result);
+                    }
+                }
+
+                export function on(route: Route, handler: (ctx: HandlerContext) => void): boolean {
+                    if (messageType() != route.requestId) {
+                        return false;
+                    }
+
+                    const ctx = new HandlerContext();
+                    handler(ctx);
+                    return true;
+                }
+                """);
+
+            File.WriteAllText(app, """
+                import { Routes, Result } from "./generated";
+                import { on } from "./framework";
+
+                function handle(): boolean {
+                    const offset = 2;
+                    return on(Routes.Join, ctx => {
+                        ctx.reply({
+                            channelName: ctx.request.channelName,
+                            channelType: ctx.request.channelType,
+                            result: Result.Success + offset
+                        });
+                    });
+                }
+                """);
+
+            int recorded = 0;
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .RegisterHostFunction("host", "messageType", _ => TsValue.FromInt32(4006))
+                .RegisterHostFunction("host", "record", args =>
+                {
+                    recorded = args.Length > 0
+                        ? args[0] switch
+                        {
+                            TsInt32Value int32 => int32.Value,
+                            TsFloat64Value number => (int)number.Value,
+                            _ => -1
+                        }
+                        : -1;
+                    return TsValue.Void;
+                })
+                .BuildAsync();
+
+            var result = runtime.Invoke("handle");
+            Assert.IsType<TsBoolValue>(result);
+            Assert.True(((TsBoolValue)result!).Value);
+            Assert.Equal(9, recorded);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ContextualLambdaParameter_UsesFunctionParameterTypeForMemberChecking()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_contextual_lambda_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "framework.ts"), """
+                export class HandlerContext {
+                    ok(): void {
+                    }
+                }
+
+                export function on(handler: (ctx: HandlerContext) => void): void {
+                    const ctx = new HandlerContext();
+                    handler(ctx);
+                }
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                import { on } from "./framework";
+
+                function handle(): void {
+                    on(ctx => {
+                        ctx.missing();
+                    });
+                }
+                """);
+
+            var compilation = new TypeScriptCompilation(dir);
+            compilation.AddSourceDirectory(dir);
+            compilation.Compile();
+
+            Assert.Contains(compilation.Diagnostics.GetErrors(),
+                error => error.Message.Contains("No member 'missing'"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task GenericRouteContext_PropagatesRequestAndResponseTypesIntoHandler()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_generic_route_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "generated.ts"), """
+                export interface JoinRequest {
+                    readonly channelName: string;
+                    readonly channelType: int32;
+                }
+
+                export interface JoinResponse {
+                    readonly channelName: string;
+                    readonly result: int32;
+                }
+
+                export interface Proto<TMessage> {
+                    readonly name: string;
+                }
+
+                export interface Route<TRequest, TResponse> {
+                    readonly requestId: int32;
+                    readonly responseId: int32;
+                    readonly request: Proto<TRequest>;
+                    readonly response: Proto<TResponse>;
+                }
+
+                export const Proto = {
+                    JoinRequest: { name: "JoinRequest" } as Proto<JoinRequest>,
+                    JoinResponse: { name: "JoinResponse" } as Proto<JoinResponse>
+                } as const;
+
+                export const Routes = {
+                    Join: {
+                        requestId: 4006,
+                        responseId: 4007,
+                        request: Proto.JoinRequest,
+                        response: Proto.JoinResponse
+                    } as Route<JoinRequest, JoinResponse>
+                } as const;
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "framework.ts"), """
+                import { Route } from "./generated";
+
+                export interface HandlerContext<TRequest, TResponse> {
+                    readonly request: TRequest;
+                    reply(response: TResponse): void;
+                }
+
+                export const gc = {
+                    on: <TRequest, TResponse>(route: Route<TRequest, TResponse>, handler: (ctx: HandlerContext<TRequest, TResponse>) => void): boolean => {
+                        if (messageType() != route.requestId) {
+                            return false;
+                        }
+
+                        const ctx = {
+                            request: {
+                                channelName: "Lobby",
+                                channelType: 3
+                            },
+                            reply: (response: any): void => {
+                                record(response.result);
+                            }
+                        } as HandlerContext<TRequest, TResponse>;
+                        handler(ctx);
+                        return true;
+                    }
+                } as const;
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                import { Routes } from "./generated";
+                import { gc } from "./framework";
+
+                function handle(): boolean {
+                    return gc.on(Routes.Join, ctx => {
+                        ctx.reply({
+                            channelName: ctx.request.channelName,
+                            result: ctx.request.channelType + 4
+                        });
+                    });
+                }
+                """);
+
+            int recorded = 0;
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .RegisterHostFunction("host", "messageType", _ => TsValue.FromInt32(4006))
+                .RegisterHostFunction("host", "record", args =>
+                {
+                    recorded = args[0] switch
+                    {
+                        TsInt32Value int32 => int32.Value,
+                        TsInt64Value int64 => (int)int64.Value,
+                        TsUInt64Value uint64 => (int)uint64.Value,
+                        TsFloat32Value float32 => (int)float32.Value,
+                        TsFloat64Value number => (int)number.Value,
+                        TsNull => -998,
+                        TsVoid => -999,
+                        _ => -1
+                    };
+                    return TsValue.Void;
+                })
+                .BuildAsync();
+
+            var result = runtime.Invoke("handle");
+            Assert.IsType<TsBoolValue>(result);
+            Assert.True(((TsBoolValue)result!).Value);
+            Assert.Equal(7, recorded);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExportedConstWithLambda_CanBeImportedByMultipleModulesInLinkedGeneration()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_imported_const_lambda_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "generated.ts"), """
+                export interface Route {
+                    readonly requestId: int32;
+                }
+
+                export const Routes = {
+                    A: { requestId: 4006 } as Route,
+                    B: { requestId: 4006 } as Route
+                } as const;
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "framework.ts"), """
+                import { Route } from "./generated";
+
+                export interface HandlerContext {
+                    readonly requestId: int32;
+                    reply(value: int32): void;
+                }
+
+                export const gc = {
+                    on: (route: Route, handler: (ctx: HandlerContext) => void): boolean => {
+                        if (messageType() != route.requestId) {
+                            return false;
+                        }
+
+                        const ctx = {
+                            requestId: route.requestId,
+                            reply: (value: int32): void => {
+                                record(value);
+                            }
+                        } as HandlerContext;
+
+                        handler(ctx);
+                        return true;
+                    }
+                } as const;
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "moduleA.ts"), """
+                import { Routes } from "./generated";
+                import { gc } from "./framework";
+
+                export function handleA(): boolean {
+                    return gc.on(Routes.A, ctx => {
+                        ctx.reply(10);
+                    });
+                }
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "moduleB.ts"), """
+                import { Routes } from "./generated";
+                import { gc } from "./framework";
+
+                export function handleB(): boolean {
+                    return gc.on(Routes.B, ctx => {
+                        ctx.reply(20);
+                    });
+                }
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "main.ts"), """
+                import { handleA } from "./moduleA";
+                import { handleB } from "./moduleB";
+
+                function run(): int32 {
+                    if (!handleA()) return 1;
+                    if (!handleB()) return 2;
+                    return 3;
+                }
+                """);
+
+            var recorded = new List<int>();
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .RegisterHostFunction("host", "messageType", _ => TsValue.FromInt32(4006))
+                .RegisterHostFunction("host", "record", args =>
+                {
+                    recorded.Add(args[0] switch
+                    {
+                        TsInt32Value int32 => int32.Value,
+                        TsInt64Value int64 => (int)int64.Value,
+                        TsFloat64Value number => (int)number.Value,
+                        _ => -1
+                    });
+                    return TsValue.Void;
+                })
+                .BuildAsync();
+
+            var result = runtime.Invoke("run");
+            Assert.Equal(3, ((TsInt32Value)result!).Value);
+            Assert.Equal(new[] { 10, 20 }, recorded);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ReadonlyMembers_AreRejectedOnAssignment()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_readonly_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                interface Route {
+                    readonly requestId: int32;
+                }
+
+                function mutate(route: Route): void {
+                    route.requestId = 1;
+                }
+                """);
+
+            var compilation = new TypeScriptCompilation(dir);
+            compilation.AddSourceDirectory(dir);
+            compilation.Compile();
+
+            Assert.Contains(compilation.Diagnostics.GetErrors(),
+                error => error.Message.Contains("readonly member 'requestId'"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task HotReload_PublishesValidatedCandidateAndRollsBack()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_reload_" + Guid.NewGuid().ToString("N"));
@@ -212,6 +608,33 @@ public class IntegrationTests
             using (runtime.AcquireGeneration())
                 Assert.Equal(1, generation.ActiveExecutions);
             Assert.Equal(0, generation.ActiveExecutions);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task FunctionHandle_InvokesTheGenerationThatCreatedIt()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_handle_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "app.ts");
+        try
+        {
+            File.WriteAllText(file, "function value(): int32 { return 1; }");
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .EnableHotReload()
+                .BuildAsync();
+
+            var handle = runtime.CreateFunctionHandle("value");
+            Assert.Equal(1, handle.GenerationId);
+
+            File.WriteAllText(file, "function value(): int32 { return 2; }");
+            Assert.True(await runtime.ReloadAsync(file));
+
+            Assert.False(handle.IsCurrent);
+            Assert.Equal(1, ((TsInt32Value)handle.Invoke()!).Value);
+            Assert.Equal(2, ((TsInt32Value)runtime.Invoke("value")!).Value);
         }
         finally { Directory.Delete(dir, true); }
     }
@@ -611,3 +1034,5 @@ public class MathHostService
     public int Add(int a, int b) => a + b;
     public int Multiply(int a, int b) => a * b;
 }
+
+
