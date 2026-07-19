@@ -5,6 +5,7 @@ using TypeSharp.IR;
 using TypeSharp.Interop.HostExports;
 using TypeSharp.Interop.Marshalling;
 using TypeSharp.Interop.Proxies;
+using TypeSharp.Semantics.Symbols;
 using Xunit;
 
 namespace TypeSharp.VM.Tests;
@@ -1043,18 +1044,50 @@ public class InteropTests
     }
 
     [Fact]
+    public void StrictEquality_UsesNoCoercionForDynamicValues()
+    {
+        var result = Run(@"
+            function main(): boolean {
+                const text: any = ""1"";
+                const numberValue: any = 1;
+                return text !== numberValue && !(text === numberValue);
+            }
+        ");
+
+        Assert.IsType<TsBoolValue>(result);
+        Assert.True(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
     public void ByteArrayMarshalling_UsesUint8ArrayShape()
     {
         var input = new byte[] { 1, 2, 255 };
         var tsValue = Marshaller.FromManaged(input);
 
-        Assert.IsType<TsArrayValue>(tsValue);
-        var array = ((TsArrayValue)tsValue).Value;
-        Assert.Equal(3, array.Count);
-        Assert.Equal(255, ((TsInt32Value)array.Get(2)).Value);
+        Assert.IsType<TsUint8ArrayValue>(tsValue);
+        var array = (TsUint8ArrayValue)tsValue;
+        Assert.Equal(3, array.Length);
+        Assert.Equal(255, array.Get(2));
 
         var output = Marshaller.ToManaged(tsValue, typeof(byte[]));
         Assert.Equal(input, output);
+    }
+
+    [Fact]
+    public void HostByteArraySignature_ExposesUint8Array()
+    {
+        var registry = new HostRegistry();
+        registry.RegisterFunction(new HostFunctionDescriptor(
+            "bytes",
+            "load",
+            typeof(byte[]),
+            Array.Empty<Type>(),
+            _ => TsValue.FromUint8Array(new byte[] { 1, 2, 3 })));
+
+        var symbols = registry.CreateGlobalSymbols();
+        var load = Assert.IsType<FunctionSymbol>(symbols["load"]);
+
+        Assert.Equal("Uint8Array", load.Type.Name);
     }
 
     [Fact]
@@ -1080,7 +1113,8 @@ public class InteropTests
 
         var result = desc!.Implementation(Array.Empty<TsValue>());
         Assert.NotNull(result);
-        Assert.Equal(42, ((TsInt32Value)result!).Value);
+        var promise = Assert.IsType<TsPromiseValue>(result);
+        Assert.Equal(42, ((TsInt32Value)promise.Await()).Value);
     }
 
     [Fact]
@@ -1094,7 +1128,8 @@ public class InteropTests
 
         var result = desc!.Implementation(Array.Empty<TsValue>());
         Assert.NotNull(result);
-        Assert.Equal("hello", ((TsStringValue)result!).Value);
+        var promise = Assert.IsType<TsPromiseValue>(result);
+        Assert.Equal("hello", ((TsStringValue)promise.Await()).Value);
     }
 
     [Fact]
@@ -1106,7 +1141,11 @@ public class InteropTests
         var desc = registry.GetFunction("math", "get_void_task");
         Assert.NotNull(desc);
 
-        var ex = Record.Exception(() => desc!.Implementation(Array.Empty<TsValue>()));
+        var ex = Record.Exception(() =>
+        {
+            var promise = Assert.IsType<TsPromiseValue>(desc!.Implementation(Array.Empty<TsValue>()));
+            Assert.IsType<TsVoid>(promise.Await());
+        });
         Assert.Null(ex);
     }
 

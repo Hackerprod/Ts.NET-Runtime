@@ -109,9 +109,10 @@ public sealed class HostRegistry
 
     private static TsType MapManagedType(Type type)
     {
-        if (type == typeof(void) || type == typeof(Task) || type == typeof(ValueTask)) return TsType.Void;
+        if (type == typeof(void)) return TsType.Void;
+        if (type == typeof(Task) || type == typeof(ValueTask)) return new TsPromiseType(TsType.Void);
         if (type.IsGenericType && (type.GetGenericTypeDefinition() == typeof(Task<>) || type.GetGenericTypeDefinition() == typeof(ValueTask<>)))
-            type = type.GetGenericArguments()[0];
+            return new TsPromiseType(MapManagedType(type.GetGenericArguments()[0]));
         if (type == typeof(bool)) return TsType.Bool;
         if (type == typeof(int)) return TsType.Int32;
         if (type == typeof(long)) return TsType.BigInt;
@@ -120,7 +121,7 @@ public sealed class HostRegistry
         if (type == typeof(double)) return TsType.Float64;
         if (type == typeof(decimal)) return TsType.Decimal;
         if (type == typeof(string)) return TsType.String;
-        if (type == typeof(byte[])) return new TsArrayType(TsType.Number);
+        if (type == typeof(byte[])) return new TsClassType("Uint8Array");
         return TsType.Any;
     }
 
@@ -172,41 +173,14 @@ public sealed class HostRegistry
             managedArgs[i] = TypeSharp.Interop.Marshalling.Marshaller.ToManaged(args[i], parameters[i].ParameterType);
         }
 
-        var result = method.Invoke(instance, managedArgs);
-
-        if (result == null) return null;
-
-        if (result is Task<object> taskObj)
+        try
         {
-            taskObj.Wait();
-            var taskResult = taskObj.Result;
-            return TypeSharp.Interop.Marshalling.Marshaller.FromManaged(taskResult);
+            var result = method.Invoke(instance, managedArgs);
+            return TypeSharp.Interop.Marshalling.Marshaller.FromManaged(result);
         }
-
-        var resultType = result.GetType();
-        if (resultType.IsGenericType)
+        catch (TargetInvocationException ex) when (ex.InnerException != null)
         {
-            var genericDef = resultType.GetGenericTypeDefinition();
-            if (genericDef == typeof(Task<>) || genericDef == typeof(ValueTask<>))
-            {
-                var getResultProperty = resultType.GetProperty("Result");
-                var taskResult = getResultProperty?.GetValue(result);
-                return TypeSharp.Interop.Marshalling.Marshaller.FromManaged(taskResult);
-            }
+            throw ex.InnerException;
         }
-
-        if (result is Task nonGenericTask)
-        {
-            nonGenericTask.Wait();
-            return null;
-        }
-
-        if (result is ValueTask valueTask)
-        {
-            valueTask.AsTask().Wait();
-            return null;
-        }
-
-        return TypeSharp.Interop.Marshalling.Marshaller.FromManaged(result);
     }
 }

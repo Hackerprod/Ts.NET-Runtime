@@ -829,9 +829,14 @@ public sealed class IRGenerator
         GenerateExpression(bin.Right);
 
         var operandType = bin.Left.Type is TsAnyType ? bin.Right.Type : bin.Left.Type;
+        if (bin.Operator is TokenKind.TripleEquals or TokenKind.StrictNotEquals &&
+            (bin.Left.Type is TsAnyType || bin.Right.Type is TsAnyType))
+        {
+            operandType = TsType.Any;
+        }
         // Dynamic (host) operands carry their width at runtime; compute in the
         // widest integer form so an int64 payload never truncates through i32 ops.
-        if ((bin.Left.Type is TsAnyType || bin.Right.Type is TsAnyType) &&
+        else if ((bin.Left.Type is TsAnyType || bin.Right.Type is TsAnyType) &&
             (operandType == TsType.Int32 || operandType is TsAnyType))
         {
             operandType = TsType.Int64;
@@ -1329,16 +1334,20 @@ public sealed class IRGenerator
         {
             TokenKind.AmpersandAmpersand => Opcode.And_Bool,
             TokenKind.PipePipe => Opcode.Or_Bool,
-            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_Any,
-            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_Any,
+            TokenKind.DoubleEquals => Opcode.CmpEq_Any,
+            TokenKind.NotEquals => Opcode.CmpNe_Any,
+            TokenKind.TripleEquals => Opcode.CmpStrictEq_Any,
+            TokenKind.StrictNotEquals => Opcode.CmpStrictNe_Any,
             _ => Opcode.Nop
         };
 
         if (type == TsType.String) return op switch
         {
             TokenKind.Plus => Opcode.ConcatString,
-            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_Any,
-            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_Any,
+            TokenKind.DoubleEquals => Opcode.CmpEq_Any,
+            TokenKind.NotEquals => Opcode.CmpNe_Any,
+            TokenKind.TripleEquals => Opcode.CmpStrictEq_Any,
+            TokenKind.StrictNotEquals => Opcode.CmpStrictNe_Any,
             _ => Opcode.Nop
         };
 
@@ -1346,8 +1355,10 @@ public sealed class IRGenerator
         // still support equality via generic value comparison.
         return op switch
         {
-            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_Any,
-            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_Any,
+            TokenKind.DoubleEquals => Opcode.CmpEq_Any,
+            TokenKind.NotEquals => Opcode.CmpNe_Any,
+            TokenKind.TripleEquals => Opcode.CmpStrictEq_Any,
+            TokenKind.StrictNotEquals => Opcode.CmpStrictNe_Any,
             TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };

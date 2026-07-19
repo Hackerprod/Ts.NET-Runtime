@@ -719,13 +719,14 @@ public sealed class MethodDeclarationSyntax : SyntaxNode
     public bool IsAsync { get; }
     public List<GenericParameterSyntax> GenericParameters { get; } = new();
 
-    public MethodDeclarationSyntax(string name, List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode? body, SourceRange range)
+    public MethodDeclarationSyntax(string name, List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode? body, bool isAsync, SourceRange range)
         : base(SyntaxNodeType.MethodDeclaration, range)
     {
         Name = name;
         Parameters = parameters;
         ReturnType = returnType;
         Body = body;
+        IsAsync = isAsync;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()

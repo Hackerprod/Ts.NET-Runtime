@@ -88,6 +88,37 @@ public static class Builtins
                 return new TsArrayValue(arr);
             },
             ["Array::isArray"] = args => Bool(args.Length > 0 && args[0] is TsArrayValue),
+            ["Uint8Array::slice"] = args =>
+            {
+                var bytes = Bytes(args[0]);
+                int start = args.Length > 1 ? Normalize(I(args[1]), bytes.Length) : 0;
+                int end = args.Length > 2 ? Normalize(I(args[2]), bytes.Length) : bytes.Length;
+                return bytes.Slice(start, end);
+            },
+            ["Uint8Array::subarray"] = args =>
+            {
+                var bytes = Bytes(args[0]);
+                int start = args.Length > 1 ? Normalize(I(args[1]), bytes.Length) : 0;
+                int end = args.Length > 2 ? Normalize(I(args[2]), bytes.Length) : bytes.Length;
+                return bytes.Slice(start, end);
+            },
+            ["Uint8Array::set"] = args =>
+            {
+                var target = Bytes(args[0]);
+                if (args.Length < 2) return TsValue.Null;
+                int offset = args.Length > 2 ? I(args[2]) : 0;
+                if (args[1] is TsUint8ArrayValue sourceBytes)
+                {
+                    for (int i = 0; i < sourceBytes.Length && offset + i < target.Length; i++)
+                        target.Value[offset + i] = sourceBytes.Get(i);
+                }
+                else if (args[1] is TsArrayValue sourceArray)
+                {
+                    for (int i = 0; i < sourceArray.Value.Count && offset + i < target.Length; i++)
+                        target.Value[offset + i] = ToByte(sourceArray.Value.Get(i));
+                }
+                return TsValue.Null;
+            },
 
             // ── Global functions ──
             ["parseInt"] = args =>
@@ -272,6 +303,10 @@ public static class Builtins
         ? a.Value
         : throw new InvalidOperationException("Receiver is not an array");
 
+    private static TsUint8ArrayValue Bytes(TsValue v) => v is TsUint8ArrayValue b
+        ? b
+        : throw new InvalidOperationException("Receiver is not a Uint8Array");
+
     private static TsValue Num(double value) => TsValue.FromFloat64(value);
 
     private static TsValue Bool(bool value) => new TsBoolValue(value);
@@ -297,4 +332,16 @@ public static class Builtins
         double dl = D(left), dr = D(right);
         return !double.IsNaN(dl) && dl == dr;
     }
+
+    private static byte ToByte(TsValue value) => value switch
+    {
+        TsInt32Value v => unchecked((byte)v.Value),
+        TsInt64Value v => unchecked((byte)v.Value),
+        TsUInt64Value v => unchecked((byte)v.Value),
+        TsFloat32Value v => unchecked((byte)v.Value),
+        TsFloat64Value v => unchecked((byte)v.Value),
+        TsDecimalValue v => unchecked((byte)v.Value),
+        TsBoolValue v => v.Value ? (byte)1 : (byte)0,
+        _ => 0
+    };
 }

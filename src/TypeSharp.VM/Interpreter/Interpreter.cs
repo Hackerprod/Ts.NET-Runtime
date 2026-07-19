@@ -140,7 +140,7 @@ public sealed class Interpreter
             ctx.CallStack.Push(frame);
             try
             {
-                return ExecuteFrame(frame, module, ctx);
+                return FinishFunctionResult(func, ExecuteFrame(frame, module, ctx));
             }
             catch (TsThrownException thrown)
             {
@@ -280,6 +280,8 @@ public sealed class Interpreter
                         frame.Push(objVal.Value.GetField(fieldName));
                     else if (obj is TsArrayValue arrVal && fieldName == "length")
                         frame.Push(TsValue.FromInt32(arrVal.Value.Count));
+                    else if (obj is TsUint8ArrayValue bytesVal && fieldName == "length")
+                        frame.Push(TsValue.FromFloat64(bytesVal.Length));
                     else if (obj is TsStringValue strVal && fieldName == "length")
                         frame.Push(TsValue.FromInt32(strVal.Value.Length));
                     else
@@ -811,6 +813,20 @@ public sealed class Interpreter
                     frame.Push(new TsBoolValue(!GenericEquals(left, right)));
                     break;
                 }
+                case Opcodes.CmpStrictEqAny: // CMP_STRICT_EQ_ANY
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(StrictEquals(left, right)));
+                    break;
+                }
+                case Opcodes.CmpStrictNeAny: // CMP_STRICT_NE_ANY
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(!StrictEquals(left, right)));
+                    break;
+                }
                 case Opcodes.PowF64: // POW_F64
                 {
                     var right = frame.Pop();
@@ -969,7 +985,7 @@ public sealed class Interpreter
                             ctx.CallStack.Pop();
                         }
 
-                        frame.Push(result ?? TsValue.Null);
+                        frame.Push(FinishFunctionResult(calleeFunc, result));
                     }
                     else
                     {
@@ -1068,7 +1084,7 @@ public sealed class Interpreter
                         {
                             ctx.CallStack.Pop();
                         }
-                        frame.Push(result ?? TsValue.Null);
+                        frame.Push(FinishFunctionResult(calleeFunc, result));
                     }
                     else
                     {
@@ -1084,6 +1100,15 @@ public sealed class Interpreter
                     int typeIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var typeName = strings[typeIdx];
+
+                    if (typeName == "Uint8Array")
+                    {
+                        var args = new TsValue[argCount];
+                        for (int i = argCount - 1; i >= 0; i--)
+                            args[i] = frame.Pop();
+                        frame.Push(CreateUint8Array(args));
+                        break;
+                    }
 
                     var obj = ctx.Heap.AllocateObject(typeName);
 
@@ -1148,6 +1173,13 @@ public sealed class Interpreter
                     var target = frame.Pop();
                     if (target is TsArrayValue arrVal)
                         frame.Push(arrVal.Value.Get(AsInt32(index)));
+                    else if (target is TsUint8ArrayValue bytesVal)
+                    {
+                        int byteIdx = AsInt32(index);
+                        frame.Push(byteIdx >= 0 && byteIdx < bytesVal.Length
+                            ? TsValue.FromFloat64(bytesVal.Get(byteIdx))
+                            : TsValue.Null);
+                    }
                     else if (target is TsStringValue strTarget)
                     {
                         int chIdx = AsInt32(index);
@@ -1169,6 +1201,8 @@ public sealed class Interpreter
                     var target = frame.Pop();
                     if (target is TsArrayValue arrVal)
                         arrVal.Value.Set(AsInt32(index), value);
+                    else if (target is TsUint8ArrayValue bytesVal)
+                        bytesVal.Set(AsInt32(index), value);
                     else if (target is TsNull)
                         throw new InvalidOperationException("Cannot index a null value");
                     break;
@@ -1222,7 +1256,7 @@ public sealed class Interpreter
                 case Opcodes.Await: // AWAIT
                 {
                     var val = frame.Pop();
-                    frame.Push(val);
+                    frame.Push(AwaitValue(val, ctx));
                     break;
                 }
 
@@ -1244,6 +1278,7 @@ public sealed class Interpreter
                     bool match = val switch
                     {
                         TsObjectValue obj => obj.Value.TypeName == typeName,
+                        TsUint8ArrayValue => typeName == "Uint8Array" || typeName == "Uint8ClampedArray",
                         TsStringValue => typeName == "string",
                         TsInt32Value => typeName == "int32",
                         TsInt64Value => typeName == "int64",
@@ -1575,6 +1610,9 @@ public sealed class Interpreter
                 case TsArrayValue av:
                     for (int i = 0; i < av.Value.Count; i++) AddMapped(av.Value.Get(i), i);
                     break;
+                case TsUint8ArrayValue bv:
+                    for (int i = 0; i < bv.Length; i++) AddMapped(TsValue.FromFloat64(bv.Get(i)), i);
+                    break;
                 case TsStringValue sv:
                     for (int i = 0; i < sv.Value.Length; i++) AddMapped(TsValue.FromString(sv.Value[i].ToString()), i);
                     break;
@@ -1711,12 +1749,68 @@ public sealed class Interpreter
         if (left is TsBoolValue lb && right is TsBoolValue rb) return lb.Value == rb.Value;
         if (left is TsObjectValue lo && right is TsObjectValue ro) return ReferenceEquals(lo.Value, ro.Value);
         if (left is TsArrayValue la && right is TsArrayValue ra) return ReferenceEquals(la.Value, ra.Value);
+        if (left is TsUint8ArrayValue lbv && right is TsUint8ArrayValue rbv) return ReferenceEquals(lbv.Value, rbv.Value);
+        if (IsNumericValue(left) && IsNumericValue(right)) return AsFloat64(left) == AsFloat64(right);
+        return false;
+    }
+
+    private static bool StrictEquals(TsValue left, TsValue right)
+    {
+        if (ReferenceEquals(left, right)) return true;
+        if (left is TsNull && right is TsNull) return true;
+        if (left is TsVoid && right is TsVoid) return true;
+        if (left is TsNull or TsVoid || right is TsNull or TsVoid) return false;
+        if (left is TsStringValue ls && right is TsStringValue rs) return ls.Value == rs.Value;
+        if (left is TsBoolValue lb && right is TsBoolValue rb) return lb.Value == rb.Value;
+        if (left is TsObjectValue lo && right is TsObjectValue ro) return ReferenceEquals(lo.Value, ro.Value);
+        if (left is TsArrayValue la && right is TsArrayValue ra) return ReferenceEquals(la.Value, ra.Value);
+        if (left is TsUint8ArrayValue lbv && right is TsUint8ArrayValue rbv) return ReferenceEquals(lbv.Value, rbv.Value);
         if (IsNumericValue(left) && IsNumericValue(right)) return AsFloat64(left) == AsFloat64(right);
         return false;
     }
 
     private static bool IsNumericValue(TsValue value) =>
         value is TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue;
+
+    private static TsUint8ArrayValue CreateUint8Array(TsValue[] args)
+    {
+        if (args.Length == 0)
+            return new TsUint8ArrayValue(Array.Empty<byte>());
+
+        var source = args[0];
+        switch (source)
+        {
+            case TsUint8ArrayValue bytes:
+            {
+                var copy = new byte[bytes.Length];
+                Array.Copy(bytes.Value, copy, copy.Length);
+                return new TsUint8ArrayValue(copy);
+            }
+            case TsArrayValue array:
+            {
+                var bytes = new byte[array.Value.Count];
+                for (int i = 0; i < bytes.Length; i++)
+                    bytes[i] = ToByte(array.Value.Get(i));
+                return new TsUint8ArrayValue(bytes);
+            }
+            case TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue:
+                return new TsUint8ArrayValue(new byte[Math.Max(AsInt32(source), 0)]);
+            default:
+                return new TsUint8ArrayValue(Array.Empty<byte>());
+        }
+    }
+
+    internal static byte ToByte(TsValue value) => value switch
+    {
+        TsInt32Value v => unchecked((byte)v.Value),
+        TsInt64Value v => unchecked((byte)v.Value),
+        TsUInt64Value v => unchecked((byte)v.Value),
+        TsFloat32Value v => unchecked((byte)v.Value),
+        TsFloat64Value v => unchecked((byte)v.Value),
+        TsDecimalValue v => unchecked((byte)v.Value),
+        TsBoolValue v => v.Value ? (byte)1 : (byte)0,
+        _ => 0
+    };
 
     // Invokes any callable value (module function, closure, builtin, host
     // function). Shared by CALL_DYNAMIC and the higher-order array intrinsics.
@@ -1746,7 +1840,7 @@ public sealed class Interpreter
             ctx.CallStack.Push(newFrame);
             try
             {
-                return ExecuteFrame(newFrame, module, ctx) ?? TsValue.Null;
+                return FinishFunctionResult(calleeFunc, ExecuteFrame(newFrame, module, ctx));
             }
             finally
             {
@@ -1758,6 +1852,23 @@ public sealed class Interpreter
             return host(fnValue.FunctionName, args) ?? TsValue.Null;
 
         throw new InvalidOperationException($"Function '{fnValue.FunctionName}' not found");
+    }
+
+    private static TsValue FinishFunctionResult(BytecodeFunction function, TsValue? result)
+    {
+        var value = result ?? TsValue.Void;
+        if (!function.IsAsync)
+            return value;
+        return value is TsPromiseValue promise
+            ? promise
+            : TsPromiseValue.Resolved(value);
+    }
+
+    private static TsValue AwaitValue(TsValue value, ExecutionContext ctx)
+    {
+        return value is TsPromiseValue promise
+            ? promise.Await(ctx.CancellationToken)
+            : value;
     }
 
     private bool TryResolveCachedCallee(BytecodeFunction caller, int instructionOffset, string calleeName,

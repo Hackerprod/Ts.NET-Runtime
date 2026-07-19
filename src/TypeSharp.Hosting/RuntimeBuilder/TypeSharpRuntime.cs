@@ -30,7 +30,8 @@ public sealed class TypeSharpRuntimeBuilder
 
     public TypeSharpRuntimeBuilder AddSourceFile(string path)
     {
-        _sourceFiles.Add(path);
+        if (TypeScriptCompilation.IsExecutableTypeScriptFile(path))
+            _sourceFiles.Add(path);
         return this;
     }
 
@@ -90,12 +91,13 @@ public sealed class TypeSharpRuntimeBuilder
         {
             if (Directory.Exists(dir))
             {
-                var tsFiles = Directory.GetFiles(dir, "*.ts", SearchOption.AllDirectories);
+                var tsFiles = Directory.GetFiles(dir, "*.ts", SearchOption.AllDirectories)
+                    .Where(TypeScriptCompilation.IsExecutableTypeScriptFile);
                 filesToLoad.AddRange(tsFiles);
             }
         }
 
-        filesToLoad.AddRange(_sourceFiles);
+        filesToLoad.AddRange(_sourceFiles.Where(TypeScriptCompilation.IsExecutableTypeScriptFile));
 
         if (filesToLoad.Count > 0)
         {
@@ -310,9 +312,19 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             module = await ImportAsync(moduleName);
         }
 
-        var result = _interpreter.Execute(CreateLinkedModule(lease.Generation), functionName, tsArgs);
-
-        return (T)(TypeSharp.Interop.Marshalling.Marshaller.ToManaged(result ?? TsValue.Null, typeof(T)) ?? default(T)!);
+        var context = _interpreter.CreateContext();
+        try
+        {
+            var result = _interpreter.Execute(CreateLinkedModule(lease.Generation), functionName, tsArgs, context);
+            var managed = await TypeSharp.Interop.Marshalling.Marshaller
+                .ToManagedAsync(result ?? TsValue.Null, typeof(T), context.CancellationToken)
+                .ConfigureAwait(false);
+            return (T)(managed ?? default(T)!);
+        }
+        finally
+        {
+            context.Dispose();
+        }
     }
 
     public TsValue? Invoke(string functionName, TsValue[]? args = null)
@@ -384,6 +396,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         var files = _moduleManager.Registry.Modules.Values
             .Select(m => m.FilePath)
             .Concat(Directory.GetFiles(".", "*.ts", SearchOption.AllDirectories))
+            .Where(TypeScriptCompilation.IsExecutableTypeScriptFile)
             .Distinct();
 
         foreach (var file in files)
@@ -426,7 +439,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         await _reloadLock.WaitAsync();
         try
         {
-            if (_hotReloadManager == null || !filePath.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
+            if (_hotReloadManager == null || !TypeScriptCompilation.IsExecutableTypeScriptFile(filePath))
                 return false;
 
             string source = await ReadSourceSafelyAsync(filePath, cancellationToken);
@@ -580,7 +593,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
 
     private void OnFileChanged(object sender, FileSystemEventArgs e)
     {
-        if (!e.FullPath.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
+        if (!TypeScriptCompilation.IsExecutableTypeScriptFile(e.FullPath))
             return;
         _pendingReloads.TryAdd(e.FullPath, 0);
         _reloadDebounceTimer?.Change(_hotReloadOptions.DebounceInterval, Timeout.InfiniteTimeSpan);

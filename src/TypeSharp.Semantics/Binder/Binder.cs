@@ -17,6 +17,7 @@ public sealed class Binder
     private readonly Dictionary<string, Dictionary<string, Symbol>> _importedSymbols = new();
     private TsClassType? _currentClassType;
     private TsType? _currentFunctionReturnType;
+    private bool _currentFunctionIsAsync;
     private bool _inConstructor;
     private int _lambdaCounter;
     private int _forOfCounter;
@@ -183,6 +184,10 @@ public sealed class Binder
         _symbolTable.Define(new ClassSymbol("Array", arrayGlobal, default));
 
         var uint8ArrayGlobal = new TsClassType("Uint8Array");
+        uint8ArrayGlobal.Fields["length"] = new TsField("length", TsType.Number) { IsReadonly = true };
+        uint8ArrayGlobal.Methods["slice"] = new TsMethod("slice", uint8ArrayGlobal, new List<TsParameter>());
+        uint8ArrayGlobal.Methods["subarray"] = new TsMethod("subarray", uint8ArrayGlobal, new List<TsParameter>());
+        uint8ArrayGlobal.Methods["set"] = new TsMethod("set", TsType.Void, new List<TsParameter>());
         _classTypes["Uint8Array"] = uint8ArrayGlobal;
         _symbolTable.Define(new ClassSymbol("Uint8Array", uint8ArrayGlobal, default));
 
@@ -400,9 +405,12 @@ public sealed class Binder
             DefineWithDepth(p);
 
         var prevReturnType = _currentFunctionReturnType;
-        _currentFunctionReturnType = sym.Type;
+        var prevIsAsync = _currentFunctionIsAsync;
+        _currentFunctionIsAsync = sym.IsAsync;
+        _currentFunctionReturnType = BodyReturnType(sym.Type, sym.IsAsync);
         var body = BindNode(func.Body);
         _currentFunctionReturnType = prevReturnType;
+        _currentFunctionIsAsync = prevIsAsync;
 
         _captureCollectors.RemoveAt(_captureCollectors.Count - 1);
         _functionDepth--;
@@ -424,9 +432,10 @@ public sealed class Binder
             return existing;
 
         PushTypeParameters(lambda.GenericParameters);
-        var returnType = lambda.ReturnType != null
+        var declaredReturnType = lambda.ReturnType != null
             ? ResolveType(lambda.ReturnType)
             : contextualType?.ReturnType ?? TsType.Any;
+        var returnType = NormalizeFunctionReturnType(declaredReturnType, lambda.IsAsync);
         var sym = new FunctionSymbol(name, returnType, lambda.Range)
         {
             IsAsync = lambda.IsAsync,
@@ -469,9 +478,12 @@ public sealed class Binder
             DefineWithDepth(p);
 
         var prevReturnType = _currentFunctionReturnType;
-        _currentFunctionReturnType = sym.Type is TsAnyType ? null : sym.Type;
+        var prevIsAsync = _currentFunctionIsAsync;
+        _currentFunctionIsAsync = sym.IsAsync;
+        _currentFunctionReturnType = sym.Type is TsAnyType ? null : BodyReturnType(sym.Type, sym.IsAsync);
         var body = BindNode(lambda.Body);
         _currentFunctionReturnType = prevReturnType;
+        _currentFunctionIsAsync = prevIsAsync;
 
         _captureCollectors.RemoveAt(_captureCollectors.Count - 1);
         _functionDepth--;
@@ -489,7 +501,8 @@ public sealed class Binder
             return existing;
 
         PushTypeParameters(func.GenericParameters);
-        var sym = new FunctionSymbol(func.Name, ResolveType(func.ReturnType) ?? TsType.Void, func.Range)
+        var declaredReturnType = ResolveType(func.ReturnType) ?? TsType.Void;
+        var sym = new FunctionSymbol(func.Name, NormalizeFunctionReturnType(declaredReturnType, func.IsAsync), func.Range)
         {
             IsAsync = func.IsAsync,
             IsExported = func.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword)
@@ -623,7 +636,8 @@ public sealed class Binder
 
             case MethodDeclarationSyntax method:
             {
-                var methodType = ResolveType(method.ReturnType) ?? TsType.Void;
+                var declaredMethodType = ResolveType(method.ReturnType) ?? TsType.Void;
+                var methodType = NormalizeFunctionReturnType(declaredMethodType, method.IsAsync);
                 var methodSym = new MethodSymbol(method.Name, methodType, method.Range)
                 {
                     IsAsync = method.IsAsync
@@ -637,7 +651,10 @@ public sealed class Binder
                 }
 
                 var tsMethod = new TsMethod(method.Name, methodType,
-                    methodSym.Parameters.Select(p => new TsParameter(p.Name, p.Type)).ToList());
+                    methodSym.Parameters.Select(p => new TsParameter(p.Name, p.Type)).ToList())
+                {
+                    IsAsync = method.IsAsync
+                };
                 ValidateOverride(classType, methodSym, method.Range.Start);
                 classType.Methods[method.Name] = tsMethod;
 
@@ -650,12 +667,15 @@ public sealed class Binder
                     foreach (var p in methodSym.Parameters)
                         DefineWithDepth(p);
                     var prevReturnType = _currentFunctionReturnType;
+                    var prevIsAsync = _currentFunctionIsAsync;
                     var prevInConstructor = _inConstructor;
-                    _currentFunctionReturnType = methodType;
+                    _currentFunctionIsAsync = method.IsAsync;
+                    _currentFunctionReturnType = BodyReturnType(methodType, method.IsAsync);
                     _inConstructor = false;
                     var body = BindNode(method.Body);
                     _inConstructor = prevInConstructor;
                     _currentFunctionReturnType = prevReturnType;
+                    _currentFunctionIsAsync = prevIsAsync;
                     _functionDepth--;
                     _symbolTable.PopScope();
                     return new BoundMethodDeclaration(classType.Name, methodSym, body!);
@@ -1020,7 +1040,7 @@ public sealed class Binder
                     $"Function returns '{_currentFunctionReturnType}' but return statement has no value",
                     ret.Range.Start, DiagnosticCode.TS2009);
             }
-            else if (!TsType.IsCompatibleWith(value.Type, _currentFunctionReturnType))
+            else if (!IsReturnCompatible(value.Type, _currentFunctionReturnType))
             {
                 _diagnostics.Error(
                     $"Cannot return '{value.Type}' from function returning '{_currentFunctionReturnType}'",
@@ -1035,6 +1055,31 @@ public sealed class Binder
         }
 
         return new BoundReturnStatement(value);
+    }
+
+    private static TsType NormalizeFunctionReturnType(TsType declaredReturnType, bool isAsync)
+    {
+        if (!isAsync)
+            return declaredReturnType;
+        return declaredReturnType is TsPromiseType
+            ? declaredReturnType
+            : new TsPromiseType(declaredReturnType);
+    }
+
+    private static TsType BodyReturnType(TsType functionReturnType, bool isAsync)
+    {
+        return isAsync && functionReturnType is TsPromiseType promise
+            ? promise.ElementType
+            : functionReturnType;
+    }
+
+    private bool IsReturnCompatible(TsType actualType, TsType expectedType)
+    {
+        if (TsType.IsCompatibleWith(actualType, expectedType))
+            return true;
+        return _currentFunctionIsAsync &&
+               actualType is TsPromiseType actualPromise &&
+               TsType.IsCompatibleWith(actualPromise.ElementType, expectedType);
     }
 
     private BoundIfStatement BindIf(IfStatementSyntax ifStmt)
@@ -1645,7 +1690,8 @@ public sealed class Binder
         genericMap ??= new Dictionary<string, TsType>();
         var sym = new MethodSymbol(method.Name, TsType.Substitute(method.ReturnType, genericMap), range)
         {
-            DeclaringClassName = declaringClass
+            DeclaringClassName = declaringClass,
+            IsAsync = method.IsAsync
         };
         foreach (var p in method.Parameters)
             sym.Parameters.Add(new ParameterSymbol(p.Name, TsType.Substitute(p.Type, genericMap), range));
@@ -1821,7 +1867,20 @@ public sealed class Binder
             resultType = originalExpectedType is TsGenericType ? originalExpectedType : ifaceType;
             foreach (var prop in objLit.Properties)
             {
-                if (!ifaceType.Properties.TryGetValue(prop.Key, out var ifaceProp))
+                TsType expectedPropertyType;
+                if (ifaceType.Properties.TryGetValue(prop.Key, out var ifaceProp))
+                {
+                    expectedPropertyType = TsType.Substitute(ifaceProp.Type, genericMap);
+                }
+                else if (ifaceType.Methods.TryGetValue(prop.Key, out var ifaceMethod))
+                {
+                    expectedPropertyType = new TsFunctionType(
+                        ifaceMethod.Parameters
+                            .Select(p => new TsParameter(p.Name, TsType.Substitute(p.Type, genericMap)))
+                            .ToList(),
+                        TsType.Substitute(ifaceMethod.ReturnType, genericMap));
+                }
+                else
                 {
                     _diagnostics.Error(
                         $"Object literal property '{prop.Key}' does not exist on interface '{ifaceType.Name}'",
@@ -1831,10 +1890,13 @@ public sealed class Binder
                     continue;
                 }
 
-                var expectedPropertyType = TsType.Substitute(ifaceProp.Type, genericMap);
-                var value = prop.Value is ObjectLiteralExpressionSyntax nested
-                    ? BindObjectLiteral(nested, expectedPropertyType)
-                    : BindExpression(prop.Value);
+                var value = prop.Value switch
+                {
+                    ObjectLiteralExpressionSyntax nested => BindObjectLiteral(nested, expectedPropertyType),
+                    LambdaExpressionSyntax lambda when expectedPropertyType is TsFunctionType fnType =>
+                        BindInlineLambda(lambda, fnType),
+                    _ => BindExpression(prop.Value)
+                };
 
                 if (!TsType.IsCompatibleWith(value.Type, expectedPropertyType))
                 {
@@ -1853,6 +1915,16 @@ public sealed class Binder
                 {
                     _diagnostics.Error(
                         $"Property '{required.Name}' is missing in object literal for interface '{ifaceType.Name}'",
+                        objLit.Range.Start);
+                }
+            }
+
+            foreach (var required in ifaceType.Methods.Values)
+            {
+                if (!objLit.Properties.Any(p => p.Key == required.Name))
+                {
+                    _diagnostics.Error(
+                        $"Method '{required.Name}' is missing in object literal for interface '{ifaceType.Name}'",
                         objLit.Range.Start);
                 }
             }
@@ -2028,6 +2100,7 @@ public sealed class Binder
         var resultType = obj.Type switch
         {
             TsArrayType arr => arr.ElementType,
+            TsClassType { Name: "Uint8Array" } => TsType.Number,
             TsTupleType tuple when index is BoundLiteralExpression { Value: int constIdx } &&
                 constIdx >= 0 && constIdx < tuple.ElementTypes.Count => tuple.ElementTypes[constIdx],
             TsTupleType tuple => tuple.UnifiedElementType(),
@@ -2036,10 +2109,11 @@ public sealed class Binder
             _ => TsType.Any
         };
 
-        if (obj.Type is TsArrayType && index.Type is not TsPrimitiveType { IsNumericType: true } &&
+        if ((obj.Type is TsArrayType || obj.Type is TsClassType { Name: "Uint8Array" }) &&
+            index.Type is not TsPrimitiveType { IsNumericType: true } &&
             index.Type is not TsAnyType)
         {
-            _diagnostics.Error($"Array index must be numeric, got '{index.Type}'",
+            _diagnostics.Error($"Index must be numeric, got '{index.Type}'",
                 indexExpr.Index.Range.Start);
         }
 
@@ -2136,8 +2210,22 @@ public sealed class Binder
                 : TsType.Any);
         }
 
-        if (named.Name is "Uint8Array" or "Uint8ClampedArray" or "ArrayBuffer")
-            return new TsArrayType(TsType.Number);
+        if (named.Name == "Promise")
+        {
+            return new TsPromiseType(named.TypeArguments.Count > 0
+                ? ResolveType(named.TypeArguments[0])
+                : TsType.Any);
+        }
+
+        if (named.Name is "Uint8Array" or "Uint8ClampedArray")
+            return _classTypes.TryGetValue("Uint8Array", out var bytesType)
+                ? bytesType
+                : new TsClassType("Uint8Array");
+
+        if (named.Name == "ArrayBuffer")
+            return _classTypes.TryGetValue("ArrayBuffer", out var bufferType)
+                ? bufferType
+                : new TsClassType("ArrayBuffer");
 
         if (_typeAliases.TryGetValue(named.Name, out var aliased))
             return aliased;

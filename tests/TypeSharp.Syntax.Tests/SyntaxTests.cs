@@ -199,6 +199,18 @@ public class ParserTests
     }
 
     [Fact]
+    public void ParseAsyncArrowCallback()
+    {
+        var tree = Parse("const handler = async ctx => { await ctx.load(); };");
+        Assert.Single(tree.Members);
+        var varDecl = Assert.IsType<VariableDeclarationSyntax>(tree.Members[0]);
+        var lambda = Assert.IsType<LambdaExpressionSyntax>(varDecl.Initializer);
+        Assert.True(lambda.IsAsync);
+        Assert.Single(lambda.Parameters);
+        Assert.Equal("ctx", lambda.Parameters[0].Name);
+    }
+
+    [Fact]
     public void ParseBinaryExpression()
     {
         var tree = Parse("let result = a + b * c;");

@@ -329,7 +329,7 @@ public sealed class Parser
 
             bool isAsync = mods.Any(m => m.Token.Kind == TokenKind.AsyncKeyword);
             var range = new SourceRange(Peek(-1).Location, Peek().Location);
-            return new MethodDeclarationSyntax(name, parameters, returnType, body, range);
+            return new MethodDeclarationSyntax(name, parameters, returnType, body, isAsync, range);
         }
 
         bool fieldOptional = false;
@@ -1168,6 +1168,13 @@ public sealed class Parser
 
     private ExpressionSyntax ParsePrimary()
     {
+        if (Check(TokenKind.AsyncKeyword))
+        {
+            var asyncArrow = TryParseAsyncArrowFunction();
+            if (asyncArrow != null)
+                return asyncArrow;
+        }
+
         if (Check(TokenKind.IntegerLiteral) || Check(TokenKind.FloatLiteral) ||
             Check(TokenKind.StringLiteral) || Check(TokenKind.TrueLiteral) ||
             Check(TokenKind.FalseLiteral) || Check(TokenKind.NullLiteral))
@@ -1283,6 +1290,9 @@ public sealed class Parser
     // Attempts `(params) [: ReturnType] => body`. Restores position and drops
     // any speculative diagnostics when the parenthesized run is not an arrow.
     private ExpressionSyntax? TryParseArrowFunction()
+        => TryParseArrowFunction(isAsync: false);
+
+    private ExpressionSyntax? TryParseArrowFunction(bool isAsync)
     {
         int savedPosition = _position;
         int savedDiagnostics = Diagnostics.Count;
@@ -1331,9 +1341,50 @@ public sealed class Parser
             {
                 Advance();
                 var body = ParseArrowBody();
-                return new LambdaExpressionSyntax(parameters, returnType, body, false,
+                return new LambdaExpressionSyntax(parameters, returnType, body, isAsync,
                     new SourceRange(open.Location, body.Range.End));
             }
+        }
+
+        _position = savedPosition;
+        if (Diagnostics.Count > savedDiagnostics)
+            Diagnostics.RemoveRange(savedDiagnostics, Diagnostics.Count - savedDiagnostics);
+        return null;
+    }
+
+    private ExpressionSyntax? TryParseAsyncArrowFunction()
+    {
+        int savedPosition = _position;
+        int savedDiagnostics = Diagnostics.Count;
+        var asyncToken = Advance();
+
+        if (Check(TokenKind.Identifier) && Peek(1).Kind == TokenKind.FatArrow)
+        {
+            var paramToken = Advance();
+            Advance(); // =>
+            var lambdaParams = new List<ParameterSyntax>
+            {
+                new(paramToken.Text, AnyType(paramToken.Location), null,
+                    new SourceRange(paramToken.Location, paramToken.Location),
+                    typeWasInferred: true)
+            };
+            var lambdaBody = ParseArrowBody();
+            return new LambdaExpressionSyntax(lambdaParams, null, lambdaBody, true,
+                new SourceRange(asyncToken.Location, lambdaBody.Range.End));
+        }
+
+        if (Check(TokenKind.OpenParen))
+        {
+            var arrow = TryParseArrowFunction(isAsync: true);
+            if (arrow != null)
+                return arrow;
+        }
+
+        if (Check(TokenKind.LessThan))
+        {
+            var genericArrow = TryParseGenericArrowFunction(isAsync: true);
+            if (genericArrow != null)
+                return genericArrow;
         }
 
         _position = savedPosition;
@@ -1399,6 +1450,9 @@ public sealed class Parser
     }
 
     private ExpressionSyntax? TryParseGenericArrowFunction()
+        => TryParseGenericArrowFunction(isAsync: false);
+
+    private ExpressionSyntax? TryParseGenericArrowFunction(bool isAsync)
     {
         int savedPosition = _position;
         int savedDiagnostics = Diagnostics.Count;
@@ -1406,7 +1460,7 @@ public sealed class Parser
         var generics = ParseGenericParameters();
         if (generics.Count > 0 && Check(TokenKind.OpenParen))
         {
-            var arrow = TryParseArrowFunction();
+            var arrow = TryParseArrowFunction(isAsync);
             if (arrow is LambdaExpressionSyntax lambda)
             {
                 lambda.GenericParameters.AddRange(generics);

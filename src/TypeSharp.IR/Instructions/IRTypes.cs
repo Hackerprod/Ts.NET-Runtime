@@ -68,6 +68,8 @@ public enum Opcode
     Pow_F64,
     CmpEq_Any,
     CmpNe_Any,
+    CmpStrictEq_Any,
+    CmpStrictNe_Any,
     TypeOf,
 
     // Object

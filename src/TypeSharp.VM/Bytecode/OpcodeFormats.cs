@@ -181,6 +181,8 @@ public static class Opcodes
     public const byte CmpNeAny                 = 0xA3;
     public const byte PowF64                   = 0xA4;
     public const byte TypeOf                   = 0xA5;
+    public const byte CmpStrictEqAny           = 0xA6;
+    public const byte CmpStrictNeAny           = 0xA7;
 
     public const byte ConvI32I64               = 0x90;
     public const byte ConvI64I32               = 0x91;
@@ -341,6 +343,8 @@ public static class OpcodeFormats
         Reg(0xA3);                       // CMP_NE_ANY
         Reg(0xA4);                       // POW_F64
         Reg(0xA5);                       // TYPEOF
+        Reg(0xA6);                       // CMP_STRICT_EQ_ANY
+        Reg(0xA7);                       // CMP_STRICT_NE_ANY
 
         // ── Convert ──
         Reg(0x90); Reg(0x91); Reg(0x92); Reg(0x93);

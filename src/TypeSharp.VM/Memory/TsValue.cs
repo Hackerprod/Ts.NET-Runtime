@@ -20,6 +20,8 @@ public abstract class TsValue
     public static TsValue FromBool(bool value) => new TsBoolValue(value);
     public static TsValue FromObject(TsObject value) => new TsObjectValue(value);
     public static TsValue FromDecimal(decimal value) => new TsDecimalValue(value);
+    public static TsValue FromUint8Array(byte[] value) => new TsUint8ArrayValue(value);
+    public static TsValue FromPromise(Task<TsValue?> task) => new TsPromiseValue(task);
     public static TsValue FromNull() => Null;
 
     public override string ToString() => RawValue?.ToString() ?? "null";
@@ -27,7 +29,7 @@ public abstract class TsValue
 
 public enum TsValueType
 {
-    Void, Null, Bool, Int32, Int64, UInt64, Float32, Float64, Decimal, String, Object, Array, Map
+    Void, Null, Bool, Int32, Int64, UInt64, Float32, Float64, Decimal, String, Object, Array, Map, Uint8Array, Promise
 }
 
 public sealed class TsVoid : TsValue
@@ -122,6 +124,51 @@ public sealed class TsArrayValue : TsValue
     public TsArrayValue(TsArray value) => Value = value;
 }
 
+public sealed class TsUint8ArrayValue : TsValue
+{
+    public byte[] Value { get; }
+    public override TsValueType ValueType => TsValueType.Uint8Array;
+    public override object? RawValue => Value;
+    public int Length => Value.Length;
+
+    public TsUint8ArrayValue(byte[] value)
+    {
+        Value = value ?? Array.Empty<byte>();
+    }
+
+    public byte Get(int index) =>
+        index >= 0 && index < Value.Length ? Value[index] : (byte)0;
+
+    public void Set(int index, TsValue value)
+    {
+        if (index < 0 || index >= Value.Length) return;
+        Value[index] = ToByte(value);
+    }
+
+    public TsUint8ArrayValue Slice(int start, int end)
+    {
+        start = Math.Clamp(start, 0, Value.Length);
+        end = Math.Clamp(end, start, Value.Length);
+        var bytes = new byte[end - start];
+        Array.Copy(Value, start, bytes, 0, bytes.Length);
+        return new TsUint8ArrayValue(bytes);
+    }
+
+    public override string ToString() => string.Join(",", Value);
+
+    private static byte ToByte(TsValue value) => value switch
+    {
+        TsInt32Value v => (byte)v.Value,
+        TsInt64Value v => (byte)v.Value,
+        TsUInt64Value v => (byte)v.Value,
+        TsFloat32Value v => (byte)v.Value,
+        TsFloat64Value v => (byte)v.Value,
+        TsDecimalValue v => (byte)v.Value,
+        TsBoolValue v => v.Value ? (byte)1 : (byte)0,
+        _ => 0
+    };
+}
+
 // First-class function reference: names a function in the executing module.
 // A closure additionally carries the boxes of its captured variables; the VM
 // installs them after the declared parameters when the function is invoked.
@@ -147,6 +194,40 @@ public sealed class TsMapValue : TsValue
     public override TsValueType ValueType => TsValueType.Map;
     public override object? RawValue => Value;
     public TsMapValue(TsMap value) => Value = value;
+}
+
+public sealed class TsPromiseValue : TsValue
+{
+    private readonly Task<TsValue?> _task;
+
+    public override TsValueType ValueType => TsValueType.Promise;
+    public override object? RawValue => _task;
+    public bool IsCompleted => _task.IsCompleted;
+
+    public TsPromiseValue(Task<TsValue?> task)
+    {
+        _task = task ?? Task.FromResult<TsValue?>(TsValue.Void);
+    }
+
+    public static TsPromiseValue Resolved(TsValue? value) =>
+        new(Task.FromResult<TsValue?>(value ?? TsValue.Void));
+
+    public TsValue Await(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var value = _task.WaitAsync(cancellationToken).GetAwaiter().GetResult();
+            return value ?? TsValue.Void;
+        }
+        catch (AggregateException ex) when (ex.InnerException != null)
+        {
+            throw ex.InnerException;
+        }
+    }
+
+    public Task<TsValue?> AsTask() => _task;
+
+    public override string ToString() => "[object Promise]";
 }
 
 // Runtime objects

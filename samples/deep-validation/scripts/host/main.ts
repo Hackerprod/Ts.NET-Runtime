@@ -26,12 +26,12 @@ export function hostString(value: string): string {
     return hostDecorate(value);
 }
 
-export function hostTask(value: int32): int32 {
-    return hostAsyncDouble(value);
+export async function hostTask(value: int32): Promise<int32> {
+    return await hostAsyncDouble(value);
 }
 
-export function hostValueTask(value: int64): int64 {
-    return hostAsyncIncrement(value);
+export async function hostValueTask(value: int64): Promise<int64> {
+    return await hostAsyncIncrement(value);
 }
 
 export function hostFailure(value: int32): int32 {

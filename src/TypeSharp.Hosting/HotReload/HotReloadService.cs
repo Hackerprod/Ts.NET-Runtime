@@ -1,3 +1,5 @@
+using TypeSharp.Hosting.Compilation;
+
 namespace TypeSharp.Hosting.HotReload;
 
 public sealed class HotReloadService : IDisposable
@@ -54,13 +56,13 @@ public sealed class HotReloadService : IDisposable
 
     private void OnFileChanged(object sender, FileSystemEventArgs e)
     {
-        if (!e.FullPath.EndsWith(".ts")) return;
+        if (!TypeScriptCompilation.IsExecutableTypeScriptFile(e.FullPath)) return;
         QueueChange(e.FullPath);
     }
 
     private void OnFileRenamed(object sender, RenamedEventArgs e)
     {
-        if (!e.FullPath.EndsWith(".ts")) return;
+        if (!TypeScriptCompilation.IsExecutableTypeScriptFile(e.FullPath)) return;
         QueueChange(e.FullPath);
     }
 

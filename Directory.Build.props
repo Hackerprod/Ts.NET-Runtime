@@ -22,5 +22,7 @@
   </PropertyGroup>
   <ItemGroup Condition="'$(IsTestProject)' != 'true'">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" />
+    <None Include="$(MSBuildThisFileDirectory)types\**\*.d.ts" Pack="true" PackagePath="types\%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="$(MSBuildThisFileDirectory)templates\**\*" Pack="true" PackagePath="templates\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

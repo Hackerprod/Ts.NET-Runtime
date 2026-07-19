@@ -1,6 +1,7 @@
 ## .NET
 bin/
 obj/
+node_modules/
 *.user
 *.suo
 .vs/

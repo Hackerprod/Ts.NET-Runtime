@@ -1,6 +1,7 @@
 using TypeSharp.Hosting;
 using TypeSharp.Hosting.Compilation;
 using TypeSharp.Hosting.HotReload;
+using TypeSharp.Interop.HostExports;
 using TypeSharp.Runtime.Generations;
 using TypeSharp.VM.Memory;
 using Xunit;
@@ -77,6 +78,84 @@ public class IntegrationTests
         await using var runtime = await builder.BuildAsync();
 
         Assert.NotNull(runtime);
+    }
+
+    [Fact]
+    public async Task AsyncAwait_CanAwaitHostTaskThroughInvokeAsync()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_async_host_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "main.ts");
+        try
+        {
+            File.WriteAllText(file, """
+                async function load(): Promise<string> {
+                    const profile = await findProfile(42);
+                    return profile;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .AddHostService("profiles", new AsyncProfileHost())
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<string>(Path.GetFileName(dir), "load");
+            Assert.Equal("profile:42", result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AsyncAwait_AllowsAsyncCallbackHandlers()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_async_callback_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "main.ts");
+        try
+        {
+            File.WriteAllText(file, """
+                interface HandlerContext {
+                    readonly accountId: number;
+                    reply(value: string): void;
+                }
+
+                async function on(handler: (ctx: HandlerContext) => void): Promise<boolean> {
+                    const ctx: HandlerContext = {
+                        accountId: 42,
+                        reply: value => {
+                            record(value);
+                        }
+                    };
+                    await handler(ctx);
+                    return true;
+                }
+
+                async function handle(): Promise<boolean> {
+                    return await on(async ctx => {
+                        const profile = await findProfile(ctx.accountId);
+                        ctx.reply(profile);
+                    });
+                }
+                """);
+
+            var host = new AsyncProfileHost();
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .AddHostService("profiles", host)
+                .BuildAsync();
+
+            var handled = await runtime.InvokeAsync<bool>(Path.GetFileName(dir), "handle");
+            Assert.True(handled);
+            Assert.Equal("profile:42", host.LastReply);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]
@@ -762,6 +841,31 @@ public class CompilationTests
     }
 
     [Fact]
+    public void Compilation_IgnoresDeclarationFiles()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "host.d.ts"), """
+                declare module "@runtime/host" {
+                    export function now(): number;
+                }
+                declare function messageType(): number;
+                """);
+            File.WriteAllText(Path.Combine(dir, "app.ts"), "function main(): number { return 42; }");
+
+            var comp = new TypeScriptCompilation(dir);
+            comp.AddSourceDirectory(dir);
+            comp.Compile();
+
+            Assert.False(comp.Diagnostics.HasErrors);
+            Assert.Single(comp.CompiledModules);
+            Assert.Contains("app", comp.CompiledModules.Keys);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
     public void Compilation_CanonicalModuleIds()
     {
         var dir = TempDir();
@@ -1033,6 +1137,17 @@ public class MathHostService
 {
     public int Add(int a, int b) => a + b;
     public int Multiply(int a, int b) => a * b;
+}
+
+public class AsyncProfileHost
+{
+    public string? LastReply { get; private set; }
+
+    [TsExport("findProfile")]
+    public Task<string> FindProfile(double accountId) => Task.FromResult($"profile:{(int)accountId}");
+
+    [TsExport("record")]
+    public void Record(string value) => LastReply = value;
 }
 
 

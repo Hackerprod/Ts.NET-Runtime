@@ -381,6 +381,8 @@ public static class BytecodeCompiler
                 break;
             case Opcode.CmpEq_Any: writer.Write(Opcodes.CmpEqAny); break;
             case Opcode.CmpNe_Any: writer.Write(Opcodes.CmpNeAny); break;
+            case Opcode.CmpStrictEq_Any: writer.Write(Opcodes.CmpStrictEqAny); break;
+            case Opcode.CmpStrictNe_Any: writer.Write(Opcodes.CmpStrictNeAny); break;
             case Opcode.Pow_F64: writer.Write(Opcodes.PowF64); break;
             case Opcode.TypeOf: writer.Write(Opcodes.TypeOf); break;
             case Opcode.EnterTry:

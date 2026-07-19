@@ -65,14 +65,22 @@ public sealed class TypeScriptCompilation
 
     public void AddSourceFile(string filePath)
     {
-        _sourceFiles.Add(Path.GetFullPath(filePath));
+        if (IsExecutableTypeScriptFile(filePath))
+            _sourceFiles.Add(Path.GetFullPath(filePath));
     }
 
     public void AddSourceDirectory(string directory)
     {
         if (!Directory.Exists(directory)) return;
-        var files = Directory.GetFiles(directory, "*.ts", SearchOption.AllDirectories);
+        var files = Directory.GetFiles(directory, "*.ts", SearchOption.AllDirectories)
+            .Where(IsExecutableTypeScriptFile);
         _sourceFiles.AddRange(files.Select(f => Path.GetFullPath(f)));
+    }
+
+    public static bool IsExecutableTypeScriptFile(string filePath)
+    {
+        return filePath.EndsWith(".ts", StringComparison.OrdinalIgnoreCase) &&
+               !filePath.EndsWith(".d.ts", StringComparison.OrdinalIgnoreCase);
     }
 
     public static string ComputeModuleId(string filePath, string sourceRoot)
