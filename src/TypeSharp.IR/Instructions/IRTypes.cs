@@ -58,8 +58,17 @@ public enum Opcode
     // Functions
     Call,
     CallVirt,
+    CallDynamic,
+    LoadFunc,
+    MakeClosure,
     Return,
     ReturnVoid,
+
+    // Dynamic semantics
+    Pow_F64,
+    CmpEq_Any,
+    CmpNe_Any,
+    TypeOf,
 
     // Object
     NewObject,
@@ -167,6 +176,10 @@ public sealed class FunctionIR
     public List<BasicBlock> Blocks { get; } = new();
     public int LocalCount { get; set; }
     public bool IsAsync { get; set; }
+
+    // Names of variables captured from enclosing functions; their boxes are
+    // installed by the VM after the declared parameters.
+    public List<string> CapturedVariables { get; } = new();
 
     public FunctionIR(string name, TsType returnType, List<ParameterInfo> parameters)
     {

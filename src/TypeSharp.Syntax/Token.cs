@@ -127,8 +127,18 @@ public enum TokenKind
     ShiftLeft,
     ShiftRight,
     ShiftRightUnsigned,
+    ShiftLeftEquals,
+    ShiftRightEquals,
+    StarStar,
+    StarStarEquals,
     AmpersandAmpersand,
     PipePipe,
+    AmpersandAmpersandEquals,
+    PipePipeEquals,
+    QuestionQuestionEquals,
+
+    // `template ${…} literal` — Value holds the raw inner text.
+    TemplateLiteral,
 
     // Special
     EOF,

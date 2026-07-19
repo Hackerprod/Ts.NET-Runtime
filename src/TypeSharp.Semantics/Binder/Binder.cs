@@ -13,10 +13,69 @@ public sealed class Binder
     private readonly Dictionary<string, TsClassType> _classTypes = new();
     private readonly Dictionary<string, TsInterfaceType> _interfaceTypes = new();
     private readonly Dictionary<string, TsEnumType> _enumTypes = new();
+    private readonly Dictionary<string, TsType> _typeAliases = new();
     private readonly Dictionary<string, Dictionary<string, Symbol>> _importedSymbols = new();
     private TsClassType? _currentClassType;
     private TsType? _currentFunctionReturnType;
     private bool _inConstructor;
+    private int _lambdaCounter;
+    private int _forOfCounter;
+
+    // Generic type parameters in scope, innermost last.
+    private readonly List<Dictionary<string, TsTypeParameter>> _typeParameterScopes = new();
+
+    // Closure support: every LocalSymbol/ParameterSymbol records the function
+    // nesting depth where it was declared; identifiers resolved from a deeper
+    // function are captures and get boxed.
+    private int _functionDepth;
+    private readonly Dictionary<Symbol, int> _symbolFunctionDepth = new();
+    private readonly List<(int FunctionDepth, List<Symbol> Captured)> _captureCollectors = new();
+
+    private void DefineWithDepth(Symbol symbol)
+    {
+        _symbolFunctionDepth[symbol] = _functionDepth;
+        _symbolTable.Define(symbol);
+    }
+
+    // Symbols resolved across a function boundary are captures: every
+    // function between the use and the declaration must thread the box.
+    private void RegisterPossibleCapture(Symbol symbol)
+    {
+        if (symbol is not (LocalSymbol or ParameterSymbol))
+            return;
+        if (!_symbolFunctionDepth.TryGetValue(symbol, out int declaredDepth))
+            return;
+        if (declaredDepth >= _functionDepth || declaredDepth == 0 && _functionDepth == 0)
+            return;
+
+        foreach (var (collectorDepth, captured) in _captureCollectors)
+        {
+            if (collectorDepth > declaredDepth && !captured.Contains(symbol))
+                captured.Add(symbol);
+        }
+
+        if (declaredDepth < _functionDepth)
+        {
+            switch (symbol)
+            {
+                case LocalSymbol local: local.IsCaptured = true; break;
+                case ParameterSymbol param: param.IsCaptured = true; break;
+            }
+        }
+    }
+
+    private static readonly Dictionary<(string Owner, string Member), double> StaticNumericConstants = new()
+    {
+        [("Math", "PI")] = Math.PI,
+        [("Math", "E")] = Math.E,
+        [("Number", "MAX_SAFE_INTEGER")] = 9007199254740991d,
+        [("Number", "MIN_SAFE_INTEGER")] = -9007199254740991d,
+        [("Number", "MAX_VALUE")] = double.MaxValue,
+        [("Number", "MIN_VALUE")] = double.Epsilon,
+        [("Number", "EPSILON")] = double.Epsilon,
+        [("Number", "POSITIVE_INFINITY")] = double.PositiveInfinity,
+        [("Number", "NEGATIVE_INFINITY")] = double.NegativeInfinity,
+    };
 
     public DiagnosticBag Diagnostics => _diagnostics;
 
@@ -68,6 +127,82 @@ public sealed class Binder
             new("key", TsType.Any)
         });
         _classTypes["Map"] = mapType;
+
+        RegisterJsGlobals();
+    }
+
+    // Static JS-style globals (Math, Number, console) resolve as namespace
+    // classes; their methods take flexible arity (empty parameter lists skip
+    // argument-count validation) and execute as VM builtins.
+    private void RegisterJsGlobals()
+    {
+        var math = new TsClassType("Math");
+        foreach (var name in new[]
+        {
+            "abs", "floor", "ceil", "round", "trunc", "sqrt", "cbrt", "pow",
+            "min", "max", "log", "log2", "log10", "exp", "sign", "random", "hypot"
+        })
+        {
+            math.Methods[name] = new TsMethod(name, TsType.Number, new List<TsParameter>());
+        }
+        math.Fields["PI"] = new TsField("PI", TsType.Number);
+        math.Fields["E"] = new TsField("E", TsType.Number);
+        _classTypes["Math"] = math;
+        _symbolTable.Define(new ClassSymbol("Math", math, default));
+
+        var number = new TsClassType("Number");
+        number.Methods["isInteger"] = new TsMethod("isInteger", TsType.Bool, new List<TsParameter>());
+        number.Methods["isFinite"] = new TsMethod("isFinite", TsType.Bool, new List<TsParameter>());
+        number.Methods["isNaN"] = new TsMethod("isNaN", TsType.Bool, new List<TsParameter>());
+        number.Methods["parseFloat"] = new TsMethod("parseFloat", TsType.Number, new List<TsParameter>());
+        number.Methods["parseInt"] = new TsMethod("parseInt", TsType.Number, new List<TsParameter>());
+        foreach (var constant in new[]
+        {
+            "MAX_SAFE_INTEGER", "MIN_SAFE_INTEGER", "MAX_VALUE", "MIN_VALUE",
+            "EPSILON", "POSITIVE_INFINITY", "NEGATIVE_INFINITY"
+        })
+        {
+            number.Fields[constant] = new TsField(constant, TsType.Number);
+        }
+        _classTypes["Number"] = number;
+        _symbolTable.Define(new ClassSymbol("Number", number, default));
+
+        var consoleGlobal = new TsClassType("console");
+        consoleGlobal.Methods["log"] = new TsMethod("log", TsType.Void, new List<TsParameter>());
+        consoleGlobal.Methods["error"] = new TsMethod("error", TsType.Void, new List<TsParameter>());
+        consoleGlobal.Methods["warn"] = new TsMethod("warn", TsType.Void, new List<TsParameter>());
+        _classTypes["console"] = consoleGlobal;
+        _symbolTable.Define(new ClassSymbol("console", consoleGlobal, default));
+
+        var arrayGlobal = new TsClassType("Array");
+        arrayGlobal.Methods["from"] = new TsMethod("from", new TsArrayType(TsType.Any), new List<TsParameter>());
+        arrayGlobal.Methods["of"] = new TsMethod("of", new TsArrayType(TsType.Any), new List<TsParameter>());
+        arrayGlobal.Methods["isArray"] = new TsMethod("isArray", TsType.Bool, new List<TsParameter>());
+        _classTypes["Array"] = arrayGlobal;
+        _symbolTable.Define(new ClassSymbol("Array", arrayGlobal, default));
+
+        var uint8ArrayGlobal = new TsClassType("Uint8Array");
+        _classTypes["Uint8Array"] = uint8ArrayGlobal;
+        _symbolTable.Define(new ClassSymbol("Uint8Array", uint8ArrayGlobal, default));
+
+        var arrayBufferGlobal = new TsClassType("ArrayBuffer");
+        _classTypes["ArrayBuffer"] = arrayBufferGlobal;
+        _symbolTable.Define(new ClassSymbol("ArrayBuffer", arrayBufferGlobal, default));
+
+        DefineGlobalFunction("parseInt", TsType.Number);
+        DefineGlobalFunction("parseFloat", TsType.Number);
+        DefineGlobalFunction("isNaN", TsType.Bool);
+        DefineGlobalFunction("isFinite", TsType.Bool);
+        DefineGlobalFunction("String", TsType.String);
+        DefineGlobalFunction("Boolean", TsType.Bool);
+    }
+
+    private void DefineGlobalFunction(string name, TsType returnType)
+    {
+        _symbolTable.Define(new FunctionSymbol(name, returnType, default)
+        {
+            HasDynamicSignature = true
+        });
     }
 
     public BoundSourceFile Bind(SourceFileSyntax sourceFile)
@@ -86,6 +221,11 @@ public sealed class Binder
         // mutual recursion resolve against complete signatures before bodies bind.
         foreach (var function in sourceFile.Members.OfType<FunctionDeclarationSyntax>())
             DeclareFunctionSignature(function);
+        foreach (var varDecl in sourceFile.Members.OfType<VariableDeclarationSyntax>())
+        {
+            if (varDecl.Initializer is LambdaExpressionSyntax lambda)
+                DeclareLambdaSignature(varDecl.Name, lambda, varDecl.IsExported);
+        }
 
         foreach (var member in sourceFile.Members)
         {
@@ -110,6 +250,13 @@ public sealed class Binder
             case EnumDeclarationSyntax en when !_enumTypes.ContainsKey(en.Name):
                 _enumTypes[en.Name] = new TsEnumType(en.Name);
                 break;
+
+            // Object-shaped aliases (`type Node<T> = { … }`) get an interface
+            // shell so self-referential members resolve.
+            case TypeAliasDeclarationSyntax { Type: ObjectTypeSyntax } alias
+                when !_interfaceTypes.ContainsKey(alias.Name):
+                _interfaceTypes[alias.Name] = new TsInterfaceType(alias.Name);
+                break;
         }
     }
 
@@ -117,6 +264,25 @@ public sealed class Binder
     {
         switch (member)
         {
+            case TypeAliasDeclarationSyntax alias:
+                PushTypeParameters(alias.GenericParameters);
+                if (alias.Type is ObjectTypeSyntax objType)
+                {
+                    var shell = _interfaceTypes[alias.Name];
+                    foreach (var m in objType.Members)
+                    {
+                        var memberType = ResolveType(m.Type);
+                        if (m.IsOptional && memberType is not TsNullableType)
+                            memberType = new TsNullableType(memberType);
+                        shell.Properties[m.Name] = new TsProperty(m.Name, memberType);
+                    }
+                }
+                else
+                {
+                    _typeAliases[alias.Name] = ResolveType(alias.Type);
+                }
+                PopTypeParameters();
+                break;
             case ClassDeclarationSyntax cls:
                 if (cls.BaseType != null && ResolveType(cls.BaseType) is TsClassType baseClass &&
                     _classTypes.TryGetValue(cls.Name, out var classType))
@@ -157,27 +323,90 @@ public sealed class Binder
 
     private BoundFunctionDeclaration BindFunction(FunctionDeclarationSyntax func)
     {
-        var sym = _symbolTable.Lookup(func.Name) as FunctionSymbol ?? DeclareFunctionSignature(func);
+        var sym = _symbolTable.Lookup(func.Name) is FunctionSymbol declared && declared.Location.Equals(func.Range)
+            ? declared
+            : DeclareFunctionSignature(func);
+        PushTypeParameters(func.GenericParameters);
         _symbolTable.PushScope();
 
+        _functionDepth++;
+        var collector = new List<Symbol>();
+        _captureCollectors.Add((_functionDepth, collector));
+
         foreach (var p in sym.Parameters)
-            _symbolTable.Define(p);
+            DefineWithDepth(p);
 
         var prevReturnType = _currentFunctionReturnType;
         _currentFunctionReturnType = sym.Type;
         var body = BindNode(func.Body);
         _currentFunctionReturnType = prevReturnType;
 
+        _captureCollectors.RemoveAt(_captureCollectors.Count - 1);
+        _functionDepth--;
         _symbolTable.PopScope();
+        PopTypeParameters();
 
-        return new BoundFunctionDeclaration(sym, body!);
+        var declaration = new BoundFunctionDeclaration(sym, body!);
+        declaration.CapturedVariables.AddRange(collector);
+        return declaration;
+    }
+
+    private FunctionSymbol DeclareLambdaSignature(string name, LambdaExpressionSyntax lambda, bool exported)
+    {
+        if (_symbolTable.Lookup(name) is FunctionSymbol existing && existing.Location.Equals(lambda.Range))
+            return existing;
+
+        PushTypeParameters(lambda.GenericParameters);
+        var sym = new FunctionSymbol(name, lambda.ReturnType != null ? ResolveType(lambda.ReturnType) : TsType.Any, lambda.Range)
+        {
+            IsAsync = lambda.IsAsync,
+            IsExported = exported
+        };
+        foreach (var parameter in lambda.Parameters)
+            sym.Parameters.Add(new ParameterSymbol(parameter.Name, ResolveType(parameter.TypeAnnotation), parameter.Range));
+        PopTypeParameters();
+        _symbolTable.Define(sym);
+        return sym;
+    }
+
+    private BoundFunctionDeclaration BindLambdaAsFunction(string name, LambdaExpressionSyntax lambda, bool exported)
+    {
+        // Reuse only the signature hoisted for THIS declaration (matched by
+        // source range); otherwise a shadowed outer name would be clobbered.
+        var sym = _symbolTable.Lookup(name) is FunctionSymbol hoisted && hoisted.Location.Equals(lambda.Range)
+            ? hoisted
+            : DeclareLambdaSignature(name, lambda, exported);
+        PushTypeParameters(lambda.GenericParameters);
+        _symbolTable.PushScope();
+
+        _functionDepth++;
+        var collector = new List<Symbol>();
+        _captureCollectors.Add((_functionDepth, collector));
+
+        foreach (var p in sym.Parameters)
+            DefineWithDepth(p);
+
+        var prevReturnType = _currentFunctionReturnType;
+        _currentFunctionReturnType = sym.Type is TsAnyType ? null : sym.Type;
+        var body = BindNode(lambda.Body);
+        _currentFunctionReturnType = prevReturnType;
+
+        _captureCollectors.RemoveAt(_captureCollectors.Count - 1);
+        _functionDepth--;
+        _symbolTable.PopScope();
+        PopTypeParameters();
+
+        var declaration = new BoundFunctionDeclaration(sym, body!);
+        declaration.CapturedVariables.AddRange(collector);
+        return declaration;
     }
 
     private FunctionSymbol DeclareFunctionSignature(FunctionDeclarationSyntax func)
     {
-        if (_symbolTable.Lookup(func.Name) is FunctionSymbol existing)
+        if (_symbolTable.Lookup(func.Name) is FunctionSymbol existing && existing.Location.Equals(func.Range))
             return existing;
 
+        PushTypeParameters(func.GenericParameters);
         var sym = new FunctionSymbol(func.Name, ResolveType(func.ReturnType) ?? TsType.Void, func.Range)
         {
             IsAsync = func.IsAsync,
@@ -185,6 +414,7 @@ public sealed class Binder
         };
         foreach (var parameter in func.Parameters)
             sym.Parameters.Add(new ParameterSymbol(parameter.Name, ResolveType(parameter.TypeAnnotation), parameter.Range));
+        PopTypeParameters();
         _symbolTable.Define(sym);
         return sym;
     }
@@ -210,6 +440,7 @@ public sealed class Binder
         };
 
         _symbolTable.Define(sym);
+        PushTypeParameters(cls.GenericParameters);
         _symbolTable.PushScope();
 
         var members = new List<BoundNode>();
@@ -224,6 +455,7 @@ public sealed class Binder
         _currentClassType = prevClass;
 
         _symbolTable.PopScope();
+        PopTypeParameters();
 
         return new BoundClassDeclaration(sym, members);
     }
@@ -243,6 +475,10 @@ public sealed class Binder
                     var paramType = ResolveType(p.TypeAnnotation);
                     var paramSym = new ParameterSymbol(p.Name, paramType, p.Range);
                     ctorSym.Parameters.Add(paramSym);
+
+                    // `constructor(private x: T)` also declares field x.
+                    if (p.IsPropertyParameter)
+                        classType.Fields[p.Name] = new TsField(p.Name, paramType);
                 }
 
                 var ctorMethod = new TsMethod("constructor", TsType.Void,
@@ -250,8 +486,9 @@ public sealed class Binder
                 classType.Constructor = ctorMethod;
 
                 _symbolTable.PushScope();
+                _functionDepth++;
                 foreach (var p in ctorSym.Parameters)
-                    _symbolTable.Define(p);
+                    DefineWithDepth(p);
                 var prevReturnType = _currentFunctionReturnType;
                 var prevInConstructor = _inConstructor;
                 _currentFunctionReturnType = TsType.Void;
@@ -259,7 +496,29 @@ public sealed class Binder
                 var body = BindNode(ctor.Body);
                 _inConstructor = prevInConstructor;
                 _currentFunctionReturnType = prevReturnType;
+                _functionDepth--;
                 _symbolTable.PopScope();
+
+                // Property parameters assign themselves before the user body.
+                var propertyAssignments = new List<BoundNode>();
+                for (int i = 0; i < ctor.Parameters.Count; i++)
+                {
+                    var p = ctor.Parameters[i];
+                    if (!p.IsPropertyParameter)
+                        continue;
+                    var paramSym = ctorSym.Parameters[i];
+                    propertyAssignments.Add(new BoundExpressionStatement(
+                        new BoundAssignmentExpression(
+                            new BoundMemberAccessExpression(
+                                new BoundThisExpression(classType),
+                                new FieldSymbol(p.Name, paramSym.Type, p.Range)),
+                            new BoundVariableExpression(paramSym))));
+                }
+                if (propertyAssignments.Count > 0)
+                {
+                    propertyAssignments.Add(body!);
+                    body = new BoundBlockStatement(propertyAssignments);
+                }
 
                 return new BoundConstructorDeclaration(classType.Name, ctorSym, body!);
             }
@@ -299,8 +558,9 @@ public sealed class Binder
                 if (method.Body != null)
                 {
                     _symbolTable.PushScope();
+                    _functionDepth++;
                     foreach (var p in methodSym.Parameters)
-                        _symbolTable.Define(p);
+                        DefineWithDepth(p);
                     var prevReturnType = _currentFunctionReturnType;
                     var prevInConstructor = _inConstructor;
                     _currentFunctionReturnType = methodType;
@@ -308,6 +568,7 @@ public sealed class Binder
                     var body = BindNode(method.Body);
                     _inConstructor = prevInConstructor;
                     _currentFunctionReturnType = prevReturnType;
+                    _functionDepth--;
                     _symbolTable.PopScope();
                     return new BoundMethodDeclaration(classType.Name, methodSym, body!);
                 }
@@ -379,6 +640,7 @@ public sealed class Binder
         };
 
         _symbolTable.Define(sym);
+        PushTypeParameters(iface.GenericParameters);
 
         foreach (var member in iface.Members)
         {
@@ -396,6 +658,7 @@ public sealed class Binder
             }
         }
 
+        PopTypeParameters();
         return new BoundInterfaceDeclaration(sym);
     }
 
@@ -523,6 +786,10 @@ public sealed class Binder
             ForStatementSyntax forStmt => BindFor(forStmt),
             ThrowStatementSyntax throwStmt => BindThrow(throwStmt),
             TryStatementSyntax tryStmt => BindTry(tryStmt),
+            ForOfStatementSyntax forOf => BindForOf(forOf),
+            FunctionDeclarationSyntax nestedFunc => BindFunction(nestedFunc),
+            VariableDeclarationListSyntax varList => new BoundBlockStatement(
+                varList.Declarations.Select(d => BindVariableDeclaration(d)).ToList()),
             ExpressionStatementSyntax exprStmt => BindExpressionStatement(exprStmt),
             _ => throw new InvalidOperationException($"Unexpected statement type: {stmt.NodeType}")
         };
@@ -531,6 +798,11 @@ public sealed class Binder
     private BoundBlockStatement BindBlock(BlockStatementSyntax block)
     {
         _symbolTable.PushScope();
+
+        // Nested function declarations hoist within their block.
+        foreach (var nested in block.Statements.OfType<FunctionDeclarationSyntax>())
+            DeclareFunctionSignature(nested);
+
         var statements = new List<BoundNode>();
         foreach (var stmt in block.Statements)
         {
@@ -540,8 +812,12 @@ public sealed class Binder
         return new BoundBlockStatement(statements);
     }
 
-    private BoundVariableDeclaration BindVariableDeclaration(VariableDeclarationSyntax varDecl)
+    private BoundNode BindVariableDeclaration(VariableDeclarationSyntax varDecl)
     {
+        // `const f = (a) => ...` declares a function, not a data slot.
+        if (varDecl.Initializer is LambdaExpressionSyntax lambdaInit)
+            return BindLambdaAsFunction(varDecl.Name, lambdaInit, varDecl.IsExported);
+
         TsType type;
         BoundNode? initializer = null;
 
@@ -557,6 +833,17 @@ public sealed class Binder
                 initializer = BindExpression(varDecl.Initializer);
             }
             type = initializer.Type;
+
+            // TypeScript semantics: an unannotated numeric literal infers as
+            // `number`, so later reassignments with number-typed expressions
+            // stay valid. Annotated declarations keep their strict type.
+            if (varDecl.TypeAnnotation == null &&
+                initializer is BoundLiteralExpression { Type.Name: "int32" } intLiteral)
+            {
+                type = TsType.Number;
+                initializer = new BoundLiteralExpression(
+                    Convert.ToDouble(intLiteral.Value ?? 0), TsType.Number);
+            }
         }
         else if (varDecl.TypeAnnotation != null)
         {
@@ -580,7 +867,7 @@ public sealed class Binder
         }
 
         var symbol = new LocalSymbol(varDecl.Name, type, varDecl.Range, varDecl.IsConst);
-        _symbolTable.Define(symbol);
+        DefineWithDepth(symbol);
 
         return new BoundVariableDeclaration(symbol, initializer);
     }
@@ -633,11 +920,18 @@ public sealed class Binder
 
     private void ValidateCondition(BoundNode condition, SourceLocation location)
     {
-        if (condition.Type != TsType.Bool && condition.Type != TsType.Void &&
-            condition.Type is not TsAnyType && condition.Type is not TsNullableType)
+        // JS-mode types (number, string, any, nullable, null) are truthy in
+        // conditions the way TypeScript allows; TypeSharp's strict primitives
+        // (int32, float64, …) still require an explicit bool.
+        var type = condition.Type;
+        bool allowed = type == TsType.Bool || type == TsType.Void ||
+                       type is TsAnyType or TsNullableType or TsNullType or TsUnionType ||
+                       type == TsType.Number || type == TsType.String ||
+                       type is TsArrayType or TsClassType or TsInterfaceType or TsFunctionType;
+        if (!allowed)
         {
             _diagnostics.Error(
-                $"Condition has type '{condition.Type}', expected 'bool'",
+                $"Condition has type '{type}', expected 'bool'",
                 location, DiagnosticCode.TS2016);
         }
     }
@@ -675,7 +969,7 @@ public sealed class Binder
             {
                 var catchType = tryStmt.CatchType != null ? ResolveType(tryStmt.CatchType) : new TsClassType("Error");
                 catchSym = new LocalSymbol(tryStmt.CatchVariable, catchType, tryStmt.CatchBlock.Range);
-                _symbolTable.Define(catchSym);
+                DefineWithDepth(catchSym);
             }
             catchBlock = BindStatement(tryStmt.CatchBlock);
             _symbolTable.PopScope();
@@ -716,6 +1010,12 @@ public sealed class Binder
             ObjectLiteralExpressionSyntax objLit => BindObjectLiteral(objLit),
             ArrayLiteralExpressionSyntax arrLit => BindArrayLiteral(arrLit),
             IndexExpressionSyntax indexExpr => BindIndexExpression(indexExpr),
+            LambdaExpressionSyntax lambda => BindInlineLambda(lambda),
+            AsExpressionSyntax asExpr => BindAsExpression(asExpr),
+            TypeofExpressionSyntax typeofExpr => BindTypeof(typeofExpr),
+            TemplatePartSyntax templatePart => new BoundCastExpression(
+                BindExpression(templatePart.Expression), TsType.String),
+            NonNullAssertionSyntax nonNull => BindNonNullAssertion(nonNull),
             _ => throw new InvalidOperationException($"Unexpected expression type: {expr.NodeType}")
         };
     }
@@ -730,7 +1030,9 @@ public sealed class Binder
             case TokenKind.IntegerLiteral:
                 if (lit.Token.Value is ulong ul)
                 {
-                    type = TsType.UInt64;
+                    type = lit.Token.Text.EndsWith("n", StringComparison.Ordinal)
+                        ? TsType.BigInt
+                        : TsType.UInt64;
                     value = ul;
                 }
                 else if (lit.Token.Value is long l)
@@ -805,16 +1107,27 @@ public sealed class Binder
         return new BoundLiteralExpression(value, type);
     }
 
-    private BoundVariableExpression BindIdentifier(IdentifierExpressionSyntax id)
+    private BoundNode BindIdentifier(IdentifierExpressionSyntax id)
     {
         var symbol = _symbolTable.Lookup(id.Name);
         if (symbol == null)
         {
+            switch (id.Name)
+            {
+                case "undefined":
+                    return new BoundLiteralExpression(null, TsType.Null);
+                case "Infinity":
+                    return new BoundLiteralExpression(double.PositiveInfinity, TsType.Number);
+                case "NaN":
+                    return new BoundLiteralExpression(double.NaN, TsType.Number);
+            }
+
             _diagnostics.Error($"Undefined symbol: '{id.Name}'", id.Range.Start);
             return new BoundVariableExpression(
                 new LocalSymbol(id.Name, TsType.Void, id.Range));
         }
 
+        RegisterPossibleCapture(symbol);
         return new BoundVariableExpression(symbol);
     }
 
@@ -842,7 +1155,7 @@ public sealed class Binder
         return new BoundUnaryExpression(unary.OperatorToken.Kind, operand, unary.IsPrefix, resultType);
     }
 
-    private BoundCallExpression BindCall(CallExpressionSyntax call)
+    private BoundNode BindCall(CallExpressionSyntax call)
     {
         var callee = BindExpression(call.Callee);
         var args = call.Arguments.Select(BindExpression).ToList();
@@ -850,10 +1163,43 @@ public sealed class Binder
         TsType returnType = TsType.Void;
         List<ParameterSymbol>? expectedParams = null;
 
+        if (callee is BoundVariableExpression { Symbol: ClassSymbol { Name: "Array" } })
+        {
+            // `Array(n)` — construction without `new`.
+            return new BoundArrayConstructionExpression(args, new TsArrayType(TsType.Any));
+        }
+
         if (callee is BoundVariableExpression varExpr && varExpr.Symbol is FunctionSymbol funcSym)
         {
             returnType = funcSym.Type;
             expectedParams = funcSym.HasDynamicSignature ? null : funcSym.Parameters;
+        }
+        else if (callee.Type is TsFunctionType fnType)
+        {
+            // Calling a function-typed value (parameter, local, field).
+            returnType = fnType.ReturnType;
+            if (fnType.Parameters.Count > 0)
+            {
+                if (args.Count != fnType.Parameters.Count)
+                {
+                    _diagnostics.Error(
+                        $"Expected {fnType.Parameters.Count} argument(s) but got {args.Count}",
+                        call.Range.Start);
+                }
+                else
+                {
+                    for (int i = 0; i < args.Count; i++)
+                    {
+                        if (!TsType.IsCompatibleWith(args[i].Type, fnType.Parameters[i].Type))
+                        {
+                            _diagnostics.Error(
+                                $"Argument {i + 1}: cannot assign '{args[i].Type}' to parameter '{fnType.Parameters[i].Name}' of type '{fnType.Parameters[i].Type}'",
+                                call.Range.Start);
+                        }
+                    }
+                }
+            }
+            return new BoundCallExpression(callee, args, returnType);
         }
         else if (callee is BoundMemberAccessExpression memberExpr && memberExpr.Member is MethodSymbol methodSym)
         {
@@ -918,9 +1264,17 @@ public sealed class Binder
         return new BoundCallExpression(callee, args, returnType);
     }
 
-    private BoundMemberAccessExpression BindMemberAccess(MemberAccessExpressionSyntax member)
+    private BoundNode BindMemberAccess(MemberAccessExpressionSyntax member)
     {
         var obj = BindExpression(member.Object);
+
+        // Known static numeric constants (Math.PI, Number.MAX_SAFE_INTEGER, …)
+        // fold to literals so no runtime lookup is needed.
+        if (obj is BoundVariableExpression { Symbol: ClassSymbol staticOwner } &&
+            StaticNumericConstants.TryGetValue((staticOwner.Name, member.MemberName), out double constant))
+        {
+            return new BoundLiteralExpression(constant, TsType.Number);
+        }
 
         Symbol? memberSym = null;
 
@@ -968,6 +1322,23 @@ public sealed class Binder
                 memberSym = CreateMethodSymbol(method, null, member.Range);
             }
         }
+        else if (objType is TsArrayType arrayType)
+        {
+            memberSym = BindArrayMember(arrayType, member.MemberName, member.Range);
+        }
+        else if (objType is TsTupleType tupleType)
+        {
+            memberSym = BindArrayMember(new TsArrayType(tupleType.UnifiedElementType()), member.MemberName, member.Range);
+        }
+        else if (objType is TsPrimitiveType { Name: "string" })
+        {
+            memberSym = BindStringMember(member.MemberName, member.Range);
+        }
+        else if (objType is TsAnyType or TsTypeParameter)
+        {
+            // Dynamic / erased-generic receivers: member exists with type any.
+            memberSym = new PropertySymbol(member.MemberName, TsType.Any, member.Range);
+        }
 
         if (memberSym == null)
         {
@@ -980,6 +1351,99 @@ public sealed class Binder
             : memberSym.Type;
 
         return new BoundMemberAccessExpression(obj, memberSym, member.IsNullConditional, resultType);
+    }
+
+    // Array/string builtin members: methods dispatch through the VM builtin
+    // table under Array::/String:: names; parameter lists stay empty so the
+    // binder does not enforce a fixed arity on variadic-style JS members.
+    private Symbol? BindArrayMember(TsArrayType arrayType, string name, SourceRange range)
+    {
+        switch (name)
+        {
+            case "length":
+                return new PropertySymbol("length", TsType.Int32, range);
+            case "push":
+            case "unshift":
+                return BuiltinMethod(name, TsType.Int32, "Array", range);
+            case "pop":
+            case "shift":
+                return BuiltinMethod(name, arrayType.ElementType, "Array", range);
+            case "reverse":
+            case "slice":
+            case "concat":
+            case "fill":
+                return BuiltinMethod(name, arrayType, "Array", range);
+            case "includes":
+                return BuiltinMethod(name, TsType.Bool, "Array", range);
+            case "indexOf":
+            case "lastIndexOf":
+                return BuiltinMethod(name, TsType.Int32, "Array", range);
+            case "join":
+                return BuiltinMethod(name, TsType.String, "Array", range);
+            case "map":
+            case "flatMap":
+                return BuiltinMethod(name, new TsArrayType(TsType.Any), "Array", range);
+            case "filter":
+            case "sort":
+                return BuiltinMethod(name, arrayType, "Array", range);
+            case "forEach":
+                return BuiltinMethod(name, TsType.Void, "Array", range);
+            case "reduce":
+                return BuiltinMethod(name, TsType.Any, "Array", range);
+            case "some":
+            case "every":
+                return BuiltinMethod(name, TsType.Bool, "Array", range);
+            case "find":
+                return BuiltinMethod(name, new TsNullableType(arrayType.ElementType), "Array", range);
+            case "findIndex":
+                return BuiltinMethod(name, TsType.Int32, "Array", range);
+            case "flat":
+                return BuiltinMethod(name, new TsArrayType(TsType.Any), "Array", range);
+            default:
+                return null;
+        }
+    }
+
+    private Symbol? BindStringMember(string name, SourceRange range)
+    {
+        switch (name)
+        {
+            case "length":
+                return new PropertySymbol("length", TsType.Int32, range);
+            case "charAt":
+            case "toUpperCase":
+            case "toLowerCase":
+            case "substring":
+            case "slice":
+            case "trim":
+            case "repeat":
+            case "concat":
+            case "replace":
+            case "replaceAll":
+            case "padStart":
+            case "padEnd":
+                return BuiltinMethod(name, TsType.String, "String", range);
+            case "charCodeAt":
+            case "indexOf":
+            case "lastIndexOf":
+                return BuiltinMethod(name, TsType.Int32, "String", range);
+            case "includes":
+            case "startsWith":
+            case "endsWith":
+                return BuiltinMethod(name, TsType.Bool, "String", range);
+            case "split":
+                return BuiltinMethod(name, new TsArrayType(TsType.String), "String", range);
+            default:
+                return null;
+        }
+    }
+
+    private static MethodSymbol BuiltinMethod(string name, TsType returnType, string declaringClass, SourceRange range)
+    {
+        return new MethodSymbol(name, returnType, range)
+        {
+            DeclaringClassName = declaringClass
+        };
     }
 
     private static MethodSymbol CreateMethodSymbol(TsMethod method, string? declaringClass, SourceRange range)
@@ -1009,6 +1473,12 @@ public sealed class Binder
             TokenKind.AmpersandEquals => TokenKind.Ampersand,
             TokenKind.PipeEquals => TokenKind.Pipe,
             TokenKind.CaretEquals => TokenKind.Caret,
+            TokenKind.ShiftLeftEquals => TokenKind.ShiftLeft,
+            TokenKind.ShiftRightEquals => TokenKind.ShiftRight,
+            TokenKind.StarStarEquals => TokenKind.StarStar,
+            TokenKind.AmpersandAmpersandEquals => TokenKind.AmpersandAmpersand,
+            TokenKind.PipePipeEquals => TokenKind.PipePipe,
+            TokenKind.QuestionQuestionEquals => TokenKind.QuestionQuestion,
             _ => (TokenKind?)null
         };
         if (compoundOp is TokenKind op)
@@ -1054,10 +1524,14 @@ public sealed class Binder
         return new BoundConditionalExpression(condition, whenTrue, whenFalse, resultType);
     }
 
-    private BoundNewExpression BindNew(NewExpressionSyntax newExpr)
+    private BoundNode BindNew(NewExpressionSyntax newExpr)
     {
         var type = ResolveType(newExpr.Type);
         var args = newExpr.Arguments.Select(BindExpression).ToList();
+
+        // `new Array(n)` builds a real array value, not a class instance.
+        if (type is TsArrayType arrayNew)
+            return new BoundArrayConstructionExpression(args, arrayNew);
 
         if (type is TsClassType { Constructor: not null } ctorClass)
         {
@@ -1174,6 +1648,114 @@ public sealed class Binder
         return new BoundObjectLiteralExpression(properties, resultType);
     }
 
+    private BoundLambdaExpression BindInlineLambda(LambdaExpressionSyntax lambda)
+    {
+        var name = $"$lambda_{_lambdaCounter++}";
+        var function = BindLambdaAsFunction(name, lambda, exported: false);
+
+        var fnType = new TsFunctionType(
+            function.Symbol.Parameters.Select(p => new TsParameter(p.Name, p.Type)).ToList(),
+            function.Symbol.Type);
+        return new BoundLambdaExpression(function, fnType);
+    }
+
+    private BoundNode BindTypeof(TypeofExpressionSyntax typeofExpr)
+    {
+        var operand = BindExpression(typeofExpr.Operand);
+
+        // Statically-known operand types fold to their JS typeof string.
+        string? known = operand.Type switch
+        {
+            TsPrimitiveType { Name: "bigint" } => "bigint",
+            TsPrimitiveType { IsNumericType: true } => "number",
+            TsPrimitiveType { Name: "string" } => "string",
+            TsPrimitiveType { Name: "bool" } => "boolean",
+            TsFunctionType => "function",
+            _ => null
+        };
+        if (known != null)
+            return new BoundLiteralExpression(known, TsType.String);
+
+        return new BoundTypeofExpression(operand);
+    }
+
+    private BoundNode BindNonNullAssertion(NonNullAssertionSyntax nonNull)
+    {
+        var operand = BindExpression(nonNull.Expression);
+        return operand.Type switch
+        {
+            TsNullableType nullable => new BoundCastExpression(operand, nullable.ElementType),
+            TsUnionType union when union.Types.Any(t => t is TsNullType or TsNullableType) =>
+                new BoundCastExpression(operand,
+                    union.Types.FirstOrDefault(t => t is not TsNullType and not TsNullableType) ?? TsType.Any),
+            _ => operand
+        };
+    }
+
+    private BoundNode BindAsExpression(AsExpressionSyntax asExpr)
+    {
+        var operand = BindExpression(asExpr.Expression);
+        var targetType = ResolveType(asExpr.TargetType);
+        return operand.Type.Equals(targetType)
+            ? operand
+            : new BoundCastExpression(operand, targetType);
+    }
+
+    private BoundNode BindForOf(ForOfStatementSyntax forOf)
+    {
+        // Desugars to an index-based loop over a captured iterable:
+        //   { const $arr = iterable; for (let $i = 0; $i < $arr.length; $i = $i + 1) { const x = $arr[$i]; body } }
+        var iterable = BindExpression(forOf.Iterable);
+        TsType elementType = iterable.Type switch
+        {
+            TsArrayType arr => arr.ElementType,
+            TsPrimitiveType { Name: "string" } => TsType.String,
+            _ => TsType.Any
+        };
+        if (elementType is TsAnyType && iterable.Type is not TsAnyType)
+        {
+            _diagnostics.Error($"for...of requires an array or string, got '{iterable.Type}'",
+                forOf.Iterable.Range.Start);
+        }
+
+        _symbolTable.PushScope();
+        int id = _forOfCounter++;
+
+        var arrSym = new LocalSymbol($"$of_arr_{id}", iterable.Type, forOf.Range, isConst: true);
+        var idxSym = new LocalSymbol($"$of_idx_{id}", TsType.Int32, forOf.Range);
+        DefineWithDepth(arrSym);
+        DefineWithDepth(idxSym);
+
+        var arrDecl = new BoundVariableDeclaration(arrSym, iterable);
+        var idxDecl = new BoundVariableDeclaration(idxSym, new BoundLiteralExpression(0, TsType.Int32));
+
+        var lengthAccess = new BoundMemberAccessExpression(
+            new BoundVariableExpression(arrSym),
+            new PropertySymbol("length", TsType.Int32, forOf.Range));
+        var condition = new BoundBinaryExpression(
+            new BoundVariableExpression(idxSym), TokenKind.LessThan, lengthAccess, TsType.Bool);
+        var increment = new BoundAssignmentExpression(
+            new BoundVariableExpression(idxSym),
+            new BoundBinaryExpression(
+                new BoundVariableExpression(idxSym), TokenKind.Plus,
+                new BoundLiteralExpression(1, TsType.Int32), TsType.Int32));
+
+        var elementSym = new LocalSymbol(forOf.VariableName, elementType, forOf.Range, forOf.IsConst);
+        DefineWithDepth(elementSym);
+        var elementDecl = new BoundVariableDeclaration(elementSym,
+            new BoundIndexExpression(
+                new BoundVariableExpression(arrSym),
+                new BoundVariableExpression(idxSym),
+                elementType));
+
+        var body = BindStatement(forOf.Body);
+        var loopBody = new BoundBlockStatement(new List<BoundNode> { elementDecl, body });
+        var loop = new BoundForStatement(idxDecl, condition, increment, loopBody);
+
+        _symbolTable.PopScope();
+        return new BoundBlockStatement(new List<BoundNode> { arrDecl, loop });
+    }
+
     private BoundArrayLiteralExpression BindArrayLiteral(ArrayLiteralExpressionSyntax arrLit)
     {
         var elements = arrLit.Elements.Select(BindExpression).ToList();
@@ -1200,7 +1782,11 @@ public sealed class Binder
         var resultType = obj.Type switch
         {
             TsArrayType arr => arr.ElementType,
+            TsTupleType tuple when index is BoundLiteralExpression { Value: int constIdx } &&
+                constIdx >= 0 && constIdx < tuple.ElementTypes.Count => tuple.ElementTypes[constIdx],
+            TsTupleType tuple => tuple.UnifiedElementType(),
             TsMapType map => new TsNullableType(map.ValueType),
+            TsPrimitiveType { Name: "string" } => TsType.String,
             _ => TsType.Any
         };
 
@@ -1227,13 +1813,94 @@ public sealed class Binder
             MapTypeSyntax map => new TsMapType(ResolveType(map.KeyType), ResolveType(map.ValueType)),
             PromiseTypeSyntax promise => new TsPromiseType(ResolveType(promise.ElementType)),
             NullableTypeSyntax nullable => new TsNullableType(ResolveType(nullable.ElementType)),
-            UnionTypeSyntax union => new TsUnionType(union.Types.Select(ResolveType).ToList()),
+            UnionTypeSyntax union => ResolveUnionType(union),
+            FunctionTypeSyntax fn => new TsFunctionType(
+                fn.Parameters.Select(p => new TsParameter(p.Name, ResolveType(p.TypeAnnotation))).ToList(),
+                ResolveType(fn.ReturnType)),
+            ObjectTypeSyntax anon => ResolveObjectType(anon),
+            TupleTypeSyntax tuple => new TsTupleType(tuple.ElementTypes.Select(ResolveType).ToList()),
             _ => TsType.Void
         };
     }
 
+    private TsType ResolveUnionType(UnionTypeSyntax union)
+    {
+        var members = union.Types.Select(ResolveType).ToList();
+        // `T | null` / `T | undefined` normalizes to nullable T so member
+        // access and null-flow analysis see one canonical shape.
+        var nonNull = members.Where(m => m is not TsNullType).ToList();
+        if (nonNull.Count < members.Count)
+        {
+            return nonNull.Count == 1
+                ? new TsNullableType(nonNull[0])
+                : new TsNullableType(new TsUnionType(nonNull));
+        }
+        return new TsUnionType(members);
+    }
+
+    private TsInterfaceType ResolveObjectType(ObjectTypeSyntax objType)
+    {
+        var iface = new TsInterfaceType($"$anon_{objType.Range.Start.Line}_{objType.Range.Start.Column}");
+        foreach (var m in objType.Members)
+        {
+            var memberType = ResolveType(m.Type);
+            if (m.IsOptional && memberType is not TsNullableType)
+                memberType = new TsNullableType(memberType);
+            iface.Properties[m.Name] = new TsProperty(m.Name, memberType);
+        }
+        return iface;
+    }
+
+    private void PushTypeParameters(IEnumerable<GenericParameterSyntax> parameters)
+    {
+        var scope = new Dictionary<string, TsTypeParameter>(StringComparer.Ordinal);
+        foreach (var p in parameters)
+            scope[p.Name] = new TsTypeParameter(p.Name);
+        _typeParameterScopes.Add(scope);
+    }
+
+    private void PopTypeParameters()
+    {
+        if (_typeParameterScopes.Count > 0)
+            _typeParameterScopes.RemoveAt(_typeParameterScopes.Count - 1);
+    }
+
+    private TsTypeParameter? LookupTypeParameter(string name)
+    {
+        for (int i = _typeParameterScopes.Count - 1; i >= 0; i--)
+        {
+            if (_typeParameterScopes[i].TryGetValue(name, out var param))
+                return param;
+        }
+        return null;
+    }
+
     private TsType ResolveNamedType(NamedTypeSyntax named)
     {
+        if (named.Name is "null" or "undefined")
+            return TsType.Null;
+
+        if (LookupTypeParameter(named.Name) is TsTypeParameter typeParam)
+            return typeParam;
+
+        if (named.Name == "Array")
+        {
+            return new TsArrayType(named.TypeArguments.Count > 0
+                ? ResolveType(named.TypeArguments[0])
+                : TsType.Any);
+        }
+
+        if (named.Name is "Uint8Array" or "Uint8ClampedArray" or "ArrayBuffer")
+            return new TsArrayType(TsType.Number);
+
+        if (_typeAliases.TryGetValue(named.Name, out var aliased))
+            return aliased;
+
+        // User-declared interfaces shadow same-named builtin classes (a repo
+        // defining its own `Map` interface must win over the builtin).
+        if (_interfaceTypes.TryGetValue(named.Name, out var userIface))
+            return userIface;
+
         if (_classTypes.TryGetValue(named.Name, out var classType))
         {
             if (named.TypeArguments.Count > 0)
@@ -1265,7 +1932,7 @@ public sealed class Binder
             // dynamic so declared annotations (e.g. int64) keep accepting it.
             return op switch
             {
-                TokenKind.DoubleEquals or TokenKind.StrictNotEquals or
+                TokenKind.DoubleEquals or TokenKind.TripleEquals or TokenKind.StrictNotEquals or
                 TokenKind.NotEquals or TokenKind.LessThan or TokenKind.GreaterThan or
                 TokenKind.LessOrEqual or TokenKind.GreaterOrEqual or
                 TokenKind.AmpersandAmpersand or TokenKind.PipePipe => TsType.Bool,
@@ -1273,20 +1940,58 @@ public sealed class Binder
             };
         }
 
+        if (left == TsType.BigInt || right == TsType.BigInt)
+        {
+            if (op is TokenKind.DoubleEquals or TokenKind.TripleEquals or TokenKind.StrictNotEquals or
+                TokenKind.NotEquals or TokenKind.LessThan or TokenKind.GreaterThan or
+                TokenKind.LessOrEqual or TokenKind.GreaterOrEqual)
+                return TsType.Bool;
+
+            return left == TsType.BigInt && right == TsType.BigInt
+                ? TsType.BigInt
+                : TsType.Void;
+        }
+
         return op switch
         {
-            TokenKind.DoubleEquals or TokenKind.StrictNotEquals or
+            TokenKind.DoubleEquals or TokenKind.TripleEquals or TokenKind.StrictNotEquals or
             TokenKind.NotEquals or TokenKind.LessThan or TokenKind.GreaterThan or
             TokenKind.LessOrEqual or TokenKind.GreaterOrEqual or
             TokenKind.AmpersandAmpersand or TokenKind.PipePipe => TsType.Bool,
 
             TokenKind.QuestionQuestion => right,
 
+            TokenKind.StarStar => TsType.Number,
+
             TokenKind.Plus when left == TsType.String && right == TsType.String => TsType.String,
 
-            _ => left.IsNumeric && right.IsNumeric ? left : TsType.Void
+            _ => left.IsNumeric && right.IsNumeric ? WiderNumeric(left, right) : TsType.Void
         };
     }
+
+    // Mixed numeric operands take the wider side (int32 literal + number
+    // variable computes as number, matching TypeScript arithmetic).
+    public static TsType WiderNumeric(TsType left, TsType right)
+    {
+        if (left.Equals(right)) return left;
+        int leftRank = NumericRank(left);
+        int rightRank = NumericRank(right);
+        return leftRank >= rightRank ? left : right;
+    }
+
+    private static int NumericRank(TsType type) => type.Name switch
+    {
+        "decimal" => 8,
+        "float64" or "number" => 7,
+        "float32" => 6,
+        "bigint" => 5,
+        "uint64" => 5,
+        "int64" => 4,
+        "uint32" => 3,
+        "int32" => 2,
+        "int16" or "uint16" => 1,
+        _ => 0
+    };
 
     private static TsType InferUnaryResultType(TsType operand, TokenKind op)
     {

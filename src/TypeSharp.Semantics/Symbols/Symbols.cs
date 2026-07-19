@@ -41,6 +41,10 @@ public sealed class LocalSymbol : Symbol
     public override SymbolKind Kind => SymbolKind.Local;
     public bool IsConst { get; set; }
 
+    // Captured by a nested function: storage becomes a heap box so the
+    // closure and the declaring frame share one mutable cell.
+    public bool IsCaptured { get; set; }
+
     public LocalSymbol(string name, TypeSystem.TsType type, SourceRange location, bool isConst = false)
         : base(name, type, location)
     {
@@ -53,6 +57,7 @@ public sealed class ParameterSymbol : Symbol
     public override SymbolKind Kind => SymbolKind.Parameter;
     public bool HasDefault { get; set; }
     public object? DefaultValue { get; set; }
+    public bool IsCaptured { get; set; }
 
     public ParameterSymbol(string name, TypeSystem.TsType type, SourceRange location)
         : base(name, type, location) { }

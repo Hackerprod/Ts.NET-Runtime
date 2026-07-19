@@ -38,10 +38,21 @@ public sealed class Parser
         if (Check(TokenKind.ExportKeyword))
         {
             Advance();
+            if (Check(TokenKind.DefaultKeyword))
+                Advance();
             var decl = ParseDeclaration();
             if (decl is DeclarationSyntax declSyntax)
             {
                 declSyntax.Modifiers.Add(new SyntaxToken(new Token(TokenKind.ExportKeyword, "export", Peek().Location)));
+            }
+            else if (decl is VariableDeclarationSyntax varDecl)
+            {
+                varDecl.IsExported = true;
+            }
+            else if (decl is VariableDeclarationListSyntax varList)
+            {
+                foreach (var d in varList.Declarations)
+                    d.IsExported = true;
             }
             return decl;
         }
@@ -96,13 +107,16 @@ public sealed class Parser
         }
         else
         {
-            Expect(TokenKind.Arrow);
+            if (Check(TokenKind.Arrow) || Check(TokenKind.FatArrow)) Advance();
+            else Expect(TokenKind.Arrow);
             body = new ExpressionStatementSyntax(ParseExpression(), Peek().Location);
             if (Check(TokenKind.Semicolon)) Advance();
         }
 
-        return new FunctionDeclarationSyntax(name, parameters, returnType, body, isAsync,
+        var funcDecl = new FunctionDeclarationSyntax(name, parameters, returnType, body, isAsync,
             new SourceRange(funcKw.Location, body.Range.End));
+        funcDecl.GenericParameters.AddRange(genericParams);
+        return funcDecl;
     }
 
     private ClassDeclarationSyntax ParseClassDeclaration(List<SyntaxToken> modifiers)
@@ -123,13 +137,27 @@ public sealed class Parser
             baseType = ParseType();
         }
 
+        var implemented = new List<TypeSyntax>();
+        if (Check(TokenKind.Identifier) && Peek().Text == "implements")
+        {
+            Advance();
+            implemented.Add(ParseType());
+            while (Check(TokenKind.Comma))
+            {
+                Advance();
+                implemented.Add(ParseType());
+            }
+        }
+
         var members = ParseClassBody();
-        return new ClassDeclarationSyntax(name, members,
+        var classDecl = new ClassDeclarationSyntax(name, members,
             new SourceRange(classKw.Location, Peek(-1).Location))
         {
             GenericParameters = genericParams,
             BaseType = baseType,
         };
+        classDecl.ImplementedInterfaces.AddRange(implemented);
+        return classDecl;
     }
 
     private InterfaceDeclarationSyntax ParseInterfaceDeclaration(List<SyntaxToken> modifiers)
@@ -302,11 +330,19 @@ public sealed class Parser
             return new MethodDeclarationSyntax(name, parameters, returnType, body, range);
         }
 
+        bool fieldOptional = false;
+        if (Check(TokenKind.Question) && Peek(1).Kind == TokenKind.Colon)
+        {
+            fieldOptional = true;
+            Advance();
+        }
         TypeSyntax? type = null;
         if (Check(TokenKind.Colon))
         {
             Advance();
             type = ParseType();
+            if (fieldOptional && type is not NullableTypeSyntax)
+                type = new NullableTypeSyntax(type, type.Range);
         }
         ExpressionSyntax? initializer = null;
         if (Check(TokenKind.Equals))
@@ -328,8 +364,23 @@ public sealed class Parser
         while (!Check(TokenKind.CloseParen) && !IsAtEnd())
         {
             int loopStart = _position;
-            var name = ExpectIdentifier();
+            bool isPropertyParameter = false;
+            while (Check(TokenKind.PrivateKeyword) || Check(TokenKind.PublicKeyword) ||
+                   Check(TokenKind.ProtectedKeyword) || Check(TokenKind.ReadonlyKeyword))
+            {
+                isPropertyParameter = true;
+                Advance();
+            }
+            var name = ExpectMemberName();
+            bool optional = false;
+            if (Check(TokenKind.Question) && Peek(1).Kind == TokenKind.Colon)
+            {
+                optional = true;
+                Advance();
+            }
             var type = ParseTypeAnnotation();
+            if (optional && type is not NullableTypeSyntax)
+                type = new NullableTypeSyntax(type, type.Range);
             ExpressionSyntax? defaultVal = null;
             if (Check(TokenKind.Equals))
             {
@@ -337,7 +388,10 @@ public sealed class Parser
                 defaultVal = ParseExpression();
             }
             var paramRange = new SourceRange(Peek(-1).Location, Peek().Location);
-            parameters.Add(new ParameterSyntax(name, type, defaultVal, paramRange));
+            parameters.Add(new ParameterSyntax(name, type, defaultVal, paramRange)
+            {
+                IsPropertyParameter = isPropertyParameter
+            });
             if (Check(TokenKind.Comma)) Advance();
             // Malformed input must not stall the cursor; skip the bad token.
             if (_position == loopStart) Advance();
@@ -374,6 +428,31 @@ public sealed class Parser
     // Type parsing
     public TypeSyntax ParseType()
     {
+        var type = ParseTypeWithSuffixes();
+
+        if (Check(TokenKind.Pipe))
+        {
+            var members = new List<TypeSyntax> { type };
+            while (Check(TokenKind.Pipe))
+            {
+                Advance();
+                members.Add(ParseTypeWithSuffixes());
+            }
+            type = new UnionTypeSyntax(members,
+                new SourceRange(members[0].Range.Start, members[^1].Range.End));
+        }
+
+        if (Check(TokenKind.Question))
+        {
+            Advance();
+            type = new NullableTypeSyntax(type, new SourceRange(type.Range.Start, Peek(-1).Location));
+        }
+
+        return type;
+    }
+
+    private TypeSyntax ParseTypeWithSuffixes()
+    {
         var type = ParsePrimaryType();
 
         while (Check(TokenKind.OpenBracket) && Peek(1).Kind == TokenKind.CloseBracket)
@@ -381,12 +460,6 @@ public sealed class Parser
             Advance();
             Advance();
             type = new ArrayTypeSyntax(type, new SourceRange(type.Range.Start, Peek(-1).Location));
-        }
-
-        if (Check(TokenKind.Question))
-        {
-            Advance();
-            type = new NullableTypeSyntax(type, new SourceRange(type.Range.Start, Peek(-1).Location));
         }
 
         return type;
@@ -399,12 +472,40 @@ public sealed class Parser
             return ParseMapType();
         }
 
+        if (Check(TokenKind.OpenParen))
+        {
+            return ParseFunctionType();
+        }
+
         if (Check(TokenKind.OpenBracket))
         {
+            // [T] (array shorthand) or tuple [A, B, …]. Tuples surface as
+            // arrays: homogeneous element type when members agree, any otherwise.
             Advance();
-            var elemType = ParseType();
+            var members = new List<TypeSyntax> { ParseType() };
+            while (Check(TokenKind.Comma))
+            {
+                Advance();
+                members.Add(ParseType());
+            }
             Expect(TokenKind.CloseBracket);
-            return new ArrayTypeSyntax(elemType, elemType.Range);
+            if (members.Count == 1)
+                return new ArrayTypeSyntax(members[0], members[0].Range);
+            return new TupleTypeSyntax(members,
+                new SourceRange(members[0].Range.Start, members[^1].Range.End));
+        }
+
+        if (Check(TokenKind.NullLiteral))
+        {
+            var nullTok = Advance();
+            return new NamedTypeSyntax("null", nullTok.Location);
+        }
+
+        // `new (…) => T` constructor types parse as plain function types.
+        if (Check(TokenKind.NewKeyword) && Peek(1).Kind == TokenKind.OpenParen)
+        {
+            Advance();
+            return ParseFunctionType();
         }
 
         if (Check(TokenKind.AwaitKeyword) || Check(TokenKind.PromiseKeyword))
@@ -440,14 +541,68 @@ public sealed class Parser
         _ => false
     };
 
+    private TypeSyntax ParseFunctionType()
+    {
+        // (a: T, b: U) => R
+        var open = Expect(TokenKind.OpenParen);
+        var parameters = new List<ParameterSyntax>();
+        while (!Check(TokenKind.CloseParen) && !IsAtEnd())
+        {
+            int loopStart = _position;
+            var name = ExpectMemberName();
+            TypeSyntax paramType = Check(TokenKind.Colon)
+                ? ParseTypeAnnotation()
+                : AnyType(Peek().Location);
+            parameters.Add(new ParameterSyntax(name, paramType, null,
+                new SourceRange(Peek(-1).Location, Peek().Location)));
+            if (Check(TokenKind.Comma)) Advance();
+            if (_position == loopStart) Advance();
+        }
+        Expect(TokenKind.CloseParen);
+        Expect(TokenKind.FatArrow);
+        var returnType = ParseType();
+        return new FunctionTypeSyntax(parameters, returnType,
+            new SourceRange(open.Location, Peek(-1).Location));
+    }
+
+    private static PrimitiveTypeSyntax AnyType(SourceLocation location) =>
+        new(new Token(TokenKind.AnyKeyword, "any", location), new SourceRange(location, location));
+
+
     private TypeSyntax ParseMapType()
     {
-        Expect(TokenKind.OpenBrace);
-        var keyType = ParseType();
-        Expect(TokenKind.Colon);
-        var valueType = ParseType();
+        // `{K: V}` (legacy map shorthand, single type-keyword key) or an
+        // anonymous object type `{ a: T; b?: U }`.
+        var open = Expect(TokenKind.OpenBrace);
+
+        if (IsTypeKeyword(Peek().Kind) && Peek(1).Kind == TokenKind.Colon)
+        {
+            var keyType = ParseType();
+            Expect(TokenKind.Colon);
+            var valueType = ParseType();
+            Expect(TokenKind.CloseBrace);
+            return new MapTypeSyntax(keyType, valueType, new SourceRange(keyType.Range.Start, Peek(-1).Location));
+        }
+
+        var members = new List<ObjectTypeMemberSyntax>();
+        while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
+        {
+            int loopStart = _position;
+            var name = ExpectMemberName();
+            bool optional = false;
+            if (Check(TokenKind.Question))
+            {
+                optional = true;
+                Advance();
+            }
+            Expect(TokenKind.Colon);
+            var memberType = ParseType();
+            members.Add(new ObjectTypeMemberSyntax(name, memberType, optional));
+            if (Check(TokenKind.Semicolon) || Check(TokenKind.Comma)) Advance();
+            if (_position == loopStart) Advance();
+        }
         Expect(TokenKind.CloseBrace);
-        return new MapTypeSyntax(keyType, valueType, new SourceRange(keyType.Range.Start, Peek(-1).Location));
+        return new ObjectTypeSyntax(members, new SourceRange(open.Location, Peek(-1).Location));
     }
 
     private TypeSyntax ParseNamedType()
@@ -483,6 +638,7 @@ public sealed class Parser
         return Peek().Kind switch
         {
             TokenKind.OpenBrace => ParseBlock(),
+            TokenKind.FuncKeyword => ParseFunctionDeclaration(new List<SyntaxToken>()),
             TokenKind.ReturnKeyword => ParseReturnStatement(),
             TokenKind.IfKeyword => ParseIfStatement(),
             TokenKind.WhileKeyword => ParseWhileStatement(),
@@ -517,7 +673,9 @@ public sealed class Parser
     {
         var returnKw = Advance();
         ExpressionSyntax? value = null;
-        if (!Check(TokenKind.Semicolon) && !Check(TokenKind.CloseBrace) && !IsAtEnd())
+        // ASI: a line break after `return` terminates the statement.
+        if (!Check(TokenKind.Semicolon) && !Check(TokenKind.CloseBrace) && !IsAtEnd() &&
+            Peek().Location.Line == returnKw.Location.Line)
         {
             value = ParseExpression();
         }
@@ -553,10 +711,25 @@ public sealed class Parser
         return new WhileStatementSyntax(condition, body, new SourceRange(whileKw.Location, Peek(-1).Location));
     }
 
-    private ForStatementSyntax ParseForStatement()
+    private StatementSyntax ParseForStatement()
     {
         var forKw = Advance();
         Expect(TokenKind.OpenParen);
+
+        // for (const x of iterable) { ... }
+        if ((Check(TokenKind.LetKeyword) || Check(TokenKind.ConstKeyword)) &&
+            IsMemberNameToken(Peek(1).Kind) && Peek(2).Kind == TokenKind.OfKeyword)
+        {
+            bool isConst = Check(TokenKind.ConstKeyword);
+            Advance();
+            var variable = Advance().Text;
+            Advance(); // of
+            var iterable = ParseExpression();
+            Expect(TokenKind.CloseParen);
+            var ofBody = ToStatement(ParseStatement());
+            return new ForOfStatementSyntax(variable, isConst, iterable, ofBody,
+                new SourceRange(forKw.Location, Peek(-1).Location));
+        }
 
         SyntaxNode? initializer = null;
         if (!Check(TokenKind.Semicolon))
@@ -632,26 +805,43 @@ public sealed class Parser
             new SourceRange(tryKw.Location, Peek(-1).Location));
     }
 
-    private VariableDeclarationSyntax ParseVariableStatement(bool isConst)
+    private SyntaxNode ParseVariableStatement(bool isConst)
     {
         var letKw = Advance();
-        var name = ExpectIdentifier();
-        TypeSyntax? typeAnn = null;
-        if (Check(TokenKind.Colon))
-        {
-            typeAnn = ParseTypeAnnotation();
-        }
+        var declarations = new List<VariableDeclarationSyntax>();
 
-        ExpressionSyntax? initializer = null;
-        if (Check(TokenKind.Equals))
+        while (true)
         {
-            Advance();
-            initializer = ParseExpression();
+            var name = ExpectMemberName();
+            TypeSyntax? typeAnn = null;
+            if (Check(TokenKind.Colon))
+            {
+                typeAnn = ParseTypeAnnotation();
+            }
+
+            ExpressionSyntax? initializer = null;
+            if (Check(TokenKind.Equals))
+            {
+                Advance();
+                initializer = ParseExpression();
+            }
+
+            declarations.Add(new VariableDeclarationSyntax(name, typeAnn, initializer, isConst,
+                new SourceRange(letKw.Location, Peek(-1).Location)));
+
+            if (Check(TokenKind.Comma))
+            {
+                Advance();
+                continue;
+            }
+            break;
         }
 
         if (Check(TokenKind.Semicolon)) Advance();
 
-        return new VariableDeclarationSyntax(name, typeAnn, initializer, isConst,
+        if (declarations.Count == 1)
+            return declarations[0];
+        return new VariableDeclarationListSyntax(declarations,
             new SourceRange(letKw.Location, Peek(-1).Location));
     }
 
@@ -684,7 +874,10 @@ public sealed class Parser
             Check(TokenKind.MinusEquals) || Check(TokenKind.StarEquals) ||
             Check(TokenKind.SlashEquals) || Check(TokenKind.PercentEquals) ||
             Check(TokenKind.AmpersandEquals) || Check(TokenKind.PipeEquals) ||
-            Check(TokenKind.CaretEquals))
+            Check(TokenKind.CaretEquals) || Check(TokenKind.ShiftLeftEquals) ||
+            Check(TokenKind.ShiftRightEquals) || Check(TokenKind.StarStarEquals) ||
+            Check(TokenKind.AmpersandAmpersandEquals) || Check(TokenKind.PipePipeEquals) ||
+            Check(TokenKind.QuestionQuestionEquals))
         {
             var op = Advance();
             var right = ParseAssignment();
@@ -786,8 +979,8 @@ public sealed class Parser
     private ExpressionSyntax ParseEquality()
     {
         var left = ParseComparison();
-        while (Check(TokenKind.DoubleEquals) || Check(TokenKind.StrictNotEquals) ||
-               Check(TokenKind.NotEquals))
+        while (Check(TokenKind.DoubleEquals) || Check(TokenKind.TripleEquals) ||
+               Check(TokenKind.StrictNotEquals) || Check(TokenKind.NotEquals))
         {
             var op = Advance();
             var right = ParseComparison();
@@ -837,12 +1030,24 @@ public sealed class Parser
 
     private ExpressionSyntax ParseMultiplicative()
     {
-        var left = ParseUnary();
+        var left = ParseExponent();
         while (Check(TokenKind.Star) || Check(TokenKind.Slash) || Check(TokenKind.Percent))
         {
             var op = Advance();
-            var right = ParseUnary();
+            var right = ParseExponent();
             left = new BinaryExpressionSyntax(left, op, right, new SourceRange(left.Range.Start, right.Range.End));
+        }
+        return left;
+    }
+
+    private ExpressionSyntax ParseExponent()
+    {
+        var left = ParseUnary();
+        if (Check(TokenKind.StarStar))
+        {
+            var op = Advance();
+            var right = ParseExponent(); // right-associative
+            return new BinaryExpressionSyntax(left, op, right, new SourceRange(left.Range.Start, right.Range.End));
         }
         return left;
     }
@@ -856,6 +1061,13 @@ public sealed class Parser
             var op = Advance();
             var operand = ParseUnary();
             return new UnaryExpressionSyntax(op, operand, true, new SourceRange(op.Location, operand.Range.End));
+        }
+
+        if (Check(TokenKind.Identifier) && Peek().Text == "typeof")
+        {
+            var typeofTok = Advance();
+            var operand = ParseUnary();
+            return new TypeofExpressionSyntax(operand, new SourceRange(typeofTok.Location, operand.Range.End));
         }
 
         if (Check(TokenKind.AwaitKeyword))
@@ -919,6 +1131,21 @@ public sealed class Parser
                 expr = new UnaryExpressionSyntax(op, expr, false,
                     new SourceRange(expr.Range.Start, Peek(-1).Location));
             }
+            else if (Check(TokenKind.AsKeyword))
+            {
+                Advance();
+                var castType = ParseType();
+                expr = new AsExpressionSyntax(expr, castType,
+                    new SourceRange(expr.Range.Start, Peek(-1).Location));
+            }
+            else if (Check(TokenKind.Bang))
+            {
+                // Postfix non-null assertion `expr!`. A bare Bang can never
+                // continue a binary expression (`!=`/`!==` lex as one token).
+                Advance();
+                expr = new NonNullAssertionSyntax(expr,
+                    new SourceRange(expr.Range.Start, Peek(-1).Location));
+            }
             else
             {
                 break;
@@ -938,6 +1165,11 @@ public sealed class Parser
             return new LiteralExpressionSyntax(token, new SourceRange(token.Location, Peek(-1).Location));
         }
 
+        if (Check(TokenKind.TemplateLiteral))
+        {
+            return ParseTemplateLiteral(Advance());
+        }
+
         if (Check(TokenKind.ThisKeyword))
         {
             var token = Advance();
@@ -952,16 +1184,44 @@ public sealed class Parser
 
         if (Check(TokenKind.Identifier))
         {
+            // Single-parameter arrow shorthand: x => body
+            if (Peek(1).Kind == TokenKind.FatArrow)
+            {
+                var paramToken = Advance();
+                Advance(); // =>
+                var lambdaParams = new List<ParameterSyntax>
+                {
+                    new(paramToken.Text, AnyType(paramToken.Location), null,
+                        new SourceRange(paramToken.Location, paramToken.Location))
+                };
+                var lambdaBody = ParseArrowBody();
+                return new LambdaExpressionSyntax(lambdaParams, null, lambdaBody, false,
+                    new SourceRange(paramToken.Location, lambdaBody.Range.End));
+            }
+
             var name = ExpectIdentifier();
             return new IdentifierExpressionSyntax(name, new SourceRange(Peek(-1).Location, Peek(-1).Location));
         }
 
         if (Check(TokenKind.OpenParen))
         {
+            var arrow = TryParseArrowFunction();
+            if (arrow != null)
+                return arrow;
+
             Advance();
             var expr = ParseExpression();
             Expect(TokenKind.CloseParen);
             return expr;
+        }
+
+        // Generic arrow: `<T>(arr: T[]) => …`. `<` can never start any other
+        // primary expression, so this probe is unambiguous.
+        if (Check(TokenKind.LessThan))
+        {
+            var genericArrow = TryParseGenericArrowFunction();
+            if (genericArrow != null)
+                return genericArrow;
         }
 
         if (Check(TokenKind.OpenBracket))
@@ -972,6 +1232,14 @@ public sealed class Parser
         if (Check(TokenKind.OpenBrace))
         {
             return ParseObjectLiteral();
+        }
+
+        // Keyword-shaped names (`number`, `type`, …) used as plain identifiers.
+        if (IsMemberNameToken(Peek().Kind))
+        {
+            var keywordTok = Advance();
+            return new IdentifierExpressionSyntax(keywordTok.Text,
+                new SourceRange(keywordTok.Location, keywordTok.Location));
         }
 
         var errorToken = Advance();
@@ -998,6 +1266,152 @@ public sealed class Parser
         Expect(TokenKind.CloseBracket);
         return new ArrayLiteralExpressionSyntax(elements,
             new SourceRange(openBracket.Location, Peek(-1).Location));
+    }
+
+    // Attempts `(params) [: ReturnType] => body`. Restores position and drops
+    // any speculative diagnostics when the parenthesized run is not an arrow.
+    private ExpressionSyntax? TryParseArrowFunction()
+    {
+        int savedPosition = _position;
+        int savedDiagnostics = Diagnostics.Count;
+
+        var open = Advance(); // (
+        var parameters = new List<ParameterSyntax>();
+        bool wellFormed = true;
+
+        while (!Check(TokenKind.CloseParen) && !IsAtEnd())
+        {
+            if (!IsMemberNameToken(Peek().Kind))
+            {
+                wellFormed = false;
+                break;
+            }
+            var nameToken = Advance();
+            TypeSyntax paramType = Check(TokenKind.Colon)
+                ? ParseTypeAnnotation()
+                : AnyType(nameToken.Location);
+            ExpressionSyntax? defaultVal = null;
+            if (Check(TokenKind.Equals))
+            {
+                Advance();
+                defaultVal = ParseExpression();
+            }
+            parameters.Add(new ParameterSyntax(nameToken.Text, paramType, defaultVal,
+                new SourceRange(nameToken.Location, Peek(-1).Location)));
+            if (Check(TokenKind.Comma))
+            {
+                Advance();
+                continue;
+            }
+            break;
+        }
+
+        if (wellFormed && Check(TokenKind.CloseParen))
+        {
+            Advance();
+            TypeSyntax? returnType = null;
+            if (Check(TokenKind.Colon))
+                returnType = ParseTypeAnnotation();
+
+            if (Check(TokenKind.FatArrow))
+            {
+                Advance();
+                var body = ParseArrowBody();
+                return new LambdaExpressionSyntax(parameters, returnType, body, false,
+                    new SourceRange(open.Location, body.Range.End));
+            }
+        }
+
+        _position = savedPosition;
+        if (Diagnostics.Count > savedDiagnostics)
+            Diagnostics.RemoveRange(savedDiagnostics, Diagnostics.Count - savedDiagnostics);
+        return null;
+    }
+
+    // Splits a template literal into text/`${expr}` segments and lowers it to
+    // a string concatenation chain. Placeholder expressions are lexed and
+    // parsed with the real pipeline, so any expression form works inside.
+    private ExpressionSyntax ParseTemplateLiteral(Token template)
+    {
+        string raw = template.Value as string ?? template.Text;
+        var range = new SourceRange(template.Location, template.Location);
+
+        ExpressionSyntax? result = null;
+        void Append(ExpressionSyntax part)
+        {
+            result = result == null
+                ? part
+                : new BinaryExpressionSyntax(result,
+                    new Token(TokenKind.Plus, "+", template.Location), part, range);
+        }
+
+        int position = 0;
+        while (position < raw.Length)
+        {
+            int placeholder = raw.IndexOf("${", position, StringComparison.Ordinal);
+            if (placeholder < 0)
+            {
+                Append(TextPart(raw[position..]));
+                break;
+            }
+
+            if (placeholder > position)
+                Append(TextPart(raw[position..placeholder]));
+
+            int depth = 1;
+            int scan = placeholder + 2;
+            while (scan < raw.Length && depth > 0)
+            {
+                if (raw[scan] == '{') depth++;
+                else if (raw[scan] == '}') depth--;
+                if (depth > 0) scan++;
+            }
+
+            string inner = raw[(placeholder + 2)..scan];
+            var innerTokens = new Lexer(inner, template.Location.Source).Tokenize();
+            var innerParser = new Parser(innerTokens);
+            var innerExpr = innerParser.ParseExpression();
+            Diagnostics.AddRange(innerParser.Diagnostics);
+            Append(new TemplatePartSyntax(innerExpr, range));
+
+            position = scan + 1;
+        }
+
+        return result ?? TextPart("");
+
+        ExpressionSyntax TextPart(string text) =>
+            new LiteralExpressionSyntax(
+                new Token(TokenKind.StringLiteral, text, template.Location, text), range);
+    }
+
+    private ExpressionSyntax? TryParseGenericArrowFunction()
+    {
+        int savedPosition = _position;
+        int savedDiagnostics = Diagnostics.Count;
+
+        var generics = ParseGenericParameters();
+        if (generics.Count > 0 && Check(TokenKind.OpenParen))
+        {
+            var arrow = TryParseArrowFunction();
+            if (arrow is LambdaExpressionSyntax lambda)
+            {
+                lambda.GenericParameters.AddRange(generics);
+                return lambda;
+            }
+        }
+
+        _position = savedPosition;
+        if (Diagnostics.Count > savedDiagnostics)
+            Diagnostics.RemoveRange(savedDiagnostics, Diagnostics.Count - savedDiagnostics);
+        return null;
+    }
+
+    private SyntaxNode ParseArrowBody()
+    {
+        if (Check(TokenKind.OpenBrace))
+            return ParseBlock();
+        var expr = ParseExpression();
+        return new ReturnStatementSyntax(expr, expr.Range);
     }
 
     private ObjectLiteralExpressionSyntax ParseObjectLiteral()

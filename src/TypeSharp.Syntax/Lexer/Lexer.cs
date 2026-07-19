@@ -24,6 +24,7 @@ public sealed class Lexer
         ["float64"] = TokenKind.Float64Keyword,
         ["decimal"] = TokenKind.DecimalKeyword,
         ["bigint"] = TokenKind.BigintKeyword,
+        ["boolean"] = TokenKind.BoolKeyword,
         ["string"] = TokenKind.StringKeyword,
         ["bytes"] = TokenKind.BytesKeyword,
         ["datetime"] = TokenKind.DateTimeKeyword,
@@ -120,7 +121,10 @@ public sealed class Lexer
             return new Token(TokenKind.Comment, "", start);
         }
 
-        if (c == '"' || c == '\'' || c == '`')
+        if (c == '`')
+            return ReadTemplateLiteral(start);
+
+        if (c == '"' || c == '\'')
             return ReadString(start);
 
         if (c == '0' && Peek(1) == 'x')
@@ -176,6 +180,14 @@ public sealed class Lexer
         }
 
         string text = sb.ToString();
+
+        if (!isFloat && Peek() == 'n')
+        {
+            _position++;
+            _column++;
+            ulong bigintValue = ulong.Parse(text);
+            return new Token(TokenKind.IntegerLiteral, text + "n", start, bigintValue);
+        }
 
         if (Peek() == 'u' && Peek(1) == '6' && Peek(2) == '4')
         {
@@ -283,6 +295,58 @@ public sealed class Lexer
         return new Token(TokenKind.StringLiteral, sb.ToString(), start, sb.ToString());
     }
 
+    // Backtick template: the raw inner text (escapes resolved, `${expr}`
+    // placeholders preserved verbatim) travels in one token; the parser
+    // splits and sub-parses the interpolations.
+    private Token ReadTemplateLiteral(SourceLocation start)
+    {
+        _position++;
+        _column++;
+        var sb = new System.Text.StringBuilder();
+
+        while (_position < _source.Length && Peek() != '`')
+        {
+            if (Peek() == '\\')
+            {
+                _position++;
+                _column++;
+                sb.Append(Peek() switch
+                {
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    '\\' => '\\',
+                    '`' => '`',
+                    '$' => '$',
+                    _ => Peek()
+                });
+                _position++;
+                _column++;
+                continue;
+            }
+
+            if (Peek() == '\n')
+            {
+                _line++;
+                _column = 1;
+            }
+            else
+            {
+                _column++;
+            }
+            sb.Append(Peek());
+            _position++;
+        }
+
+        if (_position < _source.Length)
+        {
+            _position++;
+            _column++;
+        }
+
+        return new Token(TokenKind.TemplateLiteral, sb.ToString(), start, sb.ToString());
+    }
+
     private Token ReadIdentifier(SourceLocation start)
     {
         var sb = new System.Text.StringBuilder();
@@ -350,6 +414,11 @@ public sealed class Lexer
             '*' => Peek() switch
             {
                 '=' => AdvanceAnd(TokenKind.StarEquals, "*="),
+                '*' => Peek(1) switch
+                {
+                    '=' => AdvanceAnd(TokenKind.StarStarEquals, "**="),
+                    _ => AdvanceAnd(TokenKind.StarStar, "**")
+                },
                 _ => new Token(TokenKind.Star, "*", start)
             },
             '/' => Peek() switch
@@ -401,7 +470,11 @@ public sealed class Lexer
             '<' => Peek() switch
             {
                 '=' => AdvanceAnd(TokenKind.LessOrEqual, "<="),
-                '<' => AdvanceAnd(TokenKind.ShiftLeft, "<<"),
+                '<' => Peek(1) switch
+                {
+                    '=' => AdvanceAnd(TokenKind.ShiftLeftEquals, "<<="),
+                    _ => AdvanceAnd(TokenKind.ShiftLeft, "<<")
+                },
                 _ => new Token(TokenKind.LessThan, "<", start)
             },
             '>' => Peek() switch
@@ -410,6 +483,7 @@ public sealed class Lexer
                 '>' => Peek(1) switch
                 {
                     '>' => AdvanceAnd(TokenKind.ShiftRightUnsigned, ">>>"),
+                    '=' => AdvanceAnd(TokenKind.ShiftRightEquals, ">>="),
                     _ => AdvanceAnd(TokenKind.ShiftRight, ">>")
                 },
                 _ => new Token(TokenKind.GreaterThan, ">", start)

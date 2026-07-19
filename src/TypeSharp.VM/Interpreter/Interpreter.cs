@@ -278,6 +278,10 @@ public sealed class Interpreter
                     var obj = frame.Pop();
                     if (obj is TsObjectValue objVal)
                         frame.Push(objVal.Value.GetField(fieldName));
+                    else if (obj is TsArrayValue arrVal && fieldName == "length")
+                        frame.Push(TsValue.FromInt32(arrVal.Value.Count));
+                    else if (obj is TsStringValue strVal && fieldName == "length")
+                        frame.Push(TsValue.FromInt32(strVal.Value.Length));
                     else
                         frame.Push(TsValue.Null);
                     break;
@@ -793,6 +797,44 @@ public sealed class Interpreter
                     break;
                 }
 
+                case Opcodes.CmpEqAny: // CMP_EQ_ANY
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(GenericEquals(left, right)));
+                    break;
+                }
+                case Opcodes.CmpNeAny: // CMP_NE_ANY
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(new TsBoolValue(!GenericEquals(left, right)));
+                    break;
+                }
+                case Opcodes.PowF64: // POW_F64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(TsValue.FromFloat64(Math.Pow(AsFloat64(left), AsFloat64(right))));
+                    break;
+                }
+                case Opcodes.TypeOf: // TYPEOF
+                {
+                    var val = frame.Pop();
+                    frame.Push(TsValue.FromString(val switch
+                    {
+                        TsStringValue => "string",
+                        TsBoolValue => "boolean",
+                        TsUInt64Value => "bigint",
+                        TsInt32Value or TsInt64Value or TsFloat32Value or
+                        TsFloat64Value or TsDecimalValue => "number",
+                        TsFunctionValue => "function",
+                        TsNull or TsVoid => "undefined",
+                        _ => "object"
+                    }));
+                    break;
+                }
+
                 // ── I64 bitwise ──
 
                 case Opcodes.AndI64: // AND_I64
@@ -885,7 +927,21 @@ public sealed class Interpreter
 
                     var calleeName = strings[funcIdx];
 
-                    if (TryGetHostFunction(calleeName, out var hostFunc))
+                    if (HigherOrderIntrinsics.Contains(calleeName))
+                    {
+                        var intrinsicArgs = new TsValue[argCount];
+                        for (int i = argCount - 1; i >= 0; i--)
+                            intrinsicArgs[i] = frame.Pop();
+                        frame.Push(ExecuteHigherOrderIntrinsic(calleeName, intrinsicArgs, module, ctx, frame));
+                    }
+                    else if (Builtins.TryGet(calleeName, out var builtin))
+                    {
+                        var builtinArgs = new TsValue[argCount];
+                        for (int i = argCount - 1; i >= 0; i--)
+                            builtinArgs[i] = frame.Pop();
+                        frame.Push(builtin(builtinArgs));
+                    }
+                    else if (TryGetHostFunction(calleeName, out var hostFunc))
                     {
                         var hostArgs = new TsValue[argCount];
                         for (int i = argCount - 1; i >= 0; i--)
@@ -919,6 +975,36 @@ public sealed class Interpreter
                     {
                         throw new InvalidOperationException($"Function '{calleeName}' not found");
                     }
+                    break;
+                }
+
+                case Opcodes.LoadFunc: // LOAD_FUNC
+                {
+                    int nameIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    frame.Push(new TsFunctionValue(strings[nameIdx]));
+                    break;
+                }
+
+                case Opcodes.MakeClosure: // MAKE_CLOSURE
+                {
+                    int nameIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    int captureCount = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var captured = new TsValue[captureCount];
+                    for (int i = captureCount - 1; i >= 0; i--)
+                        captured[i] = frame.Pop();
+                    frame.Push(new TsFunctionValue(strings[nameIdx], captured));
+                    break;
+                }
+
+                case Opcodes.CallDynamic: // CALL_DYNAMIC
+                {
+                    int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var dynArgs = new TsValue[argCount];
+                    for (int i = argCount - 1; i >= 0; i--)
+                        dynArgs[i] = frame.Pop();
+                    var calleeValue = frame.Pop();
+
+                    frame.Push(InvokeCallable(calleeValue, dynArgs, module, ctx, frame));
                     break;
                 }
 
@@ -1001,6 +1087,22 @@ public sealed class Interpreter
 
                     var obj = ctx.Heap.AllocateObject(typeName);
 
+                    // JS-style error objects: constructor argument becomes the
+                    // message field so thrown errors surface readable text.
+                    if (typeName is "Error" or "RangeError" or "TypeError" &&
+                        !module.FunctionIndex.ContainsKey($"{typeName}::.ctor"))
+                    {
+                        if (argCount > 0)
+                        {
+                            var message = frame.Pop();
+                            for (int i = 1; i < argCount; i++) frame.Pop();
+                            obj.SetField("message", message);
+                        }
+                        obj.SetField("name", TsValue.FromString(typeName));
+                        frame.Push(TsValue.FromObject(obj));
+                        break;
+                    }
+
                     string ctorName = $"{typeName}::.ctor";
                     if (module.FunctionIndex.TryGetValue(ctorName, out int ctorIdx))
                     {
@@ -1046,6 +1148,13 @@ public sealed class Interpreter
                     var target = frame.Pop();
                     if (target is TsArrayValue arrVal)
                         frame.Push(arrVal.Value.Get(AsInt32(index)));
+                    else if (target is TsStringValue strTarget)
+                    {
+                        int chIdx = AsInt32(index);
+                        frame.Push(chIdx >= 0 && chIdx < strTarget.Value.Length
+                            ? TsValue.FromString(strTarget.Value[chIdx].ToString())
+                            : TsValue.Null);
+                    }
                     else if (target is TsNull)
                         throw new InvalidOperationException("Cannot index a null value");
                     else
@@ -1416,17 +1525,240 @@ public sealed class Interpreter
         _ => 0m
     };
 
+    // JS truthiness: 0, NaN, "" and null/undefined are falsy.
     private static bool AsBool(TsValue value) => value switch
     {
         TsBoolValue v => v.Value,
         TsInt32Value v => v.Value != 0,
-        TsNull => false,
+        TsInt64Value v => v.Value != 0,
+        TsUInt64Value v => v.Value != 0,
+        TsFloat32Value v => v.Value != 0f && !float.IsNaN(v.Value),
+        TsFloat64Value v => v.Value != 0.0 && !double.IsNaN(v.Value),
+        TsDecimalValue v => v.Value != 0m,
+        TsStringValue v => v.Value.Length > 0,
+        TsNull or TsVoid => false,
         _ => true
     };
 
     // ────────────────────────────────────────────────────────
     //  Bytecode readers
     // ────────────────────────────────────────────────────────
+
+    private static readonly HashSet<string> HigherOrderIntrinsics = new(StringComparer.Ordinal)
+    {
+        "Array::map", "Array::filter", "Array::forEach", "Array::reduce",
+        "Array::some", "Array::every", "Array::find", "Array::findIndex",
+        "Array::sort", "Array::flatMap", "Array::from"
+    };
+
+    // Array members that take callbacks execute here, where the interpreter
+    // can re-enter script functions for each element.
+    private TsValue ExecuteHigherOrderIntrinsic(string name, TsValue[] args, BytecodeModule module,
+        ExecutionContext ctx, CallFrame frame)
+    {
+        TsValue Invoke(TsValue callee, params TsValue[] callArgs) =>
+            InvokeCallable(callee, callArgs, module, ctx, frame);
+
+        if (name == "Array::from")
+        {
+            // Array.from(arrayLike [, mapFn]) — supports arrays, strings and
+            // `{ length: n }` shapes.
+            var source = args.Length > 0 ? args[0] : TsValue.Null;
+            var mapFn = args.Length > 1 ? args[1] : null;
+            var result = new TsArray();
+            void AddMapped(TsValue value, int index)
+            {
+                result.Add(mapFn != null ? Invoke(mapFn, value, TsValue.FromInt32(index)) : value);
+            }
+            switch (source)
+            {
+                case TsArrayValue av:
+                    for (int i = 0; i < av.Value.Count; i++) AddMapped(av.Value.Get(i), i);
+                    break;
+                case TsStringValue sv:
+                    for (int i = 0; i < sv.Value.Length; i++) AddMapped(TsValue.FromString(sv.Value[i].ToString()), i);
+                    break;
+                case TsObjectValue ov when ov.Value.GetField("length") is not TsNull:
+                    int length = AsInt32(ov.Value.GetField("length"));
+                    for (int i = 0; i < length; i++) AddMapped(TsValue.Null, i);
+                    break;
+            }
+            return new TsArrayValue(result);
+        }
+
+        if (args.Length == 0 || args[0] is not TsArrayValue receiver)
+            throw new InvalidOperationException($"'{name}' requires an array receiver");
+        var arr = receiver.Value;
+        var callback = args.Length > 1 ? args[1] : null;
+
+        switch (name)
+        {
+            case "Array::map":
+            {
+                var mapped = new TsArray(arr.Count);
+                for (int i = 0; i < arr.Count; i++)
+                    mapped.Add(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i)));
+                return new TsArrayValue(mapped);
+            }
+            case "Array::flatMap":
+            {
+                var flat = new TsArray(arr.Count);
+                for (int i = 0; i < arr.Count; i++)
+                {
+                    var produced = Invoke(callback!, arr.Get(i), TsValue.FromInt32(i));
+                    if (produced is TsArrayValue nested)
+                        for (int j = 0; j < nested.Value.Count; j++) flat.Add(nested.Value.Get(j));
+                    else
+                        flat.Add(produced);
+                }
+                return new TsArrayValue(flat);
+            }
+            case "Array::filter":
+            {
+                var filtered = new TsArray();
+                for (int i = 0; i < arr.Count; i++)
+                {
+                    var element = arr.Get(i);
+                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i))))
+                        filtered.Add(element);
+                }
+                return new TsArrayValue(filtered);
+            }
+            case "Array::forEach":
+            {
+                for (int i = 0; i < arr.Count; i++)
+                    Invoke(callback!, arr.Get(i), TsValue.FromInt32(i));
+                return TsValue.Null;
+            }
+            case "Array::reduce":
+            {
+                int start = 0;
+                TsValue accumulator;
+                if (args.Length > 2)
+                {
+                    accumulator = args[2];
+                }
+                else
+                {
+                    if (arr.Count == 0)
+                        throw new InvalidOperationException("Reduce of empty array with no initial value");
+                    accumulator = arr.Get(0);
+                    start = 1;
+                }
+                for (int i = start; i < arr.Count; i++)
+                    accumulator = Invoke(callback!, accumulator, arr.Get(i), TsValue.FromInt32(i));
+                return accumulator;
+            }
+            case "Array::some":
+            {
+                for (int i = 0; i < arr.Count; i++)
+                    if (AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i))))
+                        return new TsBoolValue(true);
+                return new TsBoolValue(false);
+            }
+            case "Array::every":
+            {
+                for (int i = 0; i < arr.Count; i++)
+                    if (!AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i))))
+                        return new TsBoolValue(false);
+                return new TsBoolValue(true);
+            }
+            case "Array::find":
+            {
+                for (int i = 0; i < arr.Count; i++)
+                {
+                    var element = arr.Get(i);
+                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i))))
+                        return element;
+                }
+                return TsValue.Null;
+            }
+            case "Array::findIndex":
+            {
+                for (int i = 0; i < arr.Count; i++)
+                    if (AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i))))
+                        return TsValue.FromInt32(i);
+                return TsValue.FromInt32(-1);
+            }
+            case "Array::sort":
+            {
+                var items = new TsValue[arr.Count];
+                for (int i = 0; i < arr.Count; i++) items[i] = arr.Get(i);
+                Comparison<TsValue> comparison = callback != null
+                    ? (a, b) => Math.Sign(AsFloat64(Invoke(callback, a, b)))
+                    : DefaultSortComparison;
+                Array.Sort(items, comparison);
+                for (int i = 0; i < items.Length; i++) arr.Set(i, items[i]);
+                return receiver;
+            }
+            default:
+                throw new InvalidOperationException($"Unknown intrinsic '{name}'");
+        }
+    }
+
+    private static int DefaultSortComparison(TsValue left, TsValue right)
+    {
+        if (left is TsStringValue ls && right is TsStringValue rs)
+            return string.CompareOrdinal(ls.Value, rs.Value);
+        return AsFloat64(left).CompareTo(AsFloat64(right));
+    }
+
+    private static bool GenericEquals(TsValue left, TsValue right)
+    {
+        if (left is TsNull or TsVoid && right is TsNull or TsVoid) return true;
+        if (left is TsNull or TsVoid || right is TsNull or TsVoid) return false;
+        if (left is TsStringValue ls && right is TsStringValue rs) return ls.Value == rs.Value;
+        if (left is TsBoolValue lb && right is TsBoolValue rb) return lb.Value == rb.Value;
+        if (left is TsObjectValue lo && right is TsObjectValue ro) return ReferenceEquals(lo.Value, ro.Value);
+        if (left is TsArrayValue la && right is TsArrayValue ra) return ReferenceEquals(la.Value, ra.Value);
+        if (IsNumericValue(left) && IsNumericValue(right)) return AsFloat64(left) == AsFloat64(right);
+        return false;
+    }
+
+    private static bool IsNumericValue(TsValue value) =>
+        value is TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue;
+
+    // Invokes any callable value (module function, closure, builtin, host
+    // function). Shared by CALL_DYNAMIC and the higher-order array intrinsics.
+    internal TsValue InvokeCallable(TsValue calleeValue, TsValue[] args, BytecodeModule module,
+        ExecutionContext ctx, CallFrame caller)
+    {
+        if (calleeValue is not TsFunctionValue fnValue)
+            throw new InvalidOperationException($"Value '{calleeValue}' is not callable");
+
+        if (Builtins.TryGet(fnValue.FunctionName, out var builtin))
+            return builtin(args);
+
+        if (module.FunctionIndex.TryGetValue(fnValue.FunctionName, out int fnIdx))
+        {
+            var calleeFunc = module.Functions[fnIdx];
+            _profile.RecordCall(module.Name, calleeFunc.Name);
+            var newFrame = new CallFrame(calleeFunc, caller);
+            for (int i = 0; i < args.Length && i < newFrame.Locals.Length; i++)
+                newFrame.Locals[i] = args[i];
+            // Closure environment boxes install right after the parameters.
+            for (int j = 0; j < fnValue.Captured.Length; j++)
+            {
+                int slot = calleeFunc.ParameterCount + j;
+                if (slot < newFrame.Locals.Length)
+                    newFrame.Locals[slot] = fnValue.Captured[j];
+            }
+            ctx.CallStack.Push(newFrame);
+            try
+            {
+                return ExecuteFrame(newFrame, module, ctx) ?? TsValue.Null;
+            }
+            finally
+            {
+                ctx.CallStack.Pop();
+            }
+        }
+
+        if (TryGetHostFunction(fnValue.FunctionName, out var host))
+            return host(fnValue.FunctionName, args) ?? TsValue.Null;
+
+        throw new InvalidOperationException($"Function '{fnValue.FunctionName}' not found");
+    }
 
     private bool TryResolveCachedCallee(BytecodeFunction caller, int instructionOffset, string calleeName,
         BytecodeModule module, out int calleeIndex)

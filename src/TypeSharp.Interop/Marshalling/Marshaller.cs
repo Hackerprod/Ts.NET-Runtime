@@ -28,7 +28,7 @@ public static class Marshaller
             Guid g => TsValue.FromString(g.ToString()),
             DateTime dt => TsValue.FromString(dt.ToString("O")),
             DateTimeOffset dto => TsValue.FromString(dto.ToString("O")),
-            byte[] bytes => TsValue.FromString(Convert.ToBase64String(bytes)),
+            byte[] bytes => FromByteArray(bytes),
             _ => WrapAsObject(value),
         };
     }
@@ -56,6 +56,14 @@ public static class Marshaller
         }
 
         return new TsObjectValue(obj);
+    }
+
+    private static TsValue FromByteArray(byte[] bytes)
+    {
+        var array = new TsArray(bytes.Length);
+        foreach (var value in bytes)
+            array.Add(TsValue.FromInt32(value));
+        return new TsArrayValue(array);
     }
 
     public static object? ToManaged(TsValue value, Type targetType)
@@ -141,6 +149,14 @@ public static class Marshaller
 
         if (targetType == typeof(byte[]))
         {
+            if (value is TsArrayValue arr)
+            {
+                var bytes = new byte[arr.Value.Count];
+                for (int i = 0; i < arr.Value.Count; i++)
+                    bytes[i] = Convert.ToByte(ToManaged(arr.Value.Get(i), typeof(byte)));
+                return bytes;
+            }
+
             if (value is TsStringValue sv)
                 return Convert.FromBase64String(sv.Value);
             return Array.Empty<byte>();

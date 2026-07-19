@@ -114,12 +114,13 @@ public sealed class HostRegistry
             type = type.GetGenericArguments()[0];
         if (type == typeof(bool)) return TsType.Bool;
         if (type == typeof(int)) return TsType.Int32;
-        if (type == typeof(long)) return TsType.Int64;
-        if (type == typeof(ulong)) return TsType.UInt64;
+        if (type == typeof(long)) return TsType.BigInt;
+        if (type == typeof(ulong)) return TsType.BigInt;
         if (type == typeof(float)) return TsType.Float32;
         if (type == typeof(double)) return TsType.Float64;
         if (type == typeof(decimal)) return TsType.Decimal;
         if (type == typeof(string)) return TsType.String;
+        if (type == typeof(byte[])) return new TsArrayType(TsType.Number);
         return TsType.Any;
     }
 

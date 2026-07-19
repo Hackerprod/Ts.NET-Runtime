@@ -12,8 +12,8 @@ public sealed class SymbolScope
 
     public void Define(Symbol symbol)
     {
-        if (_symbols.ContainsKey(symbol.Name))
-            throw new InvalidOperationException($"Symbol '{symbol.Name}' already defined in scope");
+        // Redefinition replaces (JS-style shadowing); duplicate `const` in one
+        // scope is a linting concern, not a binder crash.
         _symbols[symbol.Name] = symbol;
     }
 

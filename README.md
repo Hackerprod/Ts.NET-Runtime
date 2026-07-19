@@ -1,13 +1,15 @@
 # TS.NET Runtime (TypeSharp)
 
-A new programming language with TypeScript syntax and native .NET execution. No JavaScript, no transpilation, no Jint, no V8.
+An embeddable .NET runtime for real TypeScript-oriented code. The goal is to let TypeScript developers write familiar code without learning runtime-specific primitive types or a custom scripting language.
 
 ## What is this?
 
-TypeSharp is a statically-typed language that uses TypeScript syntax as its human interface, but executes entirely on .NET through its own parser, type system, IR, bytecode VM, and optional JIT compiler.
+TypeSharp executes `.ts` source inside .NET through its own parser, binder, IR, bytecode VM, and host interop layer. The public programming model should feel close to a constrained Node-like TypeScript environment: `number`, `boolean`, `bigint`, `string`, arrays, objects, classes, `Uint8Array`, imports, and explicit host modules.
+
+Internal VM types may preserve .NET precision, but developers should not need to write `int32`, `uint64`, `float64`, or `bytes` in normal TypeScript code.
 
 ```
-TypeScript Syntax (.ts files)
+TypeScript source (.ts files)
         |
   Custom C# Parser
         |
@@ -27,15 +29,16 @@ TypeScript Syntax (.ts files)
 ### Implemented
 
 - Custom lexer/parser for TypeScript syntax (classes, functions, control flow, literals)
-- Type system with primitive types (`int32`, `uint64`, `float64`, `decimal`, etc.)
+- TypeScript-facing primitive surface: `number`, `boolean`, `bigint`, `string`, `void`, `null`, `undefined`
+- Byte interop through `Uint8Array` / `ArrayBuffer` shape instead of base64 strings
 - Typed IR (Intermediate Representation) with 105 opcodes
 - Bytecode compiler with branch patching and constant pooling
 - VM interpreter with typed stack, call frames, and instruction limit enforcement
 - Class support: constructors, fields, methods, `this` reference
 - Object literals and property access
 - String concatenation, numeric arithmetic, boolean logic
-- `decimal` type with full arithmetic and comparison opcodes
-- `int64`/`uint64` types with branch instruction support
+- Internal exact numeric lanes for .NET interop, including 64-bit integer preservation
+- BigInt literal support with TypeScript `123n` syntax
 - Throw/catch statement support
 - Type checking: no implicit coercion (`"hello" + 5` is a compile error)
 - Argument count/type validation at bind time
@@ -43,13 +46,13 @@ TypeScript Syntax (.ts files)
 - Host interop: `[TsExport]` attribute for selective method export
 - Host interop: `ExportMode` (ExplicitOnly, Public, All)
 - Host interop: `Task<T>`/`ValueTask<T>` async support
-- Host interop: decimal, ulong, DTO object marshalling
+- Host interop: decimal, ulong as TypeScript `bigint`, DTO object marshalling, `byte[]` as `Uint8Array`
 - Per-execution allocation budget (logical tracking, .NET GC handles physical memory)
 - Hot reload: generational module reloading with type compatibility checks
 - Module system with canonical file-based naming
 - Runtime limits: instruction count, memory budget, recursion depth, timeout
 - Multi-targeting: `net8.0` + `net9.0`
-- 82 passing tests (syntax, VM, integration)
+- 119 passing tests (syntax, VM, integration)
 
 ### Experimental
 
@@ -77,44 +80,37 @@ TypeScript Syntax (.ts files)
 
 ### Not Supported
 
-- JavaScript/TypeScript standard library compatibility
-- Dynamic typing / `any` type
+- Full JavaScript/TypeScript standard library compatibility
 - Prototype chains
-- `undefined` propagation
 - Implicit type coercion
 - Runtime eval()
 - CommonJS/ESM module loading from npm
 - Browser execution
 
-## Primitive Types
+## TypeScript Surface
 
-```
-bool         System.Boolean
-int8         System.SByte
-uint8        System.Byte
-int16        System.Int16
-uint16       System.UInt16
-int32        System.Int32  (also aliased as `number` where unambiguous)
-uint32       System.UInt32
-int64        System.Int64
-uint64       System.UInt64
-float32      System.Single
-float64      System.Double
-decimal      System.Decimal
-string       System.String
-bytes        System.Byte[]
-datetime     System.DateTimeOffset
-guid         System.Guid
-```
+Write normal TypeScript-facing annotations:
+
+| TypeScript | Host/.NET boundary |
+|---|---|
+| `number` | `double` by default; host APIs may marshal narrower numeric types internally |
+| `boolean` | `bool` |
+| `bigint` | `long` / `ulong` |
+| `string` | `string` |
+| `Uint8Array` / `ArrayBuffer` | `byte[]` |
+| object/interface shapes | DTOs / public object properties |
+| `Promise<T>` | `Task<T>` / `ValueTask<T>` |
+
+Legacy internal aliases may still exist while the VM evolves, but they are not the intended developer-facing API.
 
 ## Quick Start
 
 ```ts
-export function add(a: int32, b: int32): int32 {
+export function add(a: number, b: number): number {
     return a + b;
 }
 
-export function factorial(n: int32): int32 {
+export function factorial(n: number): number {
     if (n <= 1) {
         return 1;
     }
@@ -122,17 +118,17 @@ export function factorial(n: int32): int32 {
 }
 
 export class UserService {
-    private users: Map<int32, User>;
+    private users: Map<number, User>;
 
     constructor() {
-        this.users = new Map<int32, User>();
+        this.users = new Map<number, User>();
     }
 
     add(user: User): void {
         this.users.set(user.id, user);
     }
 
-    find(id: int32): User? {
+    find(id: number): User | null {
         return this.users.get(id);
     }
 }

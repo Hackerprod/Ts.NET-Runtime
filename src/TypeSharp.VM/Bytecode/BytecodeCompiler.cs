@@ -366,6 +366,23 @@ public static class BytecodeCompiler
                 break;
             case Opcode.LoadElement: writer.Write(Opcodes.LoadElement); break;
             case Opcode.StoreElement: writer.Write(Opcodes.StoreElement); break;
+            case Opcode.LoadFunc:
+                writer.Write(Opcodes.LoadFunc);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.CallDynamic:
+                writer.Write(Opcodes.CallDynamic);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.MakeClosure:
+                writer.Write(Opcodes.MakeClosure);
+                writer.WriteInt32(instr.Operand0);
+                writer.WriteInt32(instr.Operand1);
+                break;
+            case Opcode.CmpEq_Any: writer.Write(Opcodes.CmpEqAny); break;
+            case Opcode.CmpNe_Any: writer.Write(Opcodes.CmpNeAny); break;
+            case Opcode.Pow_F64: writer.Write(Opcodes.PowF64); break;
+            case Opcode.TypeOf: writer.Write(Opcodes.TypeOf); break;
             case Opcode.EnterTry:
                 writer.Write(Opcodes.EnterTry);
                 writer.WriteInt32(instr.Operand0);
@@ -403,7 +420,9 @@ public static class BytecodeCompiler
                         Opcode.CallVirt or
                         Opcode.NewObject or
                         Opcode.LoadField or
-                        Opcode.StoreField)
+                        Opcode.StoreField or
+                        Opcode.LoadFunc or
+                        Opcode.MakeClosure)
                     {
                         instr.Operand0 = strings.Count;
                         strings.Add(s);

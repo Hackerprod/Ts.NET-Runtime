@@ -122,6 +122,25 @@ public sealed class TsArrayValue : TsValue
     public TsArrayValue(TsArray value) => Value = value;
 }
 
+// First-class function reference: names a function in the executing module.
+// A closure additionally carries the boxes of its captured variables; the VM
+// installs them after the declared parameters when the function is invoked.
+public sealed class TsFunctionValue : TsValue
+{
+    public string FunctionName { get; }
+    public TsValue[] Captured { get; }
+    public override TsValueType ValueType => TsValueType.Object;
+    public override object? RawValue => FunctionName;
+
+    public TsFunctionValue(string functionName, TsValue[]? captured = null)
+    {
+        FunctionName = functionName;
+        Captured = captured ?? Array.Empty<TsValue>();
+    }
+
+    public override string ToString() => $"[function {FunctionName}]";
+}
+
 public sealed class TsMapValue : TsValue
 {
     public TsMap Value { get; }
@@ -184,6 +203,30 @@ public sealed class TsArray
         _elements[_count++] = value;
     }
 
+    public void RemoveLast()
+    {
+        if (_count > 0) _count--;
+    }
+
+    public void RemoveAt(int index)
+    {
+        if (index < 0 || index >= _count) return;
+        Array.Copy(_elements, index + 1, _elements, index, _count - index - 1);
+        _count--;
+    }
+
+    public void Insert(int index, TsValue value)
+    {
+        if (index < 0) index = 0;
+        if (index > _count) index = _count;
+        EnsureCapacity(_count + 1);
+        Array.Copy(_elements, index, _elements, index + 1, _count - index);
+        _elements[index] = value;
+        _count++;
+    }
+
+    public void Reverse() => Array.Reverse(_elements, 0, _count);
+
     private void EnsureCapacity(int required)
     {
         if (required <= _elements.Length) return;
@@ -219,10 +262,17 @@ public sealed class TsThrownException : InvalidOperationException
     public TsValue Value { get; }
 
     public TsThrownException(TsValue value)
-        : base(value is TsStringValue s ? s.Value : value.ToString() ?? "error")
+        : base(DescribeThrown(value))
     {
         Value = value;
     }
+
+    private static string DescribeThrown(TsValue value) => value switch
+    {
+        TsStringValue s => s.Value,
+        TsObjectValue o when o.Value.GetField("message") is TsStringValue msg => msg.Value,
+        _ => value.ToString() ?? "error"
+    };
 }
 
 public readonly record struct TryHandler(int HandlerOffset, int StackDepth);

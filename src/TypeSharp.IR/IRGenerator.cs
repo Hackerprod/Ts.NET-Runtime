@@ -13,24 +13,164 @@ public sealed class IRGenerator
     private int _tempCounter;
     private Dictionary<string, int> _localMap = new();
 
+    // Slots that hold a closure box (heap cell with field "v") rather than the
+    // value itself: captured variables and locals captured by inner functions.
+    private Dictionary<string, int> _boxSlots = new();
+
+    // Lambdas and nested function declarations are lifted: queued here while
+    // the enclosing function generates, then emitted as siblings afterwards.
+    private readonly Queue<BoundFunctionDeclaration> _liftedFunctions = new();
+    private readonly HashSet<string> _generatedFunctions = new();
+
+    // funcName -> captured variable names; direct calls to capturing functions
+    // must build a closure carrying the current boxes.
+    private readonly Dictionary<string, List<string>> _capturesByFunction = new();
+    private BoundFunctionDeclaration? _currentDeclaration;
+
     public ModuleIR Generate(BoundSourceFile sourceFile)
     {
         var module = new ModuleIR(sourceFile.FileName);
+
+        CollectCaptureInfo(sourceFile);
 
         foreach (var member in sourceFile.Members)
         {
             if (member is BoundFunctionDeclaration func)
             {
                 var funcIR = GenerateFunction(func);
+                _generatedFunctions.Add(funcIR.Name);
                 module.AddFunction(funcIR);
+                DrainLiftedFunctions(module);
             }
             else if (member is BoundClassDeclaration cls)
             {
                 GenerateClass(module, cls);
+                DrainLiftedFunctions(module);
             }
         }
 
         return module;
+    }
+
+    private void CollectCaptureInfo(BoundNode node)
+    {
+        switch (node)
+        {
+            case BoundSourceFile file:
+                foreach (var member in file.Members) CollectCaptureInfo(member);
+                break;
+            case BoundFunctionDeclaration func:
+                if (func.CapturedVariables.Count > 0)
+                    _capturesByFunction[func.Symbol.Name] = func.CapturedVariables.Select(s => s.Name).ToList();
+                CollectCaptureInfo(func.Body);
+                break;
+            case BoundClassDeclaration cls:
+                foreach (var member in cls.Members) CollectCaptureInfo(member);
+                break;
+            case BoundMethodDeclaration method:
+                CollectCaptureInfo(method.Body);
+                break;
+            case BoundConstructorDeclaration ctor:
+                CollectCaptureInfo(ctor.Body);
+                break;
+            case BoundBlockStatement block:
+                foreach (var stmt in block.Statements) CollectCaptureInfo(stmt);
+                break;
+            case BoundVariableDeclaration { Initializer: not null } varDecl:
+                CollectCaptureInfo(varDecl.Initializer);
+                break;
+            case BoundExpressionStatement stmt:
+                CollectCaptureInfo(stmt.Expression);
+                break;
+            case BoundReturnStatement { Value: not null } ret:
+                CollectCaptureInfo(ret.Value);
+                break;
+            case BoundIfStatement ifStmt:
+                CollectCaptureInfo(ifStmt.Condition);
+                CollectCaptureInfo(ifStmt.ThenBranch);
+                if (ifStmt.ElseBranch != null) CollectCaptureInfo(ifStmt.ElseBranch);
+                break;
+            case BoundWhileStatement whileStmt:
+                CollectCaptureInfo(whileStmt.Condition);
+                CollectCaptureInfo(whileStmt.Body);
+                break;
+            case BoundForStatement forStmt:
+                if (forStmt.Initializer != null) CollectCaptureInfo(forStmt.Initializer);
+                if (forStmt.Condition != null) CollectCaptureInfo(forStmt.Condition);
+                if (forStmt.Iterator != null) CollectCaptureInfo(forStmt.Iterator);
+                CollectCaptureInfo(forStmt.Body);
+                break;
+            case BoundTryStatement tryStmt:
+                CollectCaptureInfo(tryStmt.TryBlock);
+                if (tryStmt.CatchBlock != null) CollectCaptureInfo(tryStmt.CatchBlock);
+                if (tryStmt.FinallyBlock != null) CollectCaptureInfo(tryStmt.FinallyBlock);
+                break;
+            case BoundThrowStatement throwStmt:
+                CollectCaptureInfo(throwStmt.Expression);
+                break;
+            case BoundLambdaExpression lambda:
+                CollectCaptureInfo(lambda.Function);
+                break;
+            case BoundBinaryExpression bin:
+                CollectCaptureInfo(bin.Left);
+                CollectCaptureInfo(bin.Right);
+                break;
+            case BoundUnaryExpression unary:
+                CollectCaptureInfo(unary.Operand);
+                break;
+            case BoundCallExpression call:
+                CollectCaptureInfo(call.Callee);
+                foreach (var arg in call.Arguments) CollectCaptureInfo(arg);
+                break;
+            case BoundAssignmentExpression assign:
+                CollectCaptureInfo(assign.Target);
+                CollectCaptureInfo(assign.Value);
+                break;
+            case BoundConditionalExpression cond:
+                CollectCaptureInfo(cond.Condition);
+                CollectCaptureInfo(cond.WhenTrue);
+                CollectCaptureInfo(cond.WhenFalse);
+                break;
+            case BoundMemberAccessExpression member:
+                CollectCaptureInfo(member.Object);
+                break;
+            case BoundIndexExpression index:
+                CollectCaptureInfo(index.Object);
+                CollectCaptureInfo(index.Index);
+                break;
+            case BoundArrayLiteralExpression arr:
+                foreach (var element in arr.Elements) CollectCaptureInfo(element);
+                break;
+            case BoundArrayConstructionExpression arrCtor:
+                foreach (var arg in arrCtor.Arguments) CollectCaptureInfo(arg);
+                break;
+            case BoundObjectLiteralExpression obj:
+                foreach (var prop in obj.Properties) CollectCaptureInfo(prop.Value);
+                break;
+            case BoundCastExpression cast:
+                CollectCaptureInfo(cast.Operand);
+                break;
+            case BoundTypeofExpression typeofExpr:
+                CollectCaptureInfo(typeofExpr.Operand);
+                break;
+            case BoundNewExpression newExpr:
+                foreach (var arg in newExpr.Arguments) CollectCaptureInfo(arg);
+                break;
+            case BoundAwaitExpression awaitExpr:
+                CollectCaptureInfo(awaitExpr.Expression);
+                break;
+        }
+    }
+
+    private void DrainLiftedFunctions(ModuleIR module)
+    {
+        while (_liftedFunctions.Count > 0)
+        {
+            var pending = _liftedFunctions.Dequeue();
+            if (!_generatedFunctions.Add(pending.Symbol.Name))
+                continue;
+            module.AddFunction(GenerateFunction(pending));
+        }
     }
 
     private FunctionIR GenerateFunction(BoundFunctionDeclaration func)
@@ -44,10 +184,13 @@ public sealed class IRGenerator
             IsAsync = func.Symbol.IsAsync,
             LocalCount = 0
         };
+        funcIR.CapturedVariables.AddRange(func.CapturedVariables.Select(s => s.Name));
 
         _currentFunction = funcIR;
+        _currentDeclaration = func;
         _tempCounter = 0;
         _localMap = new Dictionary<string, int>();
+        _boxSlots = new Dictionary<string, int>();
 
         var entryBlock = funcIR.CreateBlock();
         _currentBlock = entryBlock;
@@ -59,6 +202,31 @@ public sealed class IRGenerator
         }
         _tempCounter = func.Symbol.Parameters.Count;
 
+        // Slots for captured boxes follow the parameters; the VM installs them
+        // from the closure environment on invocation.
+        foreach (var captured in func.CapturedVariables)
+        {
+            int slot = _tempCounter++;
+            _localMap[captured.Name] = slot;
+            _boxSlots[captured.Name] = slot;
+        }
+
+        // Parameters that inner functions capture are re-homed into boxes.
+        foreach (var param in func.Symbol.Parameters)
+        {
+            if (!param.IsCaptured)
+                continue;
+            int paramIdx = func.Symbol.Parameters.IndexOf(param);
+            int boxSlot = _tempCounter++;
+            _currentBlock.Instructions.Add(new Instruction(Opcode.NewObject, 0, 0, "$Box"));
+            _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+            EmitLoadArg(paramIdx);
+            _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "v"));
+            EmitStoreLocal(boxSlot);
+            _localMap[param.Name] = boxSlot;
+            _boxSlots[param.Name] = boxSlot;
+        }
+
         GenerateStatement(func.Body);
 
         funcIR.LocalCount = _tempCounter;
@@ -69,6 +237,28 @@ public sealed class IRGenerator
         }
 
         return funcIR;
+    }
+
+    private bool IsBoxedSymbol(Symbol symbol) => symbol switch
+    {
+        LocalSymbol { IsCaptured: true } => true,
+        ParameterSymbol { IsCaptured: true } => true,
+        _ => false
+    };
+
+    private int GetBoxSlot(string name)
+    {
+        if (_boxSlots.TryGetValue(name, out int slot))
+            return slot;
+        throw new InvalidOperationException(
+            $"Captured variable '{name}' has no box in function '{_currentFunction?.Name}'");
+    }
+
+    private void EmitClosureCreation(string functionName, IReadOnlyList<string> capturedNames)
+    {
+        foreach (var name in capturedNames)
+            EmitLoadLocal(GetBoxSlot(name));
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.MakeClosure, 0, capturedNames.Count, functionName));
     }
 
     private FunctionIR GenerateMethodFunction(string className, string methodName, TsType returnType,
@@ -184,7 +374,9 @@ public sealed class IRGenerator
                 break;
 
             case BoundFunctionDeclaration func:
-                GenerateFunction(func);
+                // Local `const f = () => …` — lift to a sibling module function
+                // instead of generating inline (which would corrupt state).
+                _liftedFunctions.Enqueue(func);
                 break;
 
             default:
@@ -195,6 +387,22 @@ public sealed class IRGenerator
 
     private void GenerateVariableDeclaration(BoundVariableDeclaration varDecl)
     {
+        if (varDecl.Symbol.IsCaptured)
+        {
+            // Captured local: storage is a heap box shared with the closures.
+            int slot = GetLocalIndex(varDecl.Symbol);
+            _boxSlots[varDecl.Symbol.Name] = slot;
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.NewObject, 0, 0, "$Box"));
+            _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+            if (varDecl.Initializer != null)
+                GenerateExpression(varDecl.Initializer);
+            else
+                _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Null));
+            _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "v"));
+            EmitStoreLocal(slot);
+            return;
+        }
+
         if (varDecl.Initializer != null)
         {
             GenerateExpression(varDecl.Initializer);
@@ -403,6 +611,26 @@ public sealed class IRGenerator
             case BoundConditionalExpression cond:
                 GenerateConditional(cond);
                 break;
+            case BoundLambdaExpression lambda:
+                _liftedFunctions.Enqueue(lambda.Function);
+                if (lambda.Function.CapturedVariables.Count > 0)
+                    EmitClosureCreation(lambda.Function.Symbol.Name,
+                        lambda.Function.CapturedVariables.Select(s => s.Name).ToList());
+                else
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0, lambda.Function.Symbol.Name));
+                break;
+            case BoundCastExpression cast:
+                GenerateExpression(cast.Operand);
+                break;
+            case BoundTypeofExpression typeofExpr:
+                GenerateExpression(typeofExpr.Operand);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.TypeOf));
+                break;
+            case BoundArrayConstructionExpression arrCtor:
+                foreach (var arg in arrCtor.Arguments)
+                    GenerateExpression(arg);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, arrCtor.Arguments.Count, "Array::ctor"));
+                break;
             case BoundAwaitExpression awaitExpr:
                 GenerateExpression(awaitExpr.Expression);
                 EmitAwait();
@@ -455,7 +683,7 @@ public sealed class IRGenerator
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_I64, 0, 0, Convert.ToInt64(lit.Value)));
                 }
-                else if (lit.Type == TsType.UInt64)
+                else if (lit.Type == TsType.UInt64 || lit.Type == TsType.BigInt)
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_U64, 0, 0, Convert.ToUInt64(lit.Value)));
                 }
@@ -489,6 +717,13 @@ public sealed class IRGenerator
 
     private void GenerateVariableLoad(BoundVariableExpression varExpr)
     {
+        if (IsBoxedSymbol(varExpr.Symbol))
+        {
+            EmitLoadLocal(GetBoxSlot(varExpr.Symbol.Name));
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, "v"));
+            return;
+        }
+
         if (varExpr.Symbol is LocalSymbol local)
         {
             int localIndex = GetLocalIndex(local);
@@ -497,7 +732,20 @@ public sealed class IRGenerator
         else if (varExpr.Symbol is ParameterSymbol param)
         {
             int paramIndex = GetParameterIndex(param);
+            if (paramIndex < 0)
+                throw new InvalidOperationException(
+                    $"Parameter '{param.Name}' is not visible in function '{_currentFunction?.Name}'");
             EmitLoadArg(paramIndex);
+        }
+        else if (varExpr.Symbol is FunctionSymbol fn)
+        {
+            // A function referenced as a value (passed as a callback); if it
+            // captures, materialize the closure with the current boxes.
+            var target = fn.TargetName ?? fn.Name;
+            if (_capturesByFunction.TryGetValue(target, out var captured))
+                EmitClosureCreation(target, captured);
+            else
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0, target));
         }
     }
 
@@ -543,6 +791,12 @@ public sealed class IRGenerator
         {
             operandType = TsType.Int64;
         }
+        else if (bin.Left.Type.IsNumeric && bin.Right.Type.IsNumeric)
+        {
+            // Mixed widths compute in the wider representation (int literal
+            // against a `number` variable must not truncate to i32 ops).
+            operandType = Binder.WiderNumeric(bin.Left.Type, bin.Right.Type);
+        }
         var opcode = InferBinaryOpcode(operandType, bin.Operator);
         _currentBlock!.Instructions.Add(new Instruction(opcode));
     }
@@ -582,19 +836,27 @@ public sealed class IRGenerator
             return;
         }
 
+        if (IsBoxedSymbol(target.Symbol))
+        {
+            GenerateBoxedIncrement(unary, target.Symbol);
+            return;
+        }
+
         int slot = target.Symbol is LocalSymbol local
             ? GetLocalIndex(local)
             : GetParameterIndex((ParameterSymbol)target.Symbol);
 
-        bool isInt64 = target.Symbol.Type == TsType.Int64;
+        var slotType = target.Symbol.Type;
+        bool isInt64 = slotType == TsType.Int64;
+        bool isFloat = slotType == TsType.Float64 || slotType == TsType.Number || slotType == TsType.Float32;
         var addOp = unary.Operator == TokenKind.PlusPlus
-            ? (isInt64 ? Opcode.Add_I64 : Opcode.Add_I32)
-            : (isInt64 ? Opcode.Sub_I64 : Opcode.Sub_I32);
+            ? (isInt64 ? Opcode.Add_I64 : isFloat ? Opcode.Add_F64 : Opcode.Add_I32)
+            : (isInt64 ? Opcode.Sub_I64 : isFloat ? Opcode.Sub_F64 : Opcode.Sub_I32);
 
         EmitLoadLocal(slot);
         if (unary.IsPrefix)
         {
-            EmitConstOne(isInt64);
+            EmitConstOne(isInt64, isFloat);
             _currentBlock!.Instructions.Add(new Instruction(addOp));
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
             EmitStoreLocal(slot);
@@ -602,16 +864,49 @@ public sealed class IRGenerator
         else
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
-            EmitConstOne(isInt64);
+            EmitConstOne(isInt64, isFloat);
             _currentBlock!.Instructions.Add(new Instruction(addOp));
             EmitStoreLocal(slot);
         }
     }
 
-    private void EmitConstOne(bool isInt64)
+    private void GenerateBoxedIncrement(BoundUnaryExpression unary, Symbol symbol)
+    {
+        int boxSlot = GetBoxSlot(symbol.Name);
+        var slotType = symbol.Type;
+        bool isInt64 = slotType == TsType.Int64;
+        bool isFloat = slotType == TsType.Float64 || slotType == TsType.Number || slotType == TsType.Float32;
+        var addOp = unary.Operator == TokenKind.PlusPlus
+            ? (isInt64 ? Opcode.Add_I64 : isFloat ? Opcode.Add_F64 : Opcode.Add_I32)
+            : (isInt64 ? Opcode.Sub_I64 : isFloat ? Opcode.Sub_F64 : Opcode.Sub_I32);
+
+        if (!unary.IsPrefix)
+        {
+            // old value first: box.v
+            EmitLoadLocal(boxSlot);
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, "v"));
+        }
+
+        EmitLoadLocal(boxSlot);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, "v"));
+        EmitConstOne(isInt64, isFloat);
+        _currentBlock.Instructions.Add(new Instruction(addOp));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "v"));
+
+        if (unary.IsPrefix)
+        {
+            EmitLoadLocal(boxSlot);
+            _currentBlock.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, "v"));
+        }
+    }
+
+    private void EmitConstOne(bool isInt64, bool isFloat = false)
     {
         if (isInt64)
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_I64, 0, 0, 1L));
+        else if (isFloat)
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_F64, 0, 0, 1.0));
         else
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_I32, 1));
     }
@@ -620,19 +915,25 @@ public sealed class IRGenerator
     {
         if (call.Callee is BoundMemberAccessExpression memberAccess)
         {
-            GenerateExpression(memberAccess.Object);
+            // Static namespace calls (Math.floor, console.log) have no
+            // receiver value: skip the object load and pass args only.
+            bool isStatic = memberAccess.Object is BoundVariableExpression { Symbol: ClassSymbol };
+            if (!isStatic)
+                GenerateExpression(memberAccess.Object);
             for (int i = 0; i < call.Arguments.Count; i++)
                 GenerateExpression(call.Arguments[i]);
 
             string funcName = "";
-            string className = GetClassName(memberAccess.Object.Type);
+            string className = isStatic
+                ? ((ClassSymbol)((BoundVariableExpression)memberAccess.Object).Symbol).Name
+                : GetClassName(memberAccess.Object.Type);
 
             if (memberAccess.Member is MethodSymbol methodSym)
                 funcName = $"{methodSym.DeclaringClassName ?? className}::{methodSym.Name}";
             else if (memberAccess.Member is PropertySymbol propSym)
                 funcName = $"{className}::{propSym.Name}";
 
-            int totalArgs = 1 + call.Arguments.Count;
+            int totalArgs = (isStatic ? 0 : 1) + call.Arguments.Count;
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, totalArgs, funcName));
         }
         else if (call.Callee is BoundSuperExpression superExpr)
@@ -646,19 +947,35 @@ public sealed class IRGenerator
             int totalArgs = 1 + call.Arguments.Count;
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, totalArgs, funcName));
         }
-        else
+        else if (call.Callee is BoundVariableExpression { Symbol: FunctionSymbol funcSym })
         {
+            var target = funcSym.TargetName ?? funcSym.Name;
+            if (_capturesByFunction.TryGetValue(target, out var calleeCaptures))
+            {
+                // Direct call to a capturing function: build its closure from
+                // the boxes visible here, then dispatch dynamically.
+                EmitClosureCreation(target, calleeCaptures);
+                for (int i = 0; i < call.Arguments.Count; i++)
+                    GenerateExpression(call.Arguments[i]);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.CallDynamic, call.Arguments.Count));
+                return;
+            }
+
             for (int i = 0; i < call.Arguments.Count; i++)
                 GenerateExpression(call.Arguments[i]);
 
-            string funcName = "";
-            if (call.Callee is BoundVariableExpression varExpr && varExpr.Symbol is FunctionSymbol funcSym)
-                funcName = funcSym.TargetName ?? funcSym.Name;
-            else if (call.Callee is BoundVariableExpression varExpr2)
-                funcName = varExpr2.Symbol.Name;
+            _currentBlock!.Instructions.Add(new Instruction(
+                Opcode.Call, 0, call.Arguments.Count, target));
+        }
+        else
+        {
+            // Function-typed value (callback parameter, local, lambda result):
+            // push the callee value, then args, and dispatch dynamically.
+            GenerateExpression(call.Callee);
+            for (int i = 0; i < call.Arguments.Count; i++)
+                GenerateExpression(call.Arguments[i]);
 
-            int argCount = call.Arguments.Count;
-            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, argCount, funcName));
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.CallDynamic, call.Arguments.Count));
         }
     }
 
@@ -699,6 +1016,12 @@ public sealed class IRGenerator
             GenerateExpression(indexTarget.Index);
             GenerateExpression(assign.Value);
             _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreElement));
+        }
+        else if (assign.Target is BoundVariableExpression boxedTarget && IsBoxedSymbol(boxedTarget.Symbol))
+        {
+            EmitLoadLocal(GetBoxSlot(boxedTarget.Symbol.Name));
+            GenerateExpression(assign.Value);
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "v"));
         }
         else
         {
@@ -835,8 +1158,8 @@ public sealed class IRGenerator
             TokenKind.Star => Opcode.Mul_I32,
             TokenKind.Slash => Opcode.Div_I32,
             TokenKind.Percent => Opcode.Mod_I32,
-            TokenKind.DoubleEquals or TokenKind.StrictNotEquals => Opcode.CmpEq_I32,
-            TokenKind.NotEquals => Opcode.CmpNe_I32,
+            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_I32,
+            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_I32,
             TokenKind.LessThan => Opcode.CmpLt_I32,
             TokenKind.LessOrEqual => Opcode.CmpLe_I32,
             TokenKind.GreaterThan => Opcode.CmpGt_I32,
@@ -846,6 +1169,7 @@ public sealed class IRGenerator
             TokenKind.Caret => Opcode.Xor_I32,
             TokenKind.ShiftLeft => Opcode.Shl_I32,
             TokenKind.ShiftRight => Opcode.Shr_I32,
+            TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };
 
@@ -856,8 +1180,8 @@ public sealed class IRGenerator
             TokenKind.Star => Opcode.Mul_I64,
             TokenKind.Slash => Opcode.Div_I64,
             TokenKind.Percent => Opcode.Mod_I64,
-            TokenKind.DoubleEquals or TokenKind.StrictNotEquals => Opcode.CmpEq_I64,
-            TokenKind.NotEquals => Opcode.CmpNe_I64,
+            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_I64,
+            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_I64,
             TokenKind.LessThan => Opcode.CmpLt_I64,
             TokenKind.LessOrEqual => Opcode.CmpLe_I64,
             TokenKind.GreaterThan => Opcode.CmpGt_I64,
@@ -867,22 +1191,24 @@ public sealed class IRGenerator
             TokenKind.Caret => Opcode.Xor_I64,
             TokenKind.ShiftLeft => Opcode.Shl_I64,
             TokenKind.ShiftRight => Opcode.Shr_I64,
+            TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };
 
-        if (type == TsType.UInt64) return op switch
+        if (type == TsType.UInt64 || type == TsType.BigInt) return op switch
         {
             TokenKind.Plus => Opcode.Add_U64,
             TokenKind.Minus => Opcode.Sub_U64,
             TokenKind.Star => Opcode.Mul_U64,
             TokenKind.Slash => Opcode.Div_U64,
             TokenKind.Percent => Opcode.Mod_U64,
-            TokenKind.DoubleEquals or TokenKind.StrictNotEquals => Opcode.CmpEq_U64,
-            TokenKind.NotEquals => Opcode.CmpNe_U64,
+            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_U64,
+            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_U64,
             TokenKind.LessThan => Opcode.CmpLt_U64,
             TokenKind.LessOrEqual => Opcode.CmpLe_U64,
             TokenKind.GreaterThan => Opcode.CmpGt_U64,
             TokenKind.GreaterOrEqual => Opcode.CmpGe_U64,
+            TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };
 
@@ -893,12 +1219,13 @@ public sealed class IRGenerator
             TokenKind.Star => Opcode.Mul_F64,
             TokenKind.Slash => Opcode.Div_F64,
             TokenKind.Percent => Opcode.Mod_F64,
-            TokenKind.DoubleEquals or TokenKind.StrictNotEquals => Opcode.CmpEq_F64,
-            TokenKind.NotEquals => Opcode.CmpNe_F64,
+            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_F64,
+            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_F64,
             TokenKind.LessThan => Opcode.CmpLt_F64,
             TokenKind.LessOrEqual => Opcode.CmpLe_F64,
             TokenKind.GreaterThan => Opcode.CmpGt_F64,
             TokenKind.GreaterOrEqual => Opcode.CmpGe_F64,
+            TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };
 
@@ -908,12 +1235,13 @@ public sealed class IRGenerator
             TokenKind.Minus => Opcode.Sub_F32,
             TokenKind.Star => Opcode.Mul_F32,
             TokenKind.Slash => Opcode.Div_F32,
-            TokenKind.DoubleEquals or TokenKind.StrictNotEquals => Opcode.CmpEq_F32,
-            TokenKind.NotEquals => Opcode.CmpNe_F32,
+            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_F32,
+            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_F32,
             TokenKind.LessThan => Opcode.CmpLt_F32,
             TokenKind.LessOrEqual => Opcode.CmpLe_F32,
             TokenKind.GreaterThan => Opcode.CmpGt_F32,
             TokenKind.GreaterOrEqual => Opcode.CmpGe_F32,
+            TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };
 
@@ -924,8 +1252,8 @@ public sealed class IRGenerator
             TokenKind.Star => Opcode.Mul_Decimal,
             TokenKind.Slash => Opcode.Div_Decimal,
             TokenKind.Percent => Opcode.Mod_Decimal,
-            TokenKind.DoubleEquals or TokenKind.StrictNotEquals => Opcode.CmpEq_Decimal,
-            TokenKind.NotEquals => Opcode.CmpNe_Decimal,
+            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_Decimal,
+            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_Decimal,
             TokenKind.LessThan => Opcode.CmpLt_Decimal,
             TokenKind.LessOrEqual => Opcode.CmpLe_Decimal,
             TokenKind.GreaterThan => Opcode.CmpGt_Decimal,
@@ -937,12 +1265,27 @@ public sealed class IRGenerator
         {
             TokenKind.AmpersandAmpersand => Opcode.And_Bool,
             TokenKind.PipePipe => Opcode.Or_Bool,
+            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_Any,
+            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_Any,
             _ => Opcode.Nop
         };
 
-        if (type == TsType.String && op == TokenKind.Plus)
-            return Opcode.ConcatString;
+        if (type == TsType.String) return op switch
+        {
+            TokenKind.Plus => Opcode.ConcatString,
+            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_Any,
+            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_Any,
+            _ => Opcode.Nop
+        };
 
-        return Opcode.Nop;
+        // Reference-like and dynamic operands (nullable, objects, null, any)
+        // still support equality via generic value comparison.
+        return op switch
+        {
+            TokenKind.DoubleEquals or TokenKind.TripleEquals => Opcode.CmpEq_Any,
+            TokenKind.NotEquals or TokenKind.StrictNotEquals => Opcode.CmpNe_Any,
+            TokenKind.StarStar => Opcode.Pow_F64,
+            _ => Opcode.Nop
+        };
     }
 }

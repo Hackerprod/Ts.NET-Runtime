@@ -173,6 +173,14 @@ public static class Opcodes
     public const byte StoreElement             = 0x89;
     public const byte EnterTry                 = 0x8A;
     public const byte LeaveTry                 = 0x8B;
+    public const byte LoadFunc                 = 0x8C;
+    public const byte CallDynamic              = 0x8D;
+    public const byte MakeClosure              = 0x8E;
+
+    public const byte CmpEqAny                 = 0xA2;
+    public const byte CmpNeAny                 = 0xA3;
+    public const byte PowF64                   = 0xA4;
+    public const byte TypeOf                   = 0xA5;
 
     public const byte ConvI32I64               = 0x90;
     public const byte ConvI64I32               = 0x91;
@@ -322,6 +330,17 @@ public static class OpcodeFormats
         // ── Exception regions ──
         Reg(0x8A, OperandKind.Branch);   // ENTER_TRY (handler offset)
         Reg(0x8B);                       // LEAVE_TRY
+
+        // ── First-class functions ──
+        Reg(0x8C, OperandKind.Int32);    // LOAD_FUNC (string index)
+        Reg(0x8D, OperandKind.Int32);    // CALL_DYNAMIC (arg count)
+        Reg(0x8E, OperandKind.Int32x2);  // MAKE_CLOSURE (string index + capture count)
+
+        // ── Dynamic semantics ──
+        Reg(0xA2);                       // CMP_EQ_ANY
+        Reg(0xA3);                       // CMP_NE_ANY
+        Reg(0xA4);                       // POW_F64
+        Reg(0xA5);                       // TYPEOF
 
         // ── Convert ──
         Reg(0x90); Reg(0x91); Reg(0x92); Reg(0x93);

@@ -19,10 +19,16 @@ public abstract class TsType : IEquatable<TsType>
     {
         if (source is TsAnyType || target is TsAnyType)
             return true;
+        // Erased generics: an unconstrained type parameter accepts and
+        // provides any value at the boundary.
+        if (source is TsTypeParameter || target is TsTypeParameter)
+            return true;
         if (source is TsNullType)
             return target is TsNullableType || target is TsUnionType;
 
         if (source.Equals(target)) return true;
+
+        if (IsImplicitNumericWidening(source, target)) return true;
 
         if (source.IsAssignableTo(target)) return true;
         if (target.IsAssignableTo(source)) return true;
@@ -30,10 +36,42 @@ public abstract class TsType : IEquatable<TsType>
         if (source is TsNullableType nullable && nullable.ElementType.IsAssignableTo(target))
             return false;
 
-        if (target is TsNullableType targetNullable && source.IsAssignableTo(targetNullable.ElementType))
+        if (target is TsNullableType targetNullable &&
+            (source.IsAssignableTo(targetNullable.ElementType) ||
+             IsImplicitNumericWidening(source, targetNullable.ElementType)))
             return true;
 
         return false;
+    }
+
+    // Lossless implicit widenings only: narrower ints into wider ints of the
+    // same signedness family, and any int into the floating types. Narrowing
+    // and float→int always stay explicit.
+    private static bool IsImplicitNumericWidening(TsType source, TsType target)
+    {
+        if (source is not TsPrimitiveType s || target is not TsPrimitiveType t)
+            return false;
+        if (!s.IsNumericType || !t.IsNumericType)
+            return false;
+
+        // number ≡ float64 for interop with TypeScript-style annotations.
+        string src = s.Name == "number" ? "float64" : s.Name;
+        string dst = t.Name == "number" ? "float64" : t.Name;
+        if (src == dst) return true;
+
+        return dst switch
+        {
+            "int16" => src is "int8" or "uint8",
+            "int32" => src is "int8" or "uint8" or "int16" or "uint16",
+            "int64" => src is "int8" or "uint8" or "int16" or "uint16" or "int32" or "uint32",
+            "uint16" => src is "uint8",
+            "uint32" => src is "uint8" or "uint16",
+            "uint64" => src is "uint8" or "uint16" or "uint32",
+            "float32" => src is "int8" or "uint8" or "int16" or "uint16",
+            "float64" => src is "int8" or "uint8" or "int16" or "uint16" or "int32" or "uint32" or "float32",
+            "decimal" => src is "int8" or "uint8" or "int16" or "uint16" or "int32" or "uint32" or "int64" or "uint64",
+            _ => false
+        };
     }
 
     // Primitive type singletons
@@ -80,6 +118,7 @@ public abstract class TsType : IEquatable<TsType>
         TokenKind.DateTimeKeyword => DateTime,
         TokenKind.GuidKeyword => Guid,
         TokenKind.NumberKeyword => Number,
+        TokenKind.AnyKeyword => Any,
         _ => throw new ArgumentException($"Token kind {kind} is not a primitive type")
     };
 
@@ -208,7 +247,45 @@ public sealed class TsArrayType : TsType
 
     public override bool IsAssignableTo(TsType other)
     {
-        if (other is TsArrayType arr) return ElementType.IsAssignableTo(arr.ElementType);
+        if (other is TsArrayType arr)
+            return ElementType.IsAssignableTo(arr.ElementType) ||
+                   arr.ElementType is TsAnyType || ElementType is TsAnyType;
+        if (other is TsTupleType tuple)
+            return tuple.ElementTypes.All(t => ElementType.IsAssignableTo(t) || t is TsAnyType);
+        return base.IsAssignableTo(other);
+    }
+}
+
+// Fixed-shape tuple `[A, B, …]`. Indexing with a constant yields the exact
+// element type; dynamic indexing yields the union of element types.
+public sealed class TsTupleType : TsType
+{
+    public List<TsType> ElementTypes { get; }
+    public override string Name => $"[{string.Join(", ", ElementTypes.Select(t => t.Name))}]";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+
+    public TsTupleType(List<TsType> elementTypes)
+    {
+        ElementTypes = elementTypes;
+    }
+
+    public TsType UnifiedElementType()
+    {
+        if (ElementTypes.Count == 0) return Any;
+        var first = ElementTypes[0];
+        return ElementTypes.All(t => t.Equals(first)) ? first : Any;
+    }
+
+    public override bool IsAssignableTo(TsType other)
+    {
+        if (other is TsTupleType tuple)
+        {
+            return ElementTypes.Count == tuple.ElementTypes.Count &&
+                   ElementTypes.Zip(tuple.ElementTypes).All(pair => pair.First.IsAssignableTo(pair.Second));
+        }
+        if (other is TsArrayType arr)
+            return ElementTypes.All(t => t.IsAssignableTo(arr.ElementType)) || arr.ElementType is TsAnyType;
         return base.IsAssignableTo(other);
     }
 }

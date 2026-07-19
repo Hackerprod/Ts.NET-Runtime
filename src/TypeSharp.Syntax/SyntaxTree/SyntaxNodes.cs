@@ -20,6 +20,10 @@ public enum SyntaxNodeType
     TypeofExpression,
     ObjectLiteralExpression,
     ArrayLiteralExpression,
+    AsExpression,
+    ForOfStatement,
+    VariableDeclarationList,
+    TypeofExpressionNode,
 
     // Statements
     ExpressionStatement,
@@ -317,6 +321,7 @@ public sealed class LambdaExpressionSyntax : ExpressionSyntax
     public TypeSyntax? ReturnType { get; }
     public SyntaxNode Body { get; }
     public bool IsAsync { get; }
+    public List<GenericParameterSyntax> GenericParameters { get; } = new();
 
     public LambdaExpressionSyntax(List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode body, bool isAsync, SourceRange range)
         : base(SyntaxNodeType.LambdaExpression, range)
@@ -333,6 +338,21 @@ public sealed class LambdaExpressionSyntax : ExpressionSyntax
         if (ReturnType != null) yield return ReturnType;
         yield return Body;
     }
+}
+
+public sealed class AsExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+    public TypeSyntax TargetType { get; }
+
+    public AsExpressionSyntax(ExpressionSyntax expression, TypeSyntax targetType, SourceRange range)
+        : base(SyntaxNodeType.AsExpression, range)
+    {
+        Expression = expression;
+        TargetType = targetType;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Expression, TargetType };
 }
 
 public sealed class AwaitExpressionSyntax : ExpressionSyntax
@@ -500,6 +520,7 @@ public sealed class VariableDeclarationSyntax : StatementSyntax
     public TypeSyntax? TypeAnnotation { get; }
     public ExpressionSyntax? Initializer { get; }
     public bool IsConst { get; }
+    public bool IsExported { get; set; }
 
     public VariableDeclarationSyntax(string name, TypeSyntax? typeAnnotation, ExpressionSyntax? initializer, bool isConst, SourceRange range)
         : base(SyntaxNodeType.VariableDeclaration, range)
@@ -780,6 +801,10 @@ public sealed class ParameterSyntax : SyntaxNode
     public TypeSyntax TypeAnnotation { get; }
     public ExpressionSyntax? DefaultValue { get; }
 
+    // TypeScript constructor parameter properties: `constructor(private x: T)`
+    // declares a field and assigns it from the parameter.
+    public bool IsPropertyParameter { get; set; }
+
     public ParameterSyntax(string name, TypeSyntax typeAnnotation, ExpressionSyntax? defaultValue, SourceRange range)
         : base(SyntaxNodeType.Parameter, range)
     {
@@ -835,6 +860,144 @@ public sealed class NamedTypeSyntax : TypeSyntax
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => TypeArguments;
+}
+
+public sealed class ObjectTypeMemberSyntax
+{
+    public string Name { get; }
+    public TypeSyntax Type { get; }
+    public bool IsOptional { get; }
+
+    public ObjectTypeMemberSyntax(string name, TypeSyntax type, bool isOptional)
+    {
+        Name = name;
+        Type = type;
+        IsOptional = isOptional;
+    }
+}
+
+// `[A, B, …]` — fixed-shape tuple type.
+public sealed class TupleTypeSyntax : TypeSyntax
+{
+    public List<TypeSyntax> ElementTypes { get; }
+
+    public TupleTypeSyntax(List<TypeSyntax> elementTypes, SourceRange range)
+        : base(SyntaxNodeType.TypeAnnotation, range)
+    {
+        ElementTypes = elementTypes;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => ElementTypes;
+}
+
+// Anonymous structural type: `{ value: T; next?: Node<T> }`
+public sealed class ObjectTypeSyntax : TypeSyntax
+{
+    public List<ObjectTypeMemberSyntax> Members { get; }
+
+    public ObjectTypeSyntax(List<ObjectTypeMemberSyntax> members, SourceRange range)
+        : base(SyntaxNodeType.TypeAnnotation, range)
+    {
+        Members = members;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => Members.Select(m => (SyntaxNode)m.Type);
+}
+
+public sealed class FunctionTypeSyntax : TypeSyntax
+{
+    public List<ParameterSyntax> Parameters { get; }
+    public TypeSyntax ReturnType { get; }
+
+    public FunctionTypeSyntax(List<ParameterSyntax> parameters, TypeSyntax returnType, SourceRange range)
+        : base(SyntaxNodeType.FunctionType, range)
+    {
+        Parameters = parameters;
+        ReturnType = returnType;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        foreach (var p in Parameters) yield return p;
+        yield return ReturnType;
+    }
+}
+
+// `let a = 1, b = 2` — multiple declarators sharing one statement; binds
+// into the CURRENT scope (unlike a block).
+public sealed class VariableDeclarationListSyntax : StatementSyntax
+{
+    public List<VariableDeclarationSyntax> Declarations { get; }
+
+    public VariableDeclarationListSyntax(List<VariableDeclarationSyntax> declarations, SourceRange range)
+        : base(SyntaxNodeType.VariableDeclarationList, range)
+    {
+        Declarations = declarations;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => Declarations;
+}
+
+// `expr!` — non-null assertion; strips nullability statically, no runtime effect.
+public sealed class NonNullAssertionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+
+    public NonNullAssertionSyntax(ExpressionSyntax expression, SourceRange range)
+        : base(SyntaxNodeType.AsExpression, range)
+    {
+        Expression = expression;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Expression };
+}
+
+// Interpolated segment of a template literal; evaluates its expression and
+// stringifies the result.
+public sealed class TemplatePartSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+
+    public TemplatePartSyntax(ExpressionSyntax expression, SourceRange range)
+        : base(SyntaxNodeType.LiteralExpression, range)
+    {
+        Expression = expression;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Expression };
+}
+
+// `typeof expr` — evaluates to the JS-style type name string.
+public sealed class TypeofExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Operand { get; }
+
+    public TypeofExpressionSyntax(ExpressionSyntax operand, SourceRange range)
+        : base(SyntaxNodeType.TypeofExpressionNode, range)
+    {
+        Operand = operand;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Operand };
+}
+
+public sealed class ForOfStatementSyntax : StatementSyntax
+{
+    public string VariableName { get; }
+    public bool IsConst { get; }
+    public ExpressionSyntax Iterable { get; }
+    public StatementSyntax Body { get; }
+
+    public ForOfStatementSyntax(string variableName, bool isConst, ExpressionSyntax iterable, StatementSyntax body, SourceRange range)
+        : base(SyntaxNodeType.ForOfStatement, range)
+    {
+        VariableName = variableName;
+        IsConst = isConst;
+        Iterable = iterable;
+        Body = body;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Iterable, Body };
 }
 
 public sealed class ArrayTypeSyntax : TypeSyntax

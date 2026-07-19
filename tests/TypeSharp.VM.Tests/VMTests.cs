@@ -854,6 +854,26 @@ public class HeapTests
 
 public class InteropTests
 {
+    private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)
+    {
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(syntaxTree);
+
+        var irGen = new IRGenerator();
+        var moduleIR = irGen.Generate(boundTree);
+
+        var bytecodeModule = BytecodeCompiler.Compile(moduleIR);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        return interpreter.Execute(bytecodeModule, entryPoint, args);
+    }
+
     public class MathService
     {
         [TsExport("add")]
@@ -980,6 +1000,61 @@ public class InteropTests
         var tsValue = TsValue.FromInt32(42);
         var output = Marshaller.ToManaged(tsValue, typeof(ulong));
         Assert.Equal(42UL, output);
+    }
+
+    [Fact]
+    public void TypeScriptBigIntLiteral_UsesBigIntSurface()
+    {
+        var result = Run(@"
+            function main(): string {
+                return typeof 123n;
+            }
+        ");
+
+        Assert.IsType<TsStringValue>(result);
+        Assert.Equal("bigint", ((TsStringValue)result!).Value);
+    }
+
+    [Fact]
+    public void TypeScriptBigIntLiteral_ComputesAsUnsigned64Internally()
+    {
+        var result = Run(@"
+            function main(): bigint {
+                return 100n + 23n;
+            }
+        ");
+
+        Assert.IsType<TsUInt64Value>(result);
+        Assert.Equal(123UL, ((TsUInt64Value)result!).Value);
+    }
+
+    [Fact]
+    public void Uint8ArrayAnnotation_BehavesLikeByteArray()
+    {
+        var result = Run(@"
+            function main(): number {
+                const data: Uint8Array = new Uint8Array([1, 2, 3]);
+                return data.length + data[1];
+            }
+        ");
+
+        Assert.IsType<TsFloat64Value>(result);
+        Assert.Equal(5.0, ((TsFloat64Value)result!).Value);
+    }
+
+    [Fact]
+    public void ByteArrayMarshalling_UsesUint8ArrayShape()
+    {
+        var input = new byte[] { 1, 2, 255 };
+        var tsValue = Marshaller.FromManaged(input);
+
+        Assert.IsType<TsArrayValue>(tsValue);
+        var array = ((TsArrayValue)tsValue).Value;
+        Assert.Equal(3, array.Count);
+        Assert.Equal(255, ((TsInt32Value)array.Get(2)).Value);
+
+        var output = Marshaller.ToManaged(tsValue, typeof(byte[]));
+        Assert.Equal(input, output);
     }
 
     [Fact]

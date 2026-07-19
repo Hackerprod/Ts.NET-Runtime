@@ -36,6 +36,9 @@ public enum BoundNodeKind
     ObjectLiteralExpression,
     IndexExpression,
     ObjectProperty,
+    LambdaExpression,
+    CastExpression,
+    TypeofExpression,
 
     ExpressionStatement,
     ReturnStatement,
@@ -132,6 +135,55 @@ public sealed class BoundMemberAccessExpression : BoundNode
         Object = obj;
         Member = member;
         IsNullConditional = isNullConditional;
+    }
+}
+
+// An inline lambda: carries its lifted function declaration; evaluating the
+// expression yields a first-class function value referring to it.
+public sealed class BoundLambdaExpression : BoundNode
+{
+    public BoundFunctionDeclaration Function { get; }
+
+    public BoundLambdaExpression(BoundFunctionDeclaration function, TsType type)
+        : base(BoundNodeKind.LambdaExpression, type)
+    {
+        Function = function;
+    }
+}
+
+// `typeof expr` needing runtime inspection (dynamic operand).
+public sealed class BoundTypeofExpression : BoundNode
+{
+    public BoundNode Operand { get; }
+
+    public BoundTypeofExpression(BoundNode operand)
+        : base(BoundNodeKind.TypeofExpression, TsType.String)
+    {
+        Operand = operand;
+    }
+}
+
+// `expr as T` — pure static retype; no runtime conversion is emitted.
+public sealed class BoundCastExpression : BoundNode
+{
+    public BoundNode Operand { get; }
+
+    public BoundCastExpression(BoundNode operand, TsType type)
+        : base(BoundNodeKind.CastExpression, type)
+    {
+        Operand = operand;
+    }
+}
+
+// `new Array(n)` / `Array(n)` — sized array construction.
+public sealed class BoundArrayConstructionExpression : BoundNode
+{
+    public List<BoundNode> Arguments { get; }
+
+    public BoundArrayConstructionExpression(List<BoundNode> arguments, TsType type)
+        : base(BoundNodeKind.ArrayLiteralExpression, type)
+    {
+        Arguments = arguments;
     }
 }
 
@@ -373,6 +425,10 @@ public sealed class BoundFunctionDeclaration : BoundNode
 {
     public FunctionSymbol Symbol { get; }
     public BoundNode Body { get; }
+
+    // Variables captured from enclosing functions, in stable order; the
+    // closure environment threads their boxes into the callee frame.
+    public List<Symbol> CapturedVariables { get; } = new();
 
     public BoundFunctionDeclaration(FunctionSymbol symbol, BoundNode body)
         : base(BoundNodeKind.FunctionDeclaration, TsType.Void)

@@ -77,6 +77,8 @@ public static class BytecodeVerifier
             case Opcodes.CallHost:
             case Opcodes.CallVirt:
             case Opcodes.NewObject:
+            case Opcodes.LoadFunc:
+            case Opcodes.MakeClosure:
             {
                 int first = ReadInt32(code, offset);
                 if (first < 0 || first >= function.StringConstants.Length) Fail(function, $"string index {first} is out of range");
