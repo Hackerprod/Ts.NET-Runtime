@@ -471,13 +471,25 @@ public sealed class Parser
 
     private TypeSyntax ParseTypeWithSuffixes()
     {
+        var isReadonlyArray = false;
+        var readonlyLocation = Peek().Location;
+        if (Check(TokenKind.ReadonlyKeyword))
+        {
+            isReadonlyArray = true;
+            readonlyLocation = Advance().Location;
+        }
+
         var type = ParsePrimaryType();
 
         while (Check(TokenKind.OpenBracket) && Peek(1).Kind == TokenKind.CloseBracket)
         {
             Advance();
             Advance();
-            type = new ArrayTypeSyntax(type, new SourceRange(type.Range.Start, Peek(-1).Location));
+            type = new ArrayTypeSyntax(
+                type,
+                new SourceRange(isReadonlyArray ? readonlyLocation : type.Range.Start, Peek(-1).Location),
+                isReadonlyArray);
+            isReadonlyArray = false;
         }
 
         return type;
@@ -646,6 +658,12 @@ public sealed class Parser
         while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
         {
             int loopStart = _position;
+            var isReadonly = false;
+            if (Check(TokenKind.ReadonlyKeyword))
+            {
+                isReadonly = true;
+                Advance();
+            }
             var name = ExpectMemberName();
             bool optional = false;
             if (Check(TokenKind.Question))
@@ -655,7 +673,7 @@ public sealed class Parser
             }
             Expect(TokenKind.Colon);
             var memberType = ParseType();
-            members.Add(new ObjectTypeMemberSyntax(name, memberType, optional));
+            members.Add(new ObjectTypeMemberSyntax(name, memberType, optional, isReadonly));
             if (Check(TokenKind.Semicolon) || Check(TokenKind.Comma)) Advance();
             if (_position == loopStart) Advance();
         }

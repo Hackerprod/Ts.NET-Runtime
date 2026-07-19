@@ -768,6 +768,53 @@ public class IntegrationTests
     }
 
     [Fact]
+    public void ReadonlyObjectTypeMembers_AreAcceptedAndRejectedOnAssignment()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_readonly_object_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                type Route = {
+                    readonly requestId: number;
+                    readonly request?: { readonly name: string };
+                };
+
+                function count(slots: readonly { readonly slotId?: number }[]): number {
+                    return slots.length;
+                }
+
+                function mutateArray(slots: readonly { readonly slotId?: number }[]): void {
+                    slots.push({ slotId: 1 });
+                }
+
+                function read(route: Route): number {
+                    return route.requestId;
+                }
+
+                function mutate(route: Route): void {
+                    route.requestId = 1;
+                }
+                """);
+
+            var compilation = new TypeScriptCompilation(dir);
+            compilation.AddSourceDirectory(dir);
+            compilation.Compile();
+
+            Assert.Contains(
+                compilation.Diagnostics.GetErrors(),
+                error => error.Message.Contains("readonly member 'requestId'"));
+            Assert.Contains(
+                compilation.Diagnostics.GetErrors(),
+                error => error.Message.Contains("No member 'push'"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task HotReload_PublishesValidatedCandidateAndRollsBack()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_reload_" + Guid.NewGuid().ToString("N"));

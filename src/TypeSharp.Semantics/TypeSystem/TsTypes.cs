@@ -81,7 +81,7 @@ public abstract class TsType : IEquatable<TsType>
         return type switch
         {
             TsTypeParameter parameter when genericArguments.TryGetValue(parameter.Name, out var replacement) => replacement,
-            TsArrayType array => new TsArrayType(Substitute(array.ElementType, genericArguments)),
+            TsArrayType array => new TsArrayType(Substitute(array.ElementType, genericArguments), array.IsReadonly),
             TsTupleType tuple => new TsTupleType(tuple.ElementTypes.Select(t => Substitute(t, genericArguments)).ToList()),
             TsMapType map => new TsMapType(
                 Substitute(map.KeyType, genericArguments),
@@ -410,22 +410,29 @@ public sealed class TsEnumType : TsType
 public sealed class TsArrayType : TsType
 {
     public TsType ElementType { get; }
-    public override string Name => $"{ElementType}[]";
+    public bool IsReadonly { get; }
+    public override string Name => IsReadonly ? $"readonly {ElementType}[]" : $"{ElementType}[]";
     public override bool IsValueType => false;
     public override bool IsReferenceType => true;
 
-    public TsArrayType(TsType elementType)
+    public TsArrayType(TsType elementType, bool isReadonly = false)
     {
         ElementType = elementType;
+        IsReadonly = isReadonly;
     }
 
     public override bool IsAssignableTo(TsType other)
     {
         if (other is TsArrayType arr)
-            return ElementType.IsAssignableTo(arr.ElementType) ||
-                   arr.ElementType is TsAnyType || ElementType is TsAnyType;
+            return (!IsReadonly || arr.IsReadonly) &&
+                   (ElementType.IsAssignableTo(arr.ElementType) ||
+                    arr.ElementType is TsAnyType || ElementType is TsAnyType);
         if (other is TsTupleType tuple)
+        {
+            if (IsReadonly)
+                return false;
             return tuple.ElementTypes.All(t => ElementType.IsAssignableTo(t) || t is TsAnyType);
+        }
         return base.IsAssignableTo(other);
     }
 }

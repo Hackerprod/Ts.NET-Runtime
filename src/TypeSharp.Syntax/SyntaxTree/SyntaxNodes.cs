@@ -906,12 +906,14 @@ public sealed class ObjectTypeMemberSyntax
     public string Name { get; }
     public TypeSyntax Type { get; }
     public bool IsOptional { get; }
+    public bool IsReadonly { get; }
 
-    public ObjectTypeMemberSyntax(string name, TypeSyntax type, bool isOptional)
+    public ObjectTypeMemberSyntax(string name, TypeSyntax type, bool isOptional, bool isReadonly = false)
     {
         Name = name;
         Type = type;
         IsOptional = isOptional;
+        IsReadonly = isReadonly;
     }
 }
 
@@ -1042,11 +1044,13 @@ public sealed class ForOfStatementSyntax : StatementSyntax
 public sealed class ArrayTypeSyntax : TypeSyntax
 {
     public TypeSyntax ElementType { get; }
+    public bool IsReadonly { get; }
 
-    public ArrayTypeSyntax(TypeSyntax elementType, SourceRange range)
+    public ArrayTypeSyntax(TypeSyntax elementType, SourceRange range, bool isReadonly = false)
         : base(SyntaxNodeType.ArrayType, range)
     {
         ElementType = elementType;
+        IsReadonly = isReadonly;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => new[] { ElementType };

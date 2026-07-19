@@ -303,7 +303,10 @@ public sealed class Binder
                         var memberType = ResolveType(m.Type);
                         if (m.IsOptional && memberType is not TsNullableType)
                             memberType = new TsNullableType(memberType);
-                        shell.Properties[m.Name] = new TsProperty(m.Name, memberType);
+                        shell.Properties[m.Name] = new TsProperty(m.Name, memberType)
+                        {
+                            IsReadonly = m.IsReadonly
+                        };
                     }
                 }
                 else
@@ -1806,17 +1809,24 @@ public sealed class Binder
         switch (name)
         {
             case "length":
-                return new PropertySymbol("length", TsType.Int32, range);
+                return new PropertySymbol("length", TsType.Int32, range) { IsReadonly = true };
             case "push":
             case "unshift":
+                if (arrayType.IsReadonly)
+                    return null;
                 return BuiltinMethod(name, TsType.Int32, "Array", range);
             case "pop":
             case "shift":
+                if (arrayType.IsReadonly)
+                    return null;
                 return BuiltinMethod(name, arrayType.ElementType, "Array", range);
             case "reverse":
+            case "fill":
+                if (arrayType.IsReadonly)
+                    return null;
+                return BuiltinMethod(name, arrayType, "Array", range);
             case "slice":
             case "concat":
-            case "fill":
                 return BuiltinMethod(name, arrayType, "Array", range);
             case "includes":
                 return BuiltinMethod(name, TsType.Bool, "Array", range);
@@ -1829,7 +1839,10 @@ public sealed class Binder
             case "flatMap":
                 return BuiltinMethod(name, new TsArrayType(TsType.Any), "Array", range);
             case "filter":
+                return BuiltinMethod(name, arrayType, "Array", range);
             case "sort":
+                if (arrayType.IsReadonly)
+                    return null;
                 return BuiltinMethod(name, arrayType, "Array", range);
             case "forEach":
                 return BuiltinMethod(name, TsType.Void, "Array", range);
@@ -2369,7 +2382,7 @@ public sealed class Binder
         {
             PrimitiveTypeSyntax prim => TsType.FromToken(prim.TypeKeyword.Kind),
             NamedTypeSyntax named => ResolveNamedType(named),
-            ArrayTypeSyntax arr => new TsArrayType(ResolveType(arr.ElementType)),
+            ArrayTypeSyntax arr => new TsArrayType(ResolveType(arr.ElementType), arr.IsReadonly),
             MapTypeSyntax map => new TsMapType(ResolveType(map.KeyType), ResolveType(map.ValueType)),
             PromiseTypeSyntax promise => new TsPromiseType(ResolveType(promise.ElementType)),
             NullableTypeSyntax nullable => new TsNullableType(ResolveType(nullable.ElementType)),
@@ -2406,7 +2419,10 @@ public sealed class Binder
             var memberType = ResolveType(m.Type);
             if (m.IsOptional && memberType is not TsNullableType)
                 memberType = new TsNullableType(memberType);
-            iface.Properties[m.Name] = new TsProperty(m.Name, memberType);
+            iface.Properties[m.Name] = new TsProperty(m.Name, memberType)
+            {
+                IsReadonly = m.IsReadonly
+            };
         }
         return iface;
     }
@@ -2486,6 +2502,13 @@ public sealed class Binder
             return new TsArrayType(named.TypeArguments.Count > 0
                 ? ResolveType(named.TypeArguments[0])
                 : TsType.Any);
+        }
+
+        if (named.Name == "ReadonlyArray")
+        {
+            return new TsArrayType(
+                named.TypeArguments.Count > 0 ? ResolveType(named.TypeArguments[0]) : TsType.Any,
+                isReadonly: true);
         }
 
         if (named.Name == "Promise")
