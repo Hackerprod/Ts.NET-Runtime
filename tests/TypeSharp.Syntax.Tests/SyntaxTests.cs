@@ -197,6 +197,30 @@ public class ParserTests
     }
 
     [Fact]
+    public void ParseFunctionDeclarationWithInferredDefaultParameters()
+    {
+        var tree = Parse("function send(messageType: number, payload: Uint8Array, protobuf = true): void { }");
+        var func = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(tree.Members));
+
+        Assert.Equal(3, func.Parameters.Count);
+        Assert.Equal("protobuf", func.Parameters[2].Name);
+        Assert.True(func.Parameters[2].TypeWasInferred);
+        Assert.NotNull(func.Parameters[2].DefaultValue);
+    }
+
+    [Fact]
+    public void ParseFunctionTypeWithOptionalParameter()
+    {
+        var tree = Parse("type Handler = (value?: number) => void;");
+        var alias = Assert.IsType<TypeAliasDeclarationSyntax>(Assert.Single(tree.Members));
+        var functionType = Assert.IsType<FunctionTypeSyntax>(alias.Type);
+        var parameter = Assert.Single(functionType.Parameters);
+
+        Assert.Equal("value", parameter.Name);
+        Assert.IsType<NullableTypeSyntax>(parameter.TypeAnnotation);
+    }
+
+    [Fact]
     public void ParseVariableDeclaration()
     {
         var tree = Parse("let x: int32 = 42;");

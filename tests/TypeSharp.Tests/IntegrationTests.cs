@@ -159,6 +159,79 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task DefaultParameters_UseUndefinedOnlyAndWorkAcrossFunctionsMethodsAndCallbacks()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_default_params_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "main.ts");
+        try
+        {
+            File.WriteAllText(file, """
+                function withDefault(value = 7): number {
+                    return value;
+                }
+
+                function nullableDefault(value: any = 7): number {
+                    if (value === null) {
+                        return 99;
+                    }
+
+                    return value;
+                }
+
+                class Formatter {
+                    label(prefix = "node"): string {
+                        return prefix + "-ready";
+                    }
+                }
+
+                function call(handler: (value?: number) => void): void {
+                    handler();
+                }
+
+                function functionDefault(): number {
+                    return withDefault();
+                }
+
+                function explicitNullDoesNotUseDefault(): number {
+                    return nullableDefault(null);
+                }
+
+                function explicitUndefinedUsesDefault(): number {
+                    return nullableDefault(undefined);
+                }
+
+                function methodDefault(): string {
+                    const formatter = new Formatter();
+                    return formatter.label();
+                }
+
+                function callbackDefault(): number {
+                    let captured = 0;
+                    call((value = 5) => {
+                        captured = value;
+                    });
+                    return captured;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .BuildAsync();
+
+            Assert.Equal(7d, await runtime.InvokeAsync<double>(Path.GetFileName(dir), "functionDefault"));
+            Assert.Equal(99d, await runtime.InvokeAsync<double>(Path.GetFileName(dir), "explicitNullDoesNotUseDefault"));
+            Assert.Equal(7d, await runtime.InvokeAsync<double>(Path.GetFileName(dir), "explicitUndefinedUsesDefault"));
+            Assert.Equal("node-ready", await runtime.InvokeAsync<string>(Path.GetFileName(dir), "methodDefault"));
+            Assert.Equal(5d, await runtime.InvokeAsync<double>(Path.GetFileName(dir), "callbackDefault"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task HostNumber_CanBeComparedWithModuleConstant()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_host_compare_" + Guid.NewGuid().ToString("N"));
@@ -1464,6 +1537,59 @@ class Derived extends Base {
             comp.Compile();
 
             Assert.Contains(comp.Diagnostics.GetErrors(), d => d.Code == TypeSharp.Syntax.Diagnostics.DiagnosticCode.TS2001);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void Compilation_NarrowsNullishGuardsAcrossFollowingStatements()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), @"
+class Party {
+    id: number;
+    constructor(id: number) {
+        this.id = id;
+    }
+}
+
+function maybeParty(flag: boolean): Party | null {
+    if (flag) return new Party(42);
+    return null;
+}
+
+function readParty(party: Party): number {
+    return party.id;
+}
+
+function guardReturn(flag: boolean): number {
+    const party = maybeParty(flag);
+    if (party === null) return 0;
+    return party.id;
+}
+
+function guardOrReturn(flag: boolean): number {
+    const party = maybeParty(flag);
+    if (party === null || readParty(party) === 0) return 0;
+    return party.id;
+}
+
+function guardAndBranch(flag: boolean): number {
+    const party = maybeParty(flag);
+    if (party !== null && party.id > 0) {
+        return party.id;
+    }
+    return 0;
+}
+");
+
+            var comp = new TypeScriptCompilation(dir);
+            comp.AddSourceFile(Path.Combine(dir, "app.ts"));
+            comp.Compile();
+
+            Assert.False(comp.Diagnostics.HasErrors, "Errors: " + string.Join("; ", comp.Diagnostics.GetErrors().Select(e => e.Message)));
         }
         finally { Directory.Delete(dir, true); }
     }

@@ -63,6 +63,8 @@ public sealed class ParameterSymbol : Symbol
     public override SymbolKind Kind => SymbolKind.Parameter;
     public bool HasDefault { get; set; }
     public object? DefaultValue { get; set; }
+    public BoundNode? DefaultExpression { get; set; }
+    public bool IsTypeInferred { get; set; }
     public bool IsCaptured { get; set; }
 
     public ParameterSymbol(string name, TypeSystem.TsType type, SourceRange location)

@@ -469,7 +469,7 @@ public sealed class CallFrame
         Caller = caller;
 
         for (int i = 0; i < Locals.Length; i++)
-            Locals[i] = TsValue.Null;
+            Locals[i] = TsValue.Void;
     }
 
     public void Push(TsValue value)

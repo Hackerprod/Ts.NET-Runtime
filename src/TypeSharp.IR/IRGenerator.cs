@@ -371,6 +371,8 @@ public sealed class IRGenerator
             _boxSlots[captured.Name] = slot;
         }
 
+        GenerateDefaultParameterInitializers(func.Symbol.Parameters, argumentOffset: 0);
+
         // Parameters that inner functions capture are re-homed into boxes.
         foreach (var param in func.Symbol.Parameters)
         {
@@ -460,6 +462,8 @@ public sealed class IRGenerator
             _localMap["this"] = boxSlot;
             _boxSlots["this"] = boxSlot;
         }
+
+        GenerateDefaultParameterInitializers(explicitParams, argumentOffset: 1);
 
         foreach (var param in explicitParams)
         {
@@ -578,6 +582,26 @@ public sealed class IRGenerator
             default:
                 EmitNop();
                 break;
+        }
+    }
+
+    private void GenerateDefaultParameterInitializers(IReadOnlyList<ParameterSymbol> parameters, int argumentOffset)
+    {
+        for (int i = 0; i < parameters.Count; i++)
+        {
+            var parameter = parameters[i];
+            if (!parameter.HasDefault || parameter.DefaultExpression == null)
+                continue;
+
+            var nextBlock = _currentFunction!.CreateBlock();
+            EmitLoadArg(i + argumentOffset);
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+            _currentBlock.Instructions.Add(new Instruction(Opcode.CmpStrictEq_Any));
+            EmitBranchFalse(nextBlock.Id);
+
+            GenerateExpression(parameter.DefaultExpression);
+            EmitStoreLocal(i + argumentOffset);
+            _currentBlock = nextBlock;
         }
     }
 
@@ -960,6 +984,9 @@ public sealed class IRGenerator
                 break;
             case TsPrimitiveType { Name: "bool" }:
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Bool, Convert.ToBoolean(lit.Value) ? 1 : 0));
+                break;
+            case TsPrimitiveType { Name: "void" }:
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
                 break;
             default:
                 if (lit.Value == null)

@@ -54,6 +54,7 @@ public static class Opcodes
     public const byte LoadConstU64             = 0x08;
     public const byte LoadConstDecimal         = 0x09;
     public const byte LoadConstBigInt          = 0x0A;
+    public const byte LoadConstVoid            = 0x0B;
 
     public const byte LoadLocal                = 0x10;
     public const byte StoreLocal               = 0x11;
@@ -255,6 +256,7 @@ public static class OpcodeFormats
         Reg(0x08, OperandKind.UInt64); // LOAD_CONST_U64 ← was broken (ReadInt32)
         Reg(0x09, OperandKind.Int32);  // LOAD_CONST_DECIMAL (index)
         Reg(0x0A, OperandKind.Int32);  // LOAD_CONST_BIGINT (string index)
+        Reg(0x0B);                     // LOAD_CONST_VOID / undefined
 
         // ── Variables ──
         Reg(0x10, OperandKind.Int32);  // LOAD_LOCAL

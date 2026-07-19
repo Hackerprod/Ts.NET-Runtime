@@ -25,6 +25,8 @@ public abstract class TsType : IEquatable<TsType>
             return true;
         if (source is TsNullType)
             return target is TsNullableType || target is TsUnionType;
+        if (source.Equals(Void))
+            return target is TsNullableType || target is TsUnionType;
 
         if (source.Equals(target)) return true;
 
@@ -207,11 +209,30 @@ public abstract class TsType : IEquatable<TsType>
 
         for (int i = 0; i < source.Parameters.Count; i++)
         {
-            if (!IsCompatibleWith(target.Parameters[i].Type, source.Parameters[i].Type))
+            if (!AreParameterTypesCompatible(target.Parameters[i], source.Parameters[i]))
                 return false;
         }
 
         return target.ReturnType.Equals(Void) || IsCompatibleWith(source.ReturnType, target.ReturnType);
+    }
+
+    internal static bool AreParameterTypesCompatible(TsParameter target, TsParameter source)
+    {
+        if (IsCompatibleWith(target.Type, source.Type))
+            return true;
+
+        if ((target.HasDefault || target.Type is TsNullableType) && source.HasDefault)
+        {
+            var targetType = target.Type is TsNullableType nullableTarget
+                ? nullableTarget.ElementType
+                : target.Type;
+            var sourceType = source.Type is TsNullableType nullableSource
+                ? nullableSource.ElementType
+                : source.Type;
+            return IsCompatibleWith(targetType, sourceType);
+        }
+
+        return false;
     }
 
     // Lossless implicit widenings only: narrower ints into wider ints of the
@@ -544,7 +565,7 @@ public sealed class TsFunctionType : TsType
         {
             // A callback that accepts a wider parameter type can stand in for
             // one that will be called with a narrower type.
-            if (!IsCompatibleWith(target.Parameters[i].Type, Parameters[i].Type))
+            if (!TsType.AreParameterTypesCompatible(target.Parameters[i], Parameters[i]))
                 return false;
         }
 

@@ -157,6 +157,9 @@ public static class BytecodeCompiler
             case Opcode.LoadConst_Null:
                 writer.Write(Opcodes.LoadConstNull);
                 break;
+            case Opcode.LoadConst_Void:
+                writer.Write(Opcodes.LoadConstVoid);
+                break;
 
             // ── Variables ──
             case Opcode.LoadLocal:

@@ -42,6 +42,7 @@ public enum Opcode
     LoadConst_String,
     LoadConst_Bool,
     LoadConst_Null,
+    LoadConst_Void,
 
     // Variables
     LoadLocal,

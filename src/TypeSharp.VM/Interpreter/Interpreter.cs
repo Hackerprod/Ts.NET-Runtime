@@ -251,6 +251,10 @@ public sealed class Interpreter
                     frame.Push(TsValue.Null);
                     break;
 
+                case Opcodes.LoadConstVoid: // LOAD_CONST_VOID / undefined
+                    frame.Push(TsValue.Void);
+                    break;
+
                 case Opcodes.LoadConstU64: // LOAD_CONST_U64
                     frame.Push(TsValue.FromUInt64(ReadUInt64(bytecode, ref frame.InstructionPointer)));
                     break;

@@ -390,13 +390,17 @@ public sealed class Parser
                 Advance();
             }
             var name = ExpectMemberName();
+            var nameLocation = Peek(-1).Location;
             bool optional = false;
             if (Check(TokenKind.Question) && Peek(1).Kind == TokenKind.Colon)
             {
                 optional = true;
                 Advance();
             }
-            var type = ParseTypeAnnotation();
+            bool typeWasInferred = !Check(TokenKind.Colon);
+            TypeSyntax type = !typeWasInferred
+                ? ParseTypeAnnotation()
+                : AnyType(nameLocation);
             if (optional && type is not NullableTypeSyntax)
                 type = new NullableTypeSyntax(type, type.Range);
             ExpressionSyntax? defaultVal = null;
@@ -406,7 +410,7 @@ public sealed class Parser
                 defaultVal = ParseExpression();
             }
             var paramRange = new SourceRange(Peek(-1).Location, Peek().Location);
-            parameters.Add(new ParameterSyntax(name, type, defaultVal, paramRange)
+            parameters.Add(new ParameterSyntax(name, type, defaultVal, paramRange, typeWasInferred)
             {
                 IsPropertyParameter = isPropertyParameter
             });
@@ -592,10 +596,18 @@ public sealed class Parser
         {
             int loopStart = _position;
             var name = ExpectMemberName();
+            bool optional = false;
+            if (Check(TokenKind.Question) && Peek(1).Kind == TokenKind.Colon)
+            {
+                optional = true;
+                Advance();
+            }
             bool typeWasInferred = !Check(TokenKind.Colon);
             TypeSyntax paramType = !typeWasInferred
                 ? ParseTypeAnnotation()
                 : AnyType(Peek().Location);
+            if (optional && paramType is not NullableTypeSyntax)
+                paramType = new NullableTypeSyntax(paramType, paramType.Range);
             parameters.Add(new ParameterSyntax(name, paramType, null,
                 new SourceRange(Peek(-1).Location, Peek().Location),
                 typeWasInferred));
