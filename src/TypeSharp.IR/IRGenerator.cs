@@ -36,6 +36,10 @@ public sealed class IRGenerator
         CollectCaptureInfo(sourceFile);
         CollectModuleConstants(sourceFile);
 
+        var moduleInit = GenerateModuleInitializer(sourceFile);
+        if (moduleInit != null)
+            module.AddFunction(moduleInit);
+
         foreach (var member in sourceFile.Members)
         {
             if (member is BoundFunctionDeclaration func)
@@ -53,6 +57,50 @@ public sealed class IRGenerator
         }
 
         return module;
+    }
+
+    private FunctionIR? GenerateModuleInitializer(BoundSourceFile sourceFile)
+    {
+        var executableMembers = sourceFile.Members
+            .Where(member => member is BoundVariableDeclaration or BoundExpressionStatement)
+            .ToList();
+        if (executableMembers.Count == 0)
+            return null;
+
+        var previousFunction = _currentFunction;
+        var previousDeclaration = _currentDeclaration;
+        var previousBlock = _currentBlock;
+        var previousLocalMap = _localMap;
+        var previousBoxSlots = _boxSlots;
+        var previousTempCounter = _tempCounter;
+
+        var function = new FunctionIR(GetModuleInitializerName(sourceFile.FileName), TsType.Void, new List<ParameterInfo>())
+        {
+            LocalCount = 0
+        };
+
+        _currentFunction = function;
+        _currentDeclaration = null;
+        _tempCounter = 0;
+        _localMap = new Dictionary<string, int>();
+        _boxSlots = new Dictionary<string, int>();
+        _currentBlock = function.CreateBlock();
+
+        foreach (var member in executableMembers)
+            GenerateStatement(member);
+
+        function.LocalCount = _tempCounter;
+        if (!_currentBlock.EndsInBranch)
+            EmitReturnVoid();
+
+        _currentFunction = previousFunction;
+        _currentDeclaration = previousDeclaration;
+        _currentBlock = previousBlock;
+        _localMap = previousLocalMap;
+        _boxSlots = previousBoxSlots;
+        _tempCounter = previousTempCounter;
+
+        return function;
     }
 
     private void CollectModuleConstants(BoundSourceFile sourceFile)
@@ -206,6 +254,76 @@ public sealed class IRGenerator
         }
     }
 
+    private static bool ContainsCapturedThis(BoundNode node)
+    {
+        switch (node)
+        {
+            case BoundFunctionDeclaration func:
+                if (func.CapturedVariables.Any(symbol => symbol.Name == "this"))
+                    return true;
+                return ContainsCapturedThis(func.Body);
+            case BoundLambdaExpression lambda:
+                return ContainsCapturedThis(lambda.Function);
+            case BoundBlockStatement block:
+                return block.Statements.Any(ContainsCapturedThis);
+            case BoundVariableDeclaration { Initializer: not null } varDecl:
+                return ContainsCapturedThis(varDecl.Initializer);
+            case BoundExpressionStatement stmt:
+                return ContainsCapturedThis(stmt.Expression);
+            case BoundReturnStatement { Value: not null } ret:
+                return ContainsCapturedThis(ret.Value);
+            case BoundIfStatement ifStmt:
+                return ContainsCapturedThis(ifStmt.Condition)
+                    || ContainsCapturedThis(ifStmt.ThenBranch)
+                    || (ifStmt.ElseBranch != null && ContainsCapturedThis(ifStmt.ElseBranch));
+            case BoundWhileStatement whileStmt:
+                return ContainsCapturedThis(whileStmt.Condition) || ContainsCapturedThis(whileStmt.Body);
+            case BoundForStatement forStmt:
+                return (forStmt.Initializer != null && ContainsCapturedThis(forStmt.Initializer))
+                    || (forStmt.Condition != null && ContainsCapturedThis(forStmt.Condition))
+                    || (forStmt.Iterator != null && ContainsCapturedThis(forStmt.Iterator))
+                    || ContainsCapturedThis(forStmt.Body);
+            case BoundTryStatement tryStmt:
+                return ContainsCapturedThis(tryStmt.TryBlock)
+                    || (tryStmt.CatchBlock != null && ContainsCapturedThis(tryStmt.CatchBlock))
+                    || (tryStmt.FinallyBlock != null && ContainsCapturedThis(tryStmt.FinallyBlock));
+            case BoundThrowStatement throwStmt:
+                return ContainsCapturedThis(throwStmt.Expression);
+            case BoundBinaryExpression bin:
+                return ContainsCapturedThis(bin.Left) || ContainsCapturedThis(bin.Right);
+            case BoundUnaryExpression unary:
+                return ContainsCapturedThis(unary.Operand);
+            case BoundCallExpression call:
+                return ContainsCapturedThis(call.Callee) || call.Arguments.Any(ContainsCapturedThis);
+            case BoundAssignmentExpression assign:
+                return ContainsCapturedThis(assign.Target) || ContainsCapturedThis(assign.Value);
+            case BoundConditionalExpression cond:
+                return ContainsCapturedThis(cond.Condition)
+                    || ContainsCapturedThis(cond.WhenTrue)
+                    || ContainsCapturedThis(cond.WhenFalse);
+            case BoundMemberAccessExpression member:
+                return ContainsCapturedThis(member.Object);
+            case BoundIndexExpression index:
+                return ContainsCapturedThis(index.Object) || ContainsCapturedThis(index.Index);
+            case BoundArrayLiteralExpression arr:
+                return arr.Elements.Any(ContainsCapturedThis);
+            case BoundArrayConstructionExpression arrCtor:
+                return arrCtor.Arguments.Any(ContainsCapturedThis);
+            case BoundObjectLiteralExpression obj:
+                return obj.Properties.Any(property => ContainsCapturedThis(property.Value));
+            case BoundCastExpression cast:
+                return ContainsCapturedThis(cast.Operand);
+            case BoundTypeofExpression typeofExpr:
+                return ContainsCapturedThis(typeofExpr.Operand);
+            case BoundNewExpression newExpr:
+                return newExpr.Arguments.Any(ContainsCapturedThis);
+            case BoundAwaitExpression awaitExpr:
+                return ContainsCapturedThis(awaitExpr.Expression);
+            default:
+                return false;
+        }
+    }
+
     private FunctionIR GenerateFunction(BoundFunctionDeclaration func)
     {
         var parameters = func.Symbol.Parameters
@@ -312,6 +430,7 @@ public sealed class IRGenerator
         _currentFunction = funcIR;
         _tempCounter = 0;
         _localMap = new Dictionary<string, int>();
+        _boxSlots = new Dictionary<string, int>();
 
         var entryBlock = funcIR.CreateBlock();
         _currentBlock = entryBlock;
@@ -320,6 +439,33 @@ public sealed class IRGenerator
         for (int i = 0; i < explicitParams.Count; i++)
             _localMap[explicitParams[i].Name] = i + 1;
         _tempCounter = 1 + explicitParams.Count;
+
+        if (ContainsCapturedThis(body))
+        {
+            int boxSlot = _tempCounter++;
+            _currentBlock.Instructions.Add(new Instruction(Opcode.NewObject, 0, 0, "$Box"));
+            _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+            EmitLoadArg(0);
+            _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "v"));
+            EmitStoreLocal(boxSlot);
+            _localMap["this"] = boxSlot;
+            _boxSlots["this"] = boxSlot;
+        }
+
+        foreach (var param in explicitParams)
+        {
+            if (!param.IsCaptured)
+                continue;
+            int paramIdx = explicitParams.IndexOf(param) + 1;
+            int boxSlot = _tempCounter++;
+            _currentBlock.Instructions.Add(new Instruction(Opcode.NewObject, 0, 0, "$Box"));
+            _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+            EmitLoadArg(paramIdx);
+            _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "v"));
+            EmitStoreLocal(boxSlot);
+            _localMap[param.Name] = boxSlot;
+            _boxSlots[param.Name] = boxSlot;
+        }
 
         GenerateStatement(body);
 
@@ -420,6 +566,16 @@ public sealed class IRGenerator
 
     private void GenerateVariableDeclaration(BoundVariableDeclaration varDecl)
     {
+        if (IsModuleGlobalSymbol(varDecl.Symbol))
+        {
+            if (varDecl.Initializer != null)
+                GenerateExpression(varDecl.Initializer);
+            else
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Null));
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreGlobal, 0, 0, GetModuleGlobalKey(varDecl.Symbol)));
+            return;
+        }
+
         if (varDecl.Symbol.IsCaptured)
         {
             // Captured local: storage is a heap box shared with the closures.
@@ -619,7 +775,15 @@ public sealed class IRGenerator
                 GenerateAssignment(assign);
                 break;
             case BoundThisExpression:
-                EmitLoadThis();
+                if (_boxSlots.TryGetValue("this", out int thisBoxSlot))
+                {
+                    EmitLoadLocal(thisBoxSlot);
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, "v"));
+                }
+                else
+                {
+                    EmitLoadThis();
+                }
                 break;
             case BoundSuperExpression:
                 EmitLoadThis();
@@ -759,6 +923,12 @@ public sealed class IRGenerator
         if (_moduleConstantInitializers.TryGetValue(varExpr.Symbol, out var moduleConstant))
         {
             GenerateExpression(moduleConstant);
+            return;
+        }
+
+        if (varExpr.Symbol is LocalSymbol moduleGlobal && IsModuleGlobalSymbol(moduleGlobal))
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadGlobal, 0, 0, GetModuleGlobalKey(moduleGlobal)));
             return;
         }
 
@@ -968,19 +1138,18 @@ public sealed class IRGenerator
             if (memberAccess.Member is MethodSymbol { DeclaringClassName: null } structuralMethod)
             {
                 GenerateExpression(memberAccess.Object);
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, structuralMethod.Name));
                 for (int i = 0; i < call.Arguments.Count; i++)
                     GenerateExpression(call.Arguments[i]);
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.CallDynamic, call.Arguments.Count));
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.CallVirt, 0, call.Arguments.Count + 1, structuralMethod.Name));
                 return;
             }
 
             if (memberAccess.Member is not MethodSymbol)
             {
-                GenerateExpression(memberAccess);
+                GenerateExpression(memberAccess.Object);
                 for (int i = 0; i < call.Arguments.Count; i++)
                     GenerateExpression(call.Arguments[i]);
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.CallDynamic, call.Arguments.Count));
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.CallVirt, 0, call.Arguments.Count + 1, memberAccess.Member.Name));
                 return;
             }
 
@@ -1100,7 +1269,10 @@ public sealed class IRGenerator
             {
                 if (varExpr.Symbol is LocalSymbol local)
                 {
-                    _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreLocal, GetLocalIndex(local)));
+                    if (IsModuleGlobalSymbol(local))
+                        _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreGlobal, 0, 0, GetModuleGlobalKey(local)));
+                    else
+                        _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreLocal, GetLocalIndex(local)));
                 }
                 else if (varExpr.Symbol is ParameterSymbol param)
                 {
@@ -1202,6 +1374,26 @@ public sealed class IRGenerator
 
     private void EmitThrow() =>
         _currentBlock!.Instructions.Add(new Instruction(Opcode.Throw));
+
+    public static string GetModuleInitializerName(string moduleName) =>
+        $"$module_init_{ToSafeName(moduleName)}";
+
+    private static bool IsModuleGlobalSymbol(LocalSymbol local) =>
+        local.IsModuleScoped && !string.IsNullOrWhiteSpace(local.ModuleName);
+
+    private static string GetModuleGlobalKey(LocalSymbol local)
+    {
+        var moduleName = string.IsNullOrWhiteSpace(local.ModuleName) ? "module" : local.ModuleName!;
+        var runtimeName = string.IsNullOrWhiteSpace(local.RuntimeName) ? local.Name : local.RuntimeName!;
+        return $"{moduleName}::{runtimeName}";
+    }
+
+    private static string ToSafeName(string value)
+    {
+        var safe = new string(value.Select(ch =>
+            char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_').ToArray());
+        return string.IsNullOrWhiteSpace(safe) ? "module" : safe;
+    }
 
     private int GetLocalIndex(LocalSymbol local)
     {

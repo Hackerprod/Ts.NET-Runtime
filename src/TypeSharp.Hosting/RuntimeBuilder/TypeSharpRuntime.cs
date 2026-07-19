@@ -285,10 +285,12 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         {
             if (mod.Bytecode.FunctionIndex.ContainsKey(functionName))
             {
-                var context = _interpreter.CreateContext();
+                var linkedModule = CreateLinkedModule(generation);
+                var context = _interpreter.CreateContext(generation.ModuleGlobals);
                 try
                 {
-                    return _interpreter.Execute(CreateLinkedModule(generation), functionName, args, context);
+                    EnsureModuleInitializers(generation, linkedModule, context);
+                    return _interpreter.Execute(linkedModule, functionName, args, context);
                 }
                 finally
                 {
@@ -312,10 +314,12 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             module = await ImportAsync(moduleName);
         }
 
-        var context = _interpreter.CreateContext();
+        var linkedModule = CreateLinkedModule(lease.Generation);
+        var context = _interpreter.CreateContext(lease.Generation.ModuleGlobals);
         try
         {
-            var result = _interpreter.Execute(CreateLinkedModule(lease.Generation), functionName, tsArgs, context);
+            EnsureModuleInitializers(lease.Generation, linkedModule, context);
+            var result = _interpreter.Execute(linkedModule, functionName, tsArgs, context);
             var managed = await TypeSharp.Interop.Marshalling.Marshaller
                 .ToManagedAsync(result ?? TsValue.Null, typeof(T), context.CancellationToken)
                 .ConfigureAwait(false);
@@ -330,6 +334,21 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
     public TsValue? Invoke(string functionName, TsValue[]? args = null)
     {
         return InvokeWithLease(functionName, args);
+    }
+
+    private void EnsureModuleInitializers(RuntimeGeneration generation, BytecodeModule linkedModule, TypeSharp.VM.Interpreter.ExecutionContext context)
+    {
+        lock (generation.ModuleStateLock)
+        {
+            foreach (var functionName in linkedModule.FunctionIndex.Keys
+                .Where(name => name.StartsWith("$module_init_", StringComparison.Ordinal))
+                .OrderBy(name => name, StringComparer.Ordinal))
+            {
+                if (!generation.InitializedModules.Add(functionName))
+                    continue;
+                _interpreter.Execute(linkedModule, functionName, null, context);
+            }
+        }
     }
 
     private static BytecodeModule CreateLinkedModule(RuntimeGeneration generation)

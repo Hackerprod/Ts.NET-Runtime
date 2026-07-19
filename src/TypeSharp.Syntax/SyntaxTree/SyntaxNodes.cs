@@ -731,6 +731,7 @@ public sealed class MethodDeclarationSyntax : SyntaxNode
 
     public override IEnumerable<SyntaxNode> GetChildren()
     {
+        foreach (var g in GenericParameters) yield return g;
         foreach (var p in Parameters) yield return p;
         if (ReturnType != null) yield return ReturnType;
         if (Body != null) yield return Body;

@@ -178,6 +178,14 @@ public static class BytecodeCompiler
                 writer.Write(Opcodes.StoreField);
                 writer.WriteInt32(instr.Operand0);
                 break;
+            case Opcode.LoadGlobal:
+                writer.Write(Opcodes.LoadGlobal);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.StoreGlobal:
+                writer.Write(Opcodes.StoreGlobal);
+                writer.WriteInt32(instr.Operand0);
+                break;
 
             // ── I32 arithmetic ──
             case Opcode.Add_I32: writer.Write(Opcodes.AddI32); break;
@@ -423,6 +431,8 @@ public static class BytecodeCompiler
                         Opcode.NewObject or
                         Opcode.LoadField or
                         Opcode.StoreField or
+                        Opcode.LoadGlobal or
+                        Opcode.StoreGlobal or
                         Opcode.LoadFunc or
                         Opcode.MakeClosure)
                     {

@@ -45,6 +45,8 @@ public enum Opcode
     // Variables
     LoadLocal,
     StoreLocal,
+    LoadGlobal,
+    StoreGlobal,
     LoadArg,
     LoadThis,
     LoadField,
@@ -140,6 +142,7 @@ public sealed class Instruction
             Opcode.LoadConst_Bool => Operand0 == 1 ? "true" : "false",
             Opcode.LoadConst_Null => "null",
             Opcode.LoadLocal or Opcode.StoreLocal or Opcode.LoadArg => $"v{Operand0}",
+            Opcode.LoadGlobal or Opcode.StoreGlobal => $"global#{Operand0}",
             Opcode.Branch or Opcode.BranchTrue or Opcode.BranchFalse => $"L{Operand0}",
             Opcode.Call or Opcode.CallVirt => $"method#{Operand0} args={Operand1}",
             Opcode.NewObject => $"type#{Operand0} args={Operand1}",

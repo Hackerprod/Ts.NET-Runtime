@@ -13,6 +13,9 @@ public sealed class RuntimeGeneration
     public bool IsCurrent => Volatile.Read(ref _isCurrent) != 0;
     public DateTime CreatedAt { get; }
     public DateTime? SwappedAt { get; set; }
+    public Dictionary<string, TsValue> ModuleGlobals { get; } = new(StringComparer.Ordinal);
+    public HashSet<string> InitializedModules { get; } = new(StringComparer.Ordinal);
+    public object ModuleStateLock { get; } = new();
     private int _activeExecutions;
     private int _isCurrent;
 

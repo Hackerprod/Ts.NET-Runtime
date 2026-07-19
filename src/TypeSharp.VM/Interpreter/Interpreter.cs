@@ -23,11 +23,13 @@ public sealed class ExecutionContext : IDisposable
     public CancellationToken CancellationToken => _cts.Token;
     public TsHeap Heap { get; }
     public VMRuntimeLimits Limits { get; }
+    public IDictionary<string, TsValue> Globals { get; }
 
-    public ExecutionContext(VMRuntimeLimits limits, TsHeap heap)
+    public ExecutionContext(VMRuntimeLimits limits, TsHeap heap, IDictionary<string, TsValue>? globals = null)
     {
         Limits = limits;
         Heap = heap;
+        Globals = globals ?? new Dictionary<string, TsValue>(StringComparer.Ordinal);
         _cts = new CancellationTokenSource(limits.ExecutionTimeout);
     }
 
@@ -114,6 +116,12 @@ public sealed class Interpreter
         // functions allocating through Interpreter.Heap still count.
         _heap.Reset();
         return new ExecutionContext(_limits, _heap);
+    }
+
+    public ExecutionContext CreateContext(IDictionary<string, TsValue> globals)
+    {
+        _heap.Reset();
+        return new ExecutionContext(_limits, _heap, globals);
     }
 
     public TsValue? Execute(BytecodeModule module, string entryPoint, TsValue[]? args = null, ExecutionContext? context = null)
@@ -297,6 +305,22 @@ public sealed class Interpreter
                     var obj = frame.Pop();
                     if (obj is TsObjectValue objVal)
                         objVal.Value.SetField(fieldName, value);
+                    break;
+                }
+
+                case Opcodes.LoadGlobal: // LOAD_GLOBAL
+                {
+                    int globalIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var globalName = strings[globalIdx];
+                    frame.Push(ctx.Globals.TryGetValue(globalName, out var value) ? value : TsValue.Null);
+                    break;
+                }
+
+                case Opcodes.StoreGlobal: // STORE_GLOBAL
+                {
+                    int globalIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var globalName = strings[globalIdx];
+                    ctx.Globals[globalName] = frame.Pop();
                     break;
                 }
 
@@ -1058,22 +1082,23 @@ public sealed class Interpreter
                     int funcIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     int argCount = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var calleeName = strings[funcIdx];
+                    var callArgs = new TsValue[argCount];
+                    for (int i = argCount - 1; i >= 0; i--)
+                        callArgs[i] = frame.Pop();
+                    var resolvedName = ResolveVirtualCalleeName(calleeName, callArgs);
 
-                    if (TryGetHostFunction(calleeName, out var hostFunc))
+                    if (TryGetVirtualFieldCallable(calleeName, callArgs, out var fieldCallable, out var fieldArgs))
                     {
-                        var hostArgs = new TsValue[argCount];
-                        for (int i = argCount - 1; i >= 0; i--)
-                            hostArgs[i] = frame.Pop();
-                        var result = hostFunc(calleeName, hostArgs);
-                        frame.Push(result ?? TsValue.Null);
+                        frame.Push(InvokeCallable(fieldCallable, fieldArgs, module, ctx, frame));
                     }
-                    else if (TryResolveCachedCallee(frame.Function, instructionOffset, calleeName, module, out int calleeIdx))
+                    else if (TryResolveCachedCallee(frame.Function, instructionOffset, resolvedName, module, out int calleeIdx)
+                        || (resolvedName == calleeName && TryResolveCachedCallee(frame.Function, instructionOffset, calleeName, module, out calleeIdx)))
                     {
                         var calleeFunc = module.Functions[calleeIdx];
                         _profile.RecordCall(module.Name, calleeFunc.Name);
                         var newFrame = new CallFrame(calleeFunc, frame);
-                        for (int i = argCount - 1; i >= 0; i--)
-                            newFrame.Locals[i] = frame.Pop();
+                        for (int i = 0; i < argCount; i++)
+                            newFrame.Locals[i] = callArgs[i];
                         ctx.CallStack.Push(newFrame);
                         TsValue? result;
                         try
@@ -1085,6 +1110,12 @@ public sealed class Interpreter
                             ctx.CallStack.Pop();
                         }
                         frame.Push(FinishFunctionResult(calleeFunc, result));
+                    }
+                    else if (TryGetHostFunction(resolvedName, out var hostFunc)
+                        || (resolvedName == calleeName && TryGetHostFunction(calleeName, out hostFunc)))
+                    {
+                        var result = hostFunc(resolvedName, callArgs);
+                        frame.Push(result ?? TsValue.Null);
                     }
                     else
                     {
@@ -1852,6 +1883,41 @@ public sealed class Interpreter
             return host(fnValue.FunctionName, args) ?? TsValue.Null;
 
         throw new InvalidOperationException($"Function '{fnValue.FunctionName}' not found");
+    }
+
+    private static string ResolveVirtualCalleeName(string calleeName, TsValue[] args)
+    {
+        if (calleeName.Contains("::", StringComparison.Ordinal) || args.Length == 0)
+            return calleeName;
+
+        return args[0] switch
+        {
+            TsObjectValue obj => $"{obj.Value.TypeName}::{calleeName}",
+            _ => calleeName
+        };
+    }
+
+    private static bool TryGetVirtualFieldCallable(
+        string calleeName,
+        TsValue[] args,
+        out TsValue callable,
+        out TsValue[] callArgs)
+    {
+        callable = TsValue.Null;
+        callArgs = Array.Empty<TsValue>();
+
+        if (calleeName.Contains("::", StringComparison.Ordinal) || args.Length == 0)
+            return false;
+        if (args[0] is not TsObjectValue obj)
+            return false;
+
+        var field = obj.Value.GetField(calleeName);
+        if (field is not TsFunctionValue)
+            return false;
+
+        callable = field;
+        callArgs = args.Skip(1).ToArray();
+        return true;
     }
 
     private static TsValue FinishFunctionResult(BytecodeFunction function, TsValue? result)

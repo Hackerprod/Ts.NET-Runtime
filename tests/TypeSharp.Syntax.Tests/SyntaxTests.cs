@@ -211,6 +211,43 @@ public class ParserTests
     }
 
     [Fact]
+    public void ParseGenericClassMethod()
+    {
+        var tree = Parse("class Box { value<T>(input: T): T { return input; } }");
+        var cls = Assert.IsType<ClassDeclarationSyntax>(Assert.Single(tree.Members));
+        var method = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(cls.Members));
+
+        Assert.Equal("value", method.Name);
+        var generic = Assert.Single(method.GenericParameters);
+        Assert.Equal("T", generic.Name);
+        Assert.Single(method.Parameters);
+    }
+
+    [Fact]
+    public void ParseGenericClassMethodWithNestedCallArguments()
+    {
+        var lexer = new Lexer("class Sender { send<T>(messageType: number, message: T): void { host(messageType, encode(message), true); } }");
+        var parser = new TypeSharp.Syntax.Parser.Parser(lexer.Tokenize());
+        var tree = parser.Parse();
+        var cls = Assert.IsType<ClassDeclarationSyntax>(Assert.Single(tree.Members));
+        var method = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(cls.Members));
+
+        Assert.Equal("send", method.Name);
+        Assert.Empty(parser.Diagnostics);
+    }
+
+    [Fact]
+    public void ParseParenthesizedUnionArrayType()
+    {
+        var tree = Parse("class Router { handlers: (Route<unknown, unknown> | null)[]; }");
+        var cls = Assert.IsType<ClassDeclarationSyntax>(Assert.Single(tree.Members));
+        var field = Assert.IsType<FieldDeclarationSyntax>(Assert.Single(cls.Members));
+        var arrayType = Assert.IsType<ArrayTypeSyntax>(field.TypeAnnotation);
+
+        Assert.IsType<UnionTypeSyntax>(arrayType.ElementType);
+    }
+
+    [Fact]
     public void ParseBinaryExpression()
     {
         var tree = Parse("let result = a + b * c;");

@@ -16,6 +16,7 @@ public sealed class Binder
     private readonly Dictionary<string, TsType> _typeAliases = new();
     private readonly Dictionary<string, Dictionary<string, Symbol>> _importedSymbols = new();
     private TsClassType? _currentClassType;
+    private ParameterSymbol? _currentThisSymbol;
     private TsType? _currentFunctionReturnType;
     private bool _currentFunctionIsAsync;
     private bool _inConstructor;
@@ -36,6 +37,12 @@ public sealed class Binder
     private void DefineWithDepth(Symbol symbol)
     {
         _symbolFunctionDepth[symbol] = _functionDepth;
+        if (symbol is LocalSymbol local && _functionDepth == 0)
+        {
+            local.IsModuleScoped = true;
+            local.ModuleName = _currentSourceFileName;
+            local.RuntimeName = local.Name;
+        }
         _symbolTable.Define(symbol);
     }
 
@@ -43,6 +50,8 @@ public sealed class Binder
     // function between the use and the declaration must thread the box.
     private void RegisterPossibleCapture(Symbol symbol)
     {
+        if (symbol is LocalSymbol { IsModuleScoped: true })
+            return;
         if (symbol is not (LocalSymbol or ParameterSymbol))
             return;
         if (!_symbolFunctionDepth.TryGetValue(symbol, out int declaredDepth))
@@ -340,9 +349,11 @@ public sealed class Binder
                             break;
 
                         case MethodDeclarationSyntax method:
+                            PushTypeParameters(method.GenericParameters);
                             classType.Methods[method.Name] = new TsMethod(method.Name,
                                 ResolveType(method.ReturnType) ?? TsType.Void,
                                 method.Parameters.Select(p => new TsParameter(p.Name, ResolveType(p.TypeAnnotation))).ToList());
+                            PopTypeParameters();
                             break;
 
                         case PropertyDeclarationSyntax prop:
@@ -357,6 +368,7 @@ public sealed class Binder
             case InterfaceDeclarationSyntax iface:
             {
                 var ifaceType = _interfaceTypes[iface.Name];
+                PushTypeParameters(iface.GenericParameters);
                 foreach (var m in iface.Members)
                 {
                     if (m is FieldDeclarationSyntax field)
@@ -365,10 +377,15 @@ public sealed class Binder
                             IsReadonly = field.IsReadonly
                         };
                     else if (m is MethodDeclarationSyntax method)
+                    {
+                        PushTypeParameters(method.GenericParameters);
                         ifaceType.Methods[method.Name] = new TsMethod(method.Name,
                             ResolveType(method.ReturnType) ?? TsType.Void,
                             method.Parameters.Select(p => new TsParameter(p.Name, ResolveType(p.TypeAnnotation))).ToList());
+                        PopTypeParameters();
+                    }
                 }
+                PopTypeParameters();
                 break;
             }
         }
@@ -582,15 +599,20 @@ public sealed class Binder
 
                 _symbolTable.PushScope();
                 _functionDepth++;
+                var thisSymbol = new ParameterSymbol("this", classType, ctor.Range);
+                DefineWithDepth(thisSymbol);
                 foreach (var p in ctorSym.Parameters)
                     DefineWithDepth(p);
                 var prevReturnType = _currentFunctionReturnType;
                 var prevInConstructor = _inConstructor;
+                var prevThisSymbol = _currentThisSymbol;
+                _currentThisSymbol = thisSymbol;
                 _currentFunctionReturnType = TsType.Void;
                 _inConstructor = true;
                 var body = BindNode(ctor.Body);
                 _inConstructor = prevInConstructor;
                 _currentFunctionReturnType = prevReturnType;
+                _currentThisSymbol = prevThisSymbol;
                 _functionDepth--;
                 _symbolTable.PopScope();
 
@@ -625,8 +647,6 @@ public sealed class Binder
                 {
                     IsReadonly = field.IsReadonly
                 };
-                _symbolTable.Define(fieldSym);
-
                 classType.Fields[field.Name] = new TsField(field.Name, fieldType)
                 {
                     IsReadonly = field.IsReadonly
@@ -636,6 +656,7 @@ public sealed class Binder
 
             case MethodDeclarationSyntax method:
             {
+                PushTypeParameters(method.GenericParameters);
                 var declaredMethodType = ResolveType(method.ReturnType) ?? TsType.Void;
                 var methodType = NormalizeFunctionReturnType(declaredMethodType, method.IsAsync);
                 var methodSym = new MethodSymbol(method.Name, methodType, method.Range)
@@ -658,17 +679,19 @@ public sealed class Binder
                 ValidateOverride(classType, methodSym, method.Range.Start);
                 classType.Methods[method.Name] = tsMethod;
 
-                _symbolTable.Define(methodSym);
-
                 if (method.Body != null)
                 {
                     _symbolTable.PushScope();
                     _functionDepth++;
+                    var thisSymbol = new ParameterSymbol("this", classType, method.Range);
+                    DefineWithDepth(thisSymbol);
                     foreach (var p in methodSym.Parameters)
                         DefineWithDepth(p);
                     var prevReturnType = _currentFunctionReturnType;
                     var prevIsAsync = _currentFunctionIsAsync;
                     var prevInConstructor = _inConstructor;
+                    var prevThisSymbol = _currentThisSymbol;
+                    _currentThisSymbol = thisSymbol;
                     _currentFunctionIsAsync = method.IsAsync;
                     _currentFunctionReturnType = BodyReturnType(methodType, method.IsAsync);
                     _inConstructor = false;
@@ -676,10 +699,13 @@ public sealed class Binder
                     _inConstructor = prevInConstructor;
                     _currentFunctionReturnType = prevReturnType;
                     _currentFunctionIsAsync = prevIsAsync;
+                    _currentThisSymbol = prevThisSymbol;
                     _functionDepth--;
                     _symbolTable.PopScope();
+                    PopTypeParameters();
                     return new BoundMethodDeclaration(classType.Name, methodSym, body!);
                 }
+                PopTypeParameters();
                 return null;
             }
 
@@ -762,10 +788,12 @@ public sealed class Binder
             }
             else if (member is MethodDeclarationSyntax method)
             {
+                PushTypeParameters(method.GenericParameters);
                 var returnType = ResolveType(method.ReturnType) ?? TsType.Void;
                 var tsMethod = new TsMethod(method.Name, returnType,
                     method.Parameters.Select(p => new TsParameter(p.Name, ResolveType(p.TypeAnnotation))).ToList());
                 ifaceType.Methods[method.Name] = tsMethod;
+                PopTypeParameters();
             }
         }
 
@@ -870,7 +898,10 @@ public sealed class Binder
             LocalSymbol local => new LocalSymbol(alias, local.Type, location, local.IsConst)
             {
                 IsExported = local.IsExported,
-                ConstantInitializer = local.ConstantInitializer
+                ConstantInitializer = local.ConstantInitializer,
+                IsModuleScoped = local.IsModuleScoped,
+                ModuleName = local.ModuleName,
+                RuntimeName = local.RuntimeName ?? local.Name
             },
             _ => new LocalSymbol(alias, symbol.Type, location)
         };
@@ -1405,6 +1436,8 @@ public sealed class Binder
                 result.Add(BindInlineLambda(lambda, fnType));
             else if (arguments[i] is ObjectLiteralExpressionSyntax objLit && expectedType != null)
                 result.Add(BindObjectLiteral(objLit, expectedType));
+            else if (arguments[i] is ArrayLiteralExpressionSyntax arrLit && expectedType != null)
+                result.Add(BindArrayLiteral(arrLit, expectedType));
             else
                 result.Add(BindExpression(arguments[i]));
 
@@ -1814,6 +1847,8 @@ public sealed class Binder
     private BoundThisExpression BindThis(ThisExpressionSyntax thisExpr)
     {
         var type = _currentClassType ?? new TsClassType("Unknown");
+        if (_currentThisSymbol != null)
+            RegisterPossibleCapture(_currentThisSymbol);
         return new BoundThisExpression(type);
     }
 
@@ -1890,13 +1925,7 @@ public sealed class Binder
                     continue;
                 }
 
-                var value = prop.Value switch
-                {
-                    ObjectLiteralExpressionSyntax nested => BindObjectLiteral(nested, expectedPropertyType),
-                    LambdaExpressionSyntax lambda when expectedPropertyType is TsFunctionType fnType =>
-                        BindInlineLambda(lambda, fnType),
-                    _ => BindExpression(prop.Value)
-                };
+                var value = BindExpressionWithExpectedType(prop.Value, expectedPropertyType);
 
                 if (!TsType.IsCompatibleWith(value.Type, expectedPropertyType))
                 {
@@ -1940,6 +1969,22 @@ public sealed class Binder
         }
 
         return new BoundObjectLiteralExpression(properties, resultType);
+    }
+
+    private BoundNode BindExpressionWithExpectedType(ExpressionSyntax expression, TsType expectedType)
+    {
+        var unwrappedExpectedType = expectedType is TsNullableType nullable
+            ? nullable.ElementType
+            : expectedType;
+
+        return expression switch
+        {
+            ObjectLiteralExpressionSyntax nested => BindObjectLiteral(nested, unwrappedExpectedType),
+            LambdaExpressionSyntax lambda when unwrappedExpectedType is TsFunctionType fnType =>
+                BindInlineLambda(lambda, fnType),
+            ArrayLiteralExpressionSyntax array => BindArrayLiteral(array, unwrappedExpectedType),
+            _ => BindExpression(expression)
+        };
     }
 
     private BoundLambdaExpression BindInlineLambda(LambdaExpressionSyntax lambda, TsFunctionType? contextualType = null)
@@ -2074,12 +2119,21 @@ public sealed class Binder
         return new BoundBlockStatement(new List<BoundNode> { arrDecl, loop });
     }
 
-    private BoundArrayLiteralExpression BindArrayLiteral(ArrayLiteralExpressionSyntax arrLit)
+    private BoundArrayLiteralExpression BindArrayLiteral(ArrayLiteralExpressionSyntax arrLit, TsType? expectedType = null)
     {
-        var elements = arrLit.Elements.Select(BindExpression).ToList();
-        var elementType = elements.Count > 0 ? elements[0].Type : TsType.Any;
+        var expectedElementType = expectedType switch
+        {
+            TsNullableType nullable => nullable.ElementType,
+            TsArrayType array => array.ElementType,
+            _ => expectedType
+        };
 
-        for (int i = 1; i < elements.Count; i++)
+        var elements = expectedElementType != null
+            ? arrLit.Elements.Select(element => BindExpressionWithExpectedType(element, expectedElementType)).ToList()
+            : arrLit.Elements.Select(BindExpression).ToList();
+        var elementType = expectedElementType ?? (elements.Count > 0 ? elements[0].Type : TsType.Any);
+
+        for (int i = expectedElementType != null ? 0 : 1; i < elements.Count; i++)
         {
             if (!TsType.IsCompatibleWith(elements[i].Type, elementType))
             {

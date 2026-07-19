@@ -202,7 +202,7 @@ public abstract class TsType : IEquatable<TsType>
 
     private static bool IsFunctionAssignable(TsFunctionType source, TsFunctionType target)
     {
-        if (source.Parameters.Count != target.Parameters.Count)
+        if (source.Parameters.Count > target.Parameters.Count)
             return false;
 
         for (int i = 0; i < source.Parameters.Count; i++)
@@ -530,7 +530,7 @@ public sealed class TsFunctionType : TsType
         if (Equals(other)) return true;
         if (other is not TsFunctionType target)
             return false;
-        if (Parameters.Count != target.Parameters.Count)
+        if (Parameters.Count > target.Parameters.Count)
             return false;
 
         for (int i = 0; i < Parameters.Count; i++)

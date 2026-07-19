@@ -22,10 +22,13 @@ public sealed class Parser
 
         while (!IsAtEnd())
         {
+            int loopStart = _position;
             var decl = ParseTopLevelDeclaration();
             if (decl != null)
                 members.Add(decl);
             else
+                members.Add(ParseStatement());
+            if (_position == loopStart)
                 Advance();
         }
 
@@ -57,7 +60,8 @@ public sealed class Parser
             return decl;
         }
 
-        return ParseDeclaration();
+        var declaration = ParseDeclaration();
+        return declaration ?? ParseStatement();
     }
 
     private SyntaxNode? ParseDeclaration()
@@ -319,6 +323,7 @@ public sealed class Parser
     private SyntaxNode ParseMethodOrProperty(List<SyntaxToken> mods)
     {
         var name = ExpectMemberName();
+        var genericParams = ParseGenericParameters();
 
         if (Check(TokenKind.OpenParen))
         {
@@ -329,7 +334,17 @@ public sealed class Parser
 
             bool isAsync = mods.Any(m => m.Token.Kind == TokenKind.AsyncKeyword);
             var range = new SourceRange(Peek(-1).Location, Peek().Location);
-            return new MethodDeclarationSyntax(name, parameters, returnType, body, isAsync, range);
+            var method = new MethodDeclarationSyntax(name, parameters, returnType, body, isAsync, range);
+            method.GenericParameters.AddRange(genericParams);
+            return method;
+        }
+
+        if (genericParams.Count > 0)
+        {
+            Diagnostics.Add(new Diagnostic(
+                DiagnosticSeverity.Error,
+                "Generic parameters are only valid on methods",
+                Peek(-1).Location));
         }
 
         bool fieldOptional = false;
@@ -477,7 +492,13 @@ public sealed class Parser
 
         if (Check(TokenKind.OpenParen))
         {
-            return ParseFunctionType();
+            if (IsFunctionTypeAhead())
+                return ParseFunctionType();
+
+            Advance();
+            var innerType = ParseType();
+            Expect(TokenKind.CloseParen);
+            return innerType;
         }
 
         if (Check(TokenKind.OpenBracket))
@@ -574,6 +595,32 @@ public sealed class Parser
         var returnType = ParseType();
         return new FunctionTypeSyntax(parameters, returnType,
             new SourceRange(open.Location, Peek(-1).Location));
+    }
+
+    private bool IsFunctionTypeAhead()
+    {
+        if (!Check(TokenKind.OpenParen))
+            return false;
+
+        var depth = 0;
+        for (var i = _position; i < _tokens.Count; i++)
+        {
+            var kind = _tokens[i].Kind;
+            if (kind == TokenKind.OpenParen)
+            {
+                depth++;
+                continue;
+            }
+
+            if (kind == TokenKind.CloseParen)
+            {
+                depth--;
+                if (depth == 0)
+                    return i + 1 < _tokens.Count && _tokens[i + 1].Kind == TokenKind.FatArrow;
+            }
+        }
+
+        return false;
     }
 
     private static PrimitiveTypeSyntax AnyType(SourceLocation location) =>
