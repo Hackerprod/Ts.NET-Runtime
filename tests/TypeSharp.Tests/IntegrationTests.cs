@@ -80,6 +80,66 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task HostNumber_CanBeComparedWithModuleConstant()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_host_compare_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "main.ts");
+        try
+        {
+            File.WriteAllText(file, """
+                const expected = 4006;
+
+                function matches(): boolean {
+                    return messageType() == expected;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .RegisterHostFunction("gc", "messageType", _ => TsValue.FromInt32(4006))
+                .BuildAsync();
+
+            var result = runtime.Invoke("matches");
+            Assert.IsType<TsBoolValue>(result);
+            Assert.True(((TsBoolValue)result!).Value);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task HostNumber_CanBeComparedWithNumericLiteral()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_host_literal_compare_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "main.ts");
+        try
+        {
+            File.WriteAllText(file, """
+                function matches(): boolean {
+                    return messageType() == 4006;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .RegisterHostFunction("gc", "messageType", _ => TsValue.FromInt32(4006))
+                .BuildAsync();
+
+            var result = runtime.Invoke("matches");
+            Assert.IsType<TsBoolValue>(result);
+            Assert.True(((TsBoolValue)result!).Value);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task HotReload_PublishesValidatedCandidateAndRollsBack()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_reload_" + Guid.NewGuid().ToString("N"));
