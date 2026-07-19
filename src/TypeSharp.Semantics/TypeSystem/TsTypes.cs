@@ -507,6 +507,19 @@ public sealed class TsMapType : TsType
     }
 }
 
+public sealed class TsSetType : TsType
+{
+    public TsType ElementType { get; }
+    public override string Name => $"Set<{ElementType}>";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+
+    public TsSetType(TsType elementType)
+    {
+        ElementType = elementType;
+    }
+}
+
 public sealed class TsNullableType : TsType
 {
     public TsType ElementType { get; }

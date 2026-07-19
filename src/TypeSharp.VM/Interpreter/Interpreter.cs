@@ -312,6 +312,8 @@ public sealed class Interpreter
                         frame.Push(TsValue.FromInt32(arrVal.Value.Count));
                     else if (obj is TsMapValue mapVal && fieldName == "size")
                         frame.Push(TsValue.FromFloat64(mapVal.Value.Count));
+                    else if (obj is TsSetValue setVal && fieldName == "size")
+                        frame.Push(TsValue.FromFloat64(setVal.Value.Count));
                     else if (obj is TsUint8ArrayValue bytesVal && fieldName == "length")
                         frame.Push(TsValue.FromFloat64(bytesVal.Length));
                     else if (obj is TsStringValue strVal && fieldName == "length")
@@ -1291,6 +1293,17 @@ public sealed class Interpreter
                         break;
                     }
 
+                    if (typeName == "Set")
+                    {
+                        var args = new TsValue[argCount];
+                        for (int i = argCount - 1; i >= 0; i--)
+                            args[i] = frame.Pop();
+                        var set = ctx.Heap.AllocateSet();
+                        PopulateSet(set, args);
+                        frame.Push(new TsSetValue(set));
+                        break;
+                    }
+
                     var obj = ctx.Heap.AllocateObject(typeName);
 
                     // JS-style error objects: constructor argument becomes the
@@ -2011,6 +2024,18 @@ public sealed class Interpreter
         }
     }
 
+    private static void PopulateSet(TsSet set, TsValue[] args)
+    {
+        if (args.Length == 0 || args[0] is TsNull or TsVoid)
+            return;
+
+        if (args[0] is not TsArrayValue entries)
+            throw new InvalidOperationException("Set constructor expects an array of values");
+
+        for (int i = 0; i < entries.Value.Count; i++)
+            set.Add(entries.Value.Get(i));
+    }
+
     internal static byte ToByte(TsValue value) => value switch
     {
         TsInt32Value v => unchecked((byte)v.Value),
@@ -2101,6 +2126,7 @@ public sealed class Interpreter
         {
             TsObjectValue obj => $"{obj.Value.TypeName}::{calleeName}",
             TsMapValue => $"Map::{calleeName}",
+            TsSetValue => $"Set::{calleeName}",
             _ => calleeName
         };
     }
@@ -2115,6 +2141,7 @@ public sealed class Interpreter
             TsObjectValue obj => $"object:{obj.Value.TypeName}",
             TsArrayValue => "Array",
             TsMapValue => "Map",
+            TsSetValue => "Set",
             TsUint8ArrayValue => "Uint8Array",
             TsFunctionValue fn => $"function:{fn.FunctionName}",
             TsStringValue => "string",

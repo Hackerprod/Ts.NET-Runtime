@@ -63,8 +63,10 @@ public enum SyntaxNodeType
 
     // Types
     PrimitiveType,
+    LiteralType,
     NamedType,
     ArrayType,
+    IndexedAccessType,
     MapType,
     PromiseType,
     NullableType,
@@ -894,6 +896,19 @@ public sealed class PrimitiveTypeSyntax : TypeSyntax
     public override IEnumerable<SyntaxNode> GetChildren() => Enumerable.Empty<SyntaxNode>();
 }
 
+public sealed class LiteralTypeSyntax : TypeSyntax
+{
+    public Token LiteralToken { get; }
+
+    public LiteralTypeSyntax(Token literalToken, SourceRange range)
+        : base(SyntaxNodeType.LiteralType, range)
+    {
+        LiteralToken = literalToken;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => Enumerable.Empty<SyntaxNode>();
+}
+
 public sealed class NamedTypeSyntax : TypeSyntax
 {
     public string Name { get; }
@@ -1061,6 +1076,21 @@ public sealed class ArrayTypeSyntax : TypeSyntax
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => new[] { ElementType };
+}
+
+public sealed class IndexedAccessTypeSyntax : TypeSyntax
+{
+    public TypeSyntax ObjectType { get; }
+    public TypeSyntax IndexType { get; }
+
+    public IndexedAccessTypeSyntax(TypeSyntax objectType, TypeSyntax indexType, SourceRange range)
+        : base(SyntaxNodeType.IndexedAccessType, range)
+    {
+        ObjectType = objectType;
+        IndexType = indexType;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { ObjectType, IndexType };
 }
 
 public sealed class MapTypeSyntax : TypeSyntax

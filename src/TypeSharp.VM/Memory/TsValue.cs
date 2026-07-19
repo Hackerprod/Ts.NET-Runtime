@@ -32,7 +32,7 @@ public abstract class TsValue
 
 public enum TsValueType
 {
-    Void, Null, Bool, Int32, Int64, UInt64, BigInt, Float32, Float64, Decimal, String, Object, Array, Map, Uint8Array, Promise
+    Void, Null, Bool, Int32, Int64, UInt64, BigInt, Float32, Float64, Decimal, String, Object, Array, Map, Set, Uint8Array, Promise
 }
 
 public sealed class TsVoid : TsValue
@@ -207,6 +207,14 @@ public sealed class TsMapValue : TsValue
     public TsMapValue(TsMap value) => Value = value;
 }
 
+public sealed class TsSetValue : TsValue
+{
+    public TsSet Value { get; }
+    public override TsValueType ValueType => TsValueType.Set;
+    public override object? RawValue => Value;
+    public TsSetValue(TsSet value) => Value = value;
+}
+
 public sealed class TsPromiseValue : TsValue
 {
     private readonly Task<TsValue?> _task;
@@ -344,6 +352,21 @@ public sealed class TsMap
     public bool Contains(TsValue key) => _entries.ContainsKey(key);
 
     public bool Remove(TsValue key) => _entries.Remove(key);
+
+    public void Clear() => _entries.Clear();
+}
+
+public sealed class TsSet
+{
+    private readonly HashSet<TsValue> _entries = new(TsValueMapKeyComparer.Instance);
+
+    public int Count => _entries.Count;
+
+    public bool Add(TsValue value) => _entries.Add(value);
+
+    public bool Contains(TsValue value) => _entries.Contains(value);
+
+    public bool Remove(TsValue value) => _entries.Remove(value);
 
     public void Clear() => _entries.Clear();
 }
@@ -535,6 +558,13 @@ public sealed class TsHeap
         Interlocked.Add(ref _logicalBytes, 64);
         Interlocked.Increment(ref _mapsCreated);
         return new TsMap();
+    }
+
+    public TsSet AllocateSet()
+    {
+        Interlocked.Add(ref _logicalBytes, 64);
+        Interlocked.Increment(ref _mapsCreated);
+        return new TsSet();
     }
 
     public bool IsOverLimit() => Interlocked.Read(ref _logicalBytes) > _maxBytes;

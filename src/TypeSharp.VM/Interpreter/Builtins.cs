@@ -157,6 +157,35 @@ public static class Builtins
                 return TsValue.Null;
             },
 
+            // Set instance members (receiver = args[0]).
+            ["Set::add"] = args =>
+            {
+                var set = Set(args[0]);
+                if (args.Length < 2)
+                    throw new InvalidOperationException("Set.add requires a value argument");
+                set.Add(args[1]);
+                return args[0];
+            },
+            ["Set::has"] = args =>
+            {
+                var set = Set(args[0]);
+                if (args.Length < 2)
+                    throw new InvalidOperationException("Set.has requires a value argument");
+                return Bool(set.Contains(args[1]));
+            },
+            ["Set::delete"] = args =>
+            {
+                var set = Set(args[0]);
+                if (args.Length < 2)
+                    throw new InvalidOperationException("Set.delete requires a value argument");
+                return Bool(set.Remove(args[1]));
+            },
+            ["Set::clear"] = args =>
+            {
+                Set(args[0]).Clear();
+                return TsValue.Null;
+            },
+
             // ── Global functions ──
             ["parseInt"] = args =>
             {
@@ -377,6 +406,10 @@ public static class Builtins
     private static TsMap Map(TsValue v) => v is TsMapValue map
         ? map.Value
         : throw new InvalidOperationException("Receiver is not a Map");
+
+    private static TsSet Set(TsValue v) => v is TsSetValue set
+        ? set.Value
+        : throw new InvalidOperationException("Receiver is not a Set");
 
     private static TsValue Num(double value) => TsValue.FromFloat64(value);
 

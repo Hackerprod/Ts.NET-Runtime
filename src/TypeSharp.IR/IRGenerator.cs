@@ -1457,6 +1457,7 @@ public sealed class IRGenerator
             TsNullableType nullable => GetClassName(nullable.ElementType),
             TsGenericType generic => GetClassName(generic.Definition),
             TsMapType => "Map",
+            TsSetType => "Set",
             _ => "Unknown"
         };
     }

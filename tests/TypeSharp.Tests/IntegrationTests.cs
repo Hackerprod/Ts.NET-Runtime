@@ -718,6 +718,89 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task Set_SupportsTypedMembershipMutationAndSize()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_set_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                function main(): number {
+                    const seen = new Set<string>();
+                    seen.add("10").add("20").add("10");
+
+                    const beforeDelete = seen.size;
+                    const hadTen = seen.has("10");
+                    const hadMissing = seen.has("missing");
+                    const deleted = seen.delete("10");
+                    const stillHasTen = seen.has("10");
+
+                    seen.clear();
+
+                    return beforeDelete + seen.size +
+                        (hadTen ? 10 : 0) +
+                        (hadMissing ? 100 : 0) +
+                        (deleted ? 20 : 0) +
+                        (stillHasTen ? 1000 : 0);
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(32, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConditionalNull_InfersNullableForOptionalChainingAndCoalescing()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_nullable_conditional_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                interface MatchInfo {
+                    startTime: number;
+                    heroId: number;
+                }
+
+                function pick(hasValue: boolean): MatchInfo | null {
+                    const matches: MatchInfo[] = [{ startTime: 42, heroId: 11 }];
+                    const latest = hasValue ? matches[0] : null;
+                    return latest;
+                }
+
+                function read(hasValue: boolean): number {
+                    const latest = pick(hasValue);
+                    return (latest?.startTime ?? 7) + (latest?.heroId ?? 3);
+                }
+
+                function main(): number {
+                    return read(true) + read(false);
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(63, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task StringConcatenation_AllowsPrimitiveOperands()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_string_concat_" + Guid.NewGuid().ToString("N"));

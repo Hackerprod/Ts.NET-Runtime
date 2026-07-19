@@ -1156,10 +1156,10 @@ public sealed class Binder
 
         if (varDecl.Initializer != null)
         {
-            if (varDecl.Initializer is ObjectLiteralExpressionSyntax objLit && varDecl.TypeAnnotation != null)
+            if (varDecl.TypeAnnotation != null)
             {
                 var expectedType = ResolveType(varDecl.TypeAnnotation);
-                initializer = BindObjectLiteral(objLit, expectedType);
+                initializer = BindExpressionWithExpectedType(varDecl.Initializer, expectedType);
             }
             else
             {
@@ -2078,6 +2078,10 @@ public sealed class Binder
         {
             memberSym = BindMapMember(mapType, member.MemberName, member.Range);
         }
+        else if (objType is TsSetType setType)
+        {
+            memberSym = BindSetMember(setType, member.MemberName, member.Range);
+        }
         else if (objType is TsTupleType tupleType)
         {
             memberSym = BindArrayMember(new TsArrayType(tupleType.UnifiedElementType()), member.MemberName, member.Range);
@@ -2303,11 +2307,31 @@ public sealed class Binder
         var whenTrue = BindExpression(cond.WhenTrue);
         var whenFalse = BindExpression(cond.WhenFalse);
 
-        TsType resultType = whenTrue.Type.IsAssignableTo(whenFalse.Type) ? whenTrue.Type :
-                           whenFalse.Type.IsAssignableTo(whenTrue.Type) ? whenFalse.Type :
-                           whenTrue.Type;
+        TsType resultType = InferConditionalResultType(whenTrue.Type, whenFalse.Type);
 
         return new BoundConditionalExpression(condition, whenTrue, whenFalse, resultType);
+    }
+
+    private static TsType InferConditionalResultType(TsType whenTrue, TsType whenFalse)
+    {
+        if (whenTrue is TsAnyType || whenFalse is TsAnyType)
+            return TsType.Any;
+
+        if (whenTrue is TsNullType)
+            return whenFalse is TsNullableType ? whenFalse : new TsNullableType(whenFalse);
+
+        if (whenFalse is TsNullType)
+            return whenTrue is TsNullableType ? whenTrue : new TsNullableType(whenTrue);
+
+        if (whenTrue is TsNullableType nullableTrue && whenFalse.IsAssignableTo(nullableTrue.ElementType))
+            return nullableTrue;
+
+        if (whenFalse is TsNullableType nullableFalse && whenTrue.IsAssignableTo(nullableFalse.ElementType))
+            return nullableFalse;
+
+        return whenTrue.IsAssignableTo(whenFalse) ? whenTrue :
+               whenFalse.IsAssignableTo(whenTrue) ? whenFalse :
+               whenTrue;
     }
 
     private BoundNode BindNew(NewExpressionSyntax newExpr)
@@ -2677,8 +2701,10 @@ public sealed class Binder
         return typeSyntax switch
         {
             PrimitiveTypeSyntax prim => TsType.FromToken(prim.TypeKeyword.Kind),
+            LiteralTypeSyntax => TsType.Any,
             NamedTypeSyntax named => ResolveNamedType(named),
             ArrayTypeSyntax arr => new TsArrayType(ResolveType(arr.ElementType), arr.IsReadonly),
+            IndexedAccessTypeSyntax => TsType.Any,
             MapTypeSyntax map => new TsMapType(ResolveType(map.KeyType), ResolveType(map.ValueType)),
             PromiseTypeSyntax promise => new TsPromiseType(ResolveType(promise.ElementType)),
             NullableTypeSyntax nullable => new TsNullableType(ResolveType(nullable.ElementType)),
@@ -2785,6 +2811,37 @@ public sealed class Binder
         }
     }
 
+    private Symbol? BindSetMember(TsSetType setType, string name, SourceRange range)
+    {
+        switch (name)
+        {
+            case "size":
+                return new PropertySymbol("size", TsType.Number, range) { IsReadonly = true };
+            case "add":
+            {
+                var add = new MethodSymbol("add", setType, range) { DeclaringClassName = "Set" };
+                add.Parameters.Add(new ParameterSymbol("value", setType.ElementType, range));
+                return add;
+            }
+            case "has":
+            {
+                var has = new MethodSymbol("has", TsType.Bool, range) { DeclaringClassName = "Set" };
+                has.Parameters.Add(new ParameterSymbol("value", setType.ElementType, range));
+                return has;
+            }
+            case "delete":
+            {
+                var delete = new MethodSymbol("delete", TsType.Bool, range) { DeclaringClassName = "Set" };
+                delete.Parameters.Add(new ParameterSymbol("value", setType.ElementType, range));
+                return delete;
+            }
+            case "clear":
+                return new MethodSymbol("clear", TsType.Void, range) { DeclaringClassName = "Set" };
+            default:
+                return null;
+        }
+    }
+
     private TsType ResolveNamedType(NamedTypeSyntax named)
     {
         if (named.Name is "null" or "undefined")
@@ -2819,6 +2876,12 @@ public sealed class Binder
             return new TsMapType(
                 named.TypeArguments.Count > 0 ? ResolveType(named.TypeArguments[0]) : TsType.Any,
                 named.TypeArguments.Count > 1 ? ResolveType(named.TypeArguments[1]) : TsType.Any);
+        }
+
+        if (named.Name == "Set")
+        {
+            return new TsSetType(
+                named.TypeArguments.Count > 0 ? ResolveType(named.TypeArguments[0]) : TsType.Any);
         }
 
         if (named.Name is "Uint8Array" or "Uint8ClampedArray")

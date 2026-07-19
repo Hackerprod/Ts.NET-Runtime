@@ -485,14 +485,28 @@ public sealed class Parser
 
         var type = ParsePrimaryType();
 
-        while (Check(TokenKind.OpenBracket) && Peek(1).Kind == TokenKind.CloseBracket)
+        while (Check(TokenKind.OpenBracket))
         {
-            Advance();
-            Advance();
-            type = new ArrayTypeSyntax(
-                type,
-                new SourceRange(isReadonlyArray ? readonlyLocation : type.Range.Start, Peek(-1).Location),
-                isReadonlyArray);
+            if (Peek(1).Kind == TokenKind.CloseBracket)
+            {
+                Advance();
+                Advance();
+                type = new ArrayTypeSyntax(
+                    type,
+                    new SourceRange(isReadonlyArray ? readonlyLocation : type.Range.Start, Peek(-1).Location),
+                    isReadonlyArray);
+            }
+            else
+            {
+                Advance();
+                var indexType = ParseType();
+                Expect(TokenKind.CloseBracket);
+                type = new IndexedAccessTypeSyntax(
+                    type,
+                    indexType,
+                    new SourceRange(isReadonlyArray ? readonlyLocation : type.Range.Start, Peek(-1).Location));
+            }
+
             isReadonlyArray = false;
         }
 
@@ -539,6 +553,16 @@ public sealed class Parser
         {
             var nullTok = Advance();
             return new NamedTypeSyntax("null", nullTok.Location);
+        }
+
+        if (Check(TokenKind.StringLiteral) ||
+            Check(TokenKind.IntegerLiteral) ||
+            Check(TokenKind.FloatLiteral) ||
+            Check(TokenKind.TrueLiteral) ||
+            Check(TokenKind.FalseLiteral))
+        {
+            var literal = Advance();
+            return new LiteralTypeSyntax(literal, new SourceRange(literal.Location, literal.Location));
         }
 
         if (Check(TokenKind.ConstKeyword))
