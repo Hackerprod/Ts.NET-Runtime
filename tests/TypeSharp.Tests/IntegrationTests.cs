@@ -47,6 +47,44 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task ExplicitGenericCallArgumentsDriveReturnType()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_generic_call_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "generic-call.ts");
+        await File.WriteAllTextAsync(file, """
+            export function identity<T>(value: T): T {
+                return value;
+            }
+
+            class Decoder {
+                decode<T>(value: T): T {
+                    return value;
+                }
+            }
+
+            export function scenario(): number {
+                const decoder = new Decoder();
+                return identity<number>(20) + decoder.decode<number>(22);
+            }
+            """);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("generic-call", "scenario");
+            Assert.Equal(42, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
     public async Task EndToEndGreet()
     {
         var builder = new TypeSharpRuntimeBuilder();

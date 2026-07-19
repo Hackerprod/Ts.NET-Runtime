@@ -349,9 +349,11 @@ public sealed class Binder
 
                         case MethodDeclarationSyntax method:
                             PushTypeParameters(method.GenericParameters);
-                            classType.Methods[method.Name] = new TsMethod(method.Name,
+                            var classMethod = new TsMethod(method.Name,
                                 ResolveType(method.ReturnType) ?? TsType.Void,
                                 method.Parameters.Select(CreateTypeParameter).ToList());
+                            classMethod.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+                            classType.Methods[method.Name] = classMethod;
                             PopTypeParameters();
                             break;
 
@@ -378,9 +380,11 @@ public sealed class Binder
                     else if (m is MethodDeclarationSyntax method)
                     {
                         PushTypeParameters(method.GenericParameters);
-                        ifaceType.Methods[method.Name] = new TsMethod(method.Name,
+                        var interfaceMethod = new TsMethod(method.Name,
                             ResolveType(method.ReturnType) ?? TsType.Void,
                             method.Parameters.Select(CreateTypeParameter).ToList());
+                        interfaceMethod.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+                        ifaceType.Methods[method.Name] = interfaceMethod;
                         PopTypeParameters();
                     }
                 }
@@ -458,6 +462,7 @@ public sealed class Binder
             IsAsync = lambda.IsAsync,
             IsExported = exported
         };
+        sym.TypeParameters.AddRange(lambda.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
         for (int i = 0; i < lambda.Parameters.Count; i++)
         {
             var parameter = lambda.Parameters[i];
@@ -525,6 +530,7 @@ public sealed class Binder
             IsAsync = func.IsAsync,
             IsExported = func.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword)
         };
+        sym.TypeParameters.AddRange(func.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
         foreach (var parameter in func.Parameters)
             sym.Parameters.Add(CreateParameterSymbol(parameter));
         PopTypeParameters();
@@ -779,6 +785,7 @@ public sealed class Binder
                 {
                     IsAsync = method.IsAsync
                 };
+                methodSym.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
 
                 foreach (var p in method.Parameters)
                 {
@@ -791,6 +798,7 @@ public sealed class Binder
                 {
                     IsAsync = method.IsAsync
                 };
+                tsMethod.TypeParameters.AddRange(methodSym.TypeParameters.Select(p => new TsTypeParameter(p.Name)));
                 ValidateOverride(classType, methodSym, method.Range.Start);
                 classType.Methods[method.Name] = tsMethod;
 
@@ -908,6 +916,7 @@ public sealed class Binder
                 var returnType = ResolveType(method.ReturnType) ?? TsType.Void;
                 var tsMethod = new TsMethod(method.Name, returnType,
                     method.Parameters.Select(CreateTypeParameter).ToList());
+                tsMethod.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
                 ifaceType.Methods[method.Name] = tsMethod;
                 PopTypeParameters();
             }
@@ -1042,6 +1051,7 @@ public sealed class Binder
                 IsCaptured = parameter.IsCaptured
             });
         }
+        copy.TypeParameters.AddRange(source.TypeParameters.Select(p => new TsTypeParameter(p.Name)));
         return copy;
     }
 
@@ -1806,6 +1816,7 @@ public sealed class Binder
 
         TsType returnType = TsType.Void;
         List<CallParameter>? expectedParams = null;
+        IReadOnlyList<TsTypeParameter> genericParameters = Array.Empty<TsTypeParameter>();
 
         if (callee is BoundVariableExpression { Symbol: ClassSymbol { Name: "Array" } })
         {
@@ -1816,6 +1827,7 @@ public sealed class Binder
         if (callee is BoundVariableExpression varExpr && varExpr.Symbol is FunctionSymbol funcSym)
         {
             returnType = funcSym.Type;
+            genericParameters = funcSym.TypeParameters;
             expectedParams = funcSym.HasDynamicSignature
                 ? null
                 : funcSym.Parameters.Select(ToCallParameter).ToList();
@@ -1828,6 +1840,7 @@ public sealed class Binder
         else if (callee is BoundMemberAccessExpression memberExpr && memberExpr.Member is MethodSymbol methodSym)
         {
             returnType = methodSym.Type;
+            genericParameters = methodSym.TypeParameters;
             expectedParams = methodSym.Parameters.Count > 0
                 ? methodSym.Parameters.Select(ToCallParameter).ToList()
                 : null;
@@ -1841,6 +1854,7 @@ public sealed class Binder
         }
 
         var genericArguments = new Dictionary<string, TsType>(StringComparer.Ordinal);
+        ApplyExplicitGenericArguments(call, genericParameters, genericArguments);
         var boundArgs = BindCallArguments(call.Arguments, expectedParams, genericArguments);
         if (expectedParams != null)
         {
@@ -1851,6 +1865,32 @@ public sealed class Binder
         }
 
         return new BoundCallExpression(callee, boundArgs, TsType.Substitute(returnType, genericArguments));
+    }
+
+    private void ApplyExplicitGenericArguments(
+        CallExpressionSyntax call,
+        IReadOnlyList<TsTypeParameter> genericParameters,
+        Dictionary<string, TsType> genericArguments)
+    {
+        if (call.TypeArguments.Count == 0)
+            return;
+
+        if (genericParameters.Count == 0)
+        {
+            _diagnostics.Error("Type arguments can only be used on generic functions or methods", call.Range.Start);
+            return;
+        }
+
+        if (call.TypeArguments.Count != genericParameters.Count)
+        {
+            _diagnostics.Error(
+                $"Generic call expected {genericParameters.Count} type argument(s), got {call.TypeArguments.Count}",
+                call.Range.Start);
+        }
+
+        int count = Math.Min(call.TypeArguments.Count, genericParameters.Count);
+        for (int i = 0; i < count; i++)
+            genericArguments[genericParameters[i].Name] = ResolveType(call.TypeArguments[i]);
     }
 
     private List<BoundNode> BindCallArguments(
@@ -2180,6 +2220,7 @@ public sealed class Binder
             DeclaringClassName = declaringClass,
             IsAsync = method.IsAsync
         };
+        sym.TypeParameters.AddRange(method.TypeParameters.Select(p => new TsTypeParameter(p.Name)));
         foreach (var p in method.Parameters)
         {
             sym.Parameters.Add(new ParameterSymbol(p.Name, TsType.Substitute(p.Type, genericMap), range)

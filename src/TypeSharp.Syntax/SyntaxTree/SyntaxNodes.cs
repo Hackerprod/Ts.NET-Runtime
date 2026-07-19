@@ -204,18 +204,25 @@ public sealed class UnaryExpressionSyntax : ExpressionSyntax
 public sealed class CallExpressionSyntax : ExpressionSyntax
 {
     public ExpressionSyntax Callee { get; }
+    public List<TypeSyntax> TypeArguments { get; }
     public List<ExpressionSyntax> Arguments { get; }
 
-    public CallExpressionSyntax(ExpressionSyntax callee, List<ExpressionSyntax> arguments, SourceRange range)
+    public CallExpressionSyntax(
+        ExpressionSyntax callee,
+        List<TypeSyntax> typeArguments,
+        List<ExpressionSyntax> arguments,
+        SourceRange range)
         : base(SyntaxNodeType.CallExpression, range)
     {
         Callee = callee;
+        TypeArguments = typeArguments;
         Arguments = arguments;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
     {
         yield return Callee;
+        foreach (var typeArg in TypeArguments) yield return typeArg;
         foreach (var arg in Arguments) yield return arg;
     }
 }

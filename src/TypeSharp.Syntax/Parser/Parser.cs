@@ -1200,12 +1200,20 @@ public sealed class Parser
 
         while (true)
         {
-            if (Check(TokenKind.OpenParen))
+            var typeArguments = TryParseCallTypeArguments();
+            if (typeArguments != null)
+            {
+                Expect(TokenKind.OpenParen);
+                var args = ParseArguments();
+                Expect(TokenKind.CloseParen);
+                expr = new CallExpressionSyntax(expr, typeArguments, args, new SourceRange(expr.Range.Start, Peek(-1).Location));
+            }
+            else if (Check(TokenKind.OpenParen))
             {
                 Advance();
                 var args = ParseArguments();
                 Expect(TokenKind.CloseParen);
-                expr = new CallExpressionSyntax(expr, args, new SourceRange(expr.Range.Start, Peek(-1).Location));
+                expr = new CallExpressionSyntax(expr, new List<TypeSyntax>(), args, new SourceRange(expr.Range.Start, Peek(-1).Location));
             }
             else if (Check(TokenKind.Dot))
             {
@@ -1257,6 +1265,40 @@ public sealed class Parser
         }
 
         return expr;
+    }
+
+    private List<TypeSyntax>? TryParseCallTypeArguments()
+    {
+        if (!Check(TokenKind.LessThan))
+            return null;
+
+        int savedPosition = _position;
+        int savedDiagnostics = Diagnostics.Count;
+        var typeArguments = new List<TypeSyntax>();
+
+        Advance();
+        while (!Check(TokenKind.GreaterThan) && !IsAtEnd())
+        {
+            int loopStart = _position;
+            typeArguments.Add(ParseType());
+            if (Check(TokenKind.Comma)) Advance();
+            if (_position == loopStart) Advance();
+        }
+
+        if (!Check(TokenKind.GreaterThan))
+        {
+            RestoreTentativeParse(savedPosition, savedDiagnostics);
+            return null;
+        }
+
+        Advance();
+        if (!Check(TokenKind.OpenParen))
+        {
+            RestoreTentativeParse(savedPosition, savedDiagnostics);
+            return null;
+        }
+
+        return typeArguments;
     }
 
     private ExpressionSyntax ParsePrimary()
@@ -1634,6 +1676,13 @@ public sealed class Parser
         var token = Peek();
         if (_position < _tokens.Count) _position++;
         return token;
+    }
+
+    private void RestoreTentativeParse(int position, int diagnosticCount)
+    {
+        _position = position;
+        if (Diagnostics.Count > diagnosticCount)
+            Diagnostics.RemoveRange(diagnosticCount, Diagnostics.Count - diagnosticCount);
     }
 
     private bool IsAtEnd() => _position >= _tokens.Count || Peek().Kind == TokenKind.EOF;

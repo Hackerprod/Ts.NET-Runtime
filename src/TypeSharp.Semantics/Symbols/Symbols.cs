@@ -95,6 +95,7 @@ public sealed class PropertySymbol : Symbol
 public sealed class MethodSymbol : Symbol
 {
     public override SymbolKind Kind => SymbolKind.Method;
+    public List<TypeSystem.TsTypeParameter> TypeParameters { get; } = new();
     public List<ParameterSymbol> Parameters { get; } = new();
     public bool IsAsync { get; set; }
     public bool IsStatic { get; set; }
@@ -111,6 +112,7 @@ public sealed class MethodSymbol : Symbol
 public sealed class FunctionSymbol : Symbol
 {
     public override SymbolKind Kind => SymbolKind.Function;
+    public List<TypeSystem.TsTypeParameter> TypeParameters { get; } = new();
     public List<ParameterSymbol> Parameters { get; } = new();
     public bool IsAsync { get; set; }
     public bool IsExported { get; set; }

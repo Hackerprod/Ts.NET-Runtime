@@ -656,6 +656,7 @@ public sealed class TsMethod
 {
     public string Name { get; }
     public TsType ReturnType { get; }
+    public List<TsTypeParameter> TypeParameters { get; } = new();
     public List<TsParameter> Parameters { get; }
     public bool IsStatic { get; set; }
     public bool IsAsync { get; set; }

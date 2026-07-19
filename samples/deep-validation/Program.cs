@@ -109,6 +109,10 @@ internal static class Program
 
         await RunScriptProbe<int?>(ValidationArea.Semantics, "nullable optional access returns value",
             Script("features", "nullable.ts"), "nullable", "nullableValue", 8);
+        await RunScriptProbe<int>(ValidationArea.Semantics, "explicit generic function call",
+            Script("features", "generic-calls.ts"), "generic-calls", "explicitGenericFunction", 42);
+        await RunScriptProbe<string>(ValidationArea.Semantics, "explicit generic method call",
+            Script("features", "generic-calls.ts"), "generic-calls", "explicitGenericMethod", "runtime");
     }
 
     private static async Task RunNumericTests()
