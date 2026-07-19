@@ -26,12 +26,15 @@ public sealed class IRGenerator
     // must build a closure carrying the current boxes.
     private readonly Dictionary<string, List<string>> _capturesByFunction = new();
     private BoundFunctionDeclaration? _currentDeclaration;
+    private readonly Dictionary<Symbol, BoundNode> _moduleConstantInitializers = new();
 
     public ModuleIR Generate(BoundSourceFile sourceFile)
     {
         var module = new ModuleIR(sourceFile.FileName);
+        _moduleConstantInitializers.Clear();
 
         CollectCaptureInfo(sourceFile);
+        CollectModuleConstants(sourceFile);
 
         foreach (var member in sourceFile.Members)
         {
@@ -50,6 +53,36 @@ public sealed class IRGenerator
         }
 
         return module;
+    }
+
+    private void CollectModuleConstants(BoundSourceFile sourceFile)
+    {
+        foreach (var declaration in sourceFile.Members.OfType<BoundVariableDeclaration>())
+        {
+            if (declaration.Symbol.IsConst
+                && declaration.Initializer != null
+                && IsCompileTimeConstant(declaration.Initializer))
+            {
+                _moduleConstantInitializers[declaration.Symbol] = declaration.Initializer;
+            }
+        }
+    }
+
+    private static bool IsCompileTimeConstant(BoundNode node)
+    {
+        return node switch
+        {
+            BoundLiteralExpression => true,
+            BoundUnaryExpression unary => IsCompileTimeConstant(unary.Operand),
+            BoundBinaryExpression binary => IsCompileTimeConstant(binary.Left) && IsCompileTimeConstant(binary.Right),
+            BoundConditionalExpression conditional =>
+                IsCompileTimeConstant(conditional.Condition)
+                && IsCompileTimeConstant(conditional.WhenTrue)
+                && IsCompileTimeConstant(conditional.WhenFalse),
+            BoundArrayLiteralExpression array => array.Elements.All(IsCompileTimeConstant),
+            BoundObjectLiteralExpression obj => obj.Properties.All(property => IsCompileTimeConstant(property.Value)),
+            _ => false
+        };
     }
 
     private void CollectCaptureInfo(BoundNode node)
@@ -717,6 +750,12 @@ public sealed class IRGenerator
 
     private void GenerateVariableLoad(BoundVariableExpression varExpr)
     {
+        if (_moduleConstantInitializers.TryGetValue(varExpr.Symbol, out var moduleConstant))
+        {
+            GenerateExpression(moduleConstant);
+            return;
+        }
+
         if (IsBoxedSymbol(varExpr.Symbol))
         {
             EmitLoadLocal(GetBoxSlot(varExpr.Symbol.Name));
