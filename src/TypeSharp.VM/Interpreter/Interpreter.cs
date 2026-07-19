@@ -2125,8 +2125,11 @@ public sealed class Interpreter
         return args[0] switch
         {
             TsObjectValue obj => $"{obj.Value.TypeName}::{calleeName}",
+            TsArrayValue => $"Array::{calleeName}",
             TsMapValue => $"Map::{calleeName}",
             TsSetValue => $"Set::{calleeName}",
+            TsUint8ArrayValue => $"Uint8Array::{calleeName}",
+            TsStringValue => $"String::{calleeName}",
             _ => calleeName
         };
     }

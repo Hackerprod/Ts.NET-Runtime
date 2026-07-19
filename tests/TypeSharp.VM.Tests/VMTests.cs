@@ -101,6 +101,78 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void ArrayPush_PreservesObjectElements()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const mapped = [];
+                mapped.push({ accountId: 42 });
+                return mapped.length;
+            }
+        ");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(1, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
+    public void ArrayPush_WorksWhenMappingObjectsInLoop()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const players = [{ accountId: 42 }, { accountId: 77 }];
+                const mapped = [];
+                for (let i = 0; i < players.length; i++) {
+                    mapped.push({ accountId: players[i].accountId });
+                }
+                return mapped.length;
+            }
+        ");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(2, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
+    public void ConstObjectLiteral_PreservesIdentityAndMutation()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const state = { count: 1 };
+                state.count = 7;
+                return state.count;
+            }
+        ");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(7, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
+    public void DynamicStandardReceivers_DispatchToTheirBuiltins()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const bytes = new Uint8Array([1, 2, 3, 4]);
+                const text = ""runtime"";
+                return bytes.slice(1, 3).length + text.slice(0, 2).length;
+            }
+        ");
+
+        Assert.NotNull(result);
+        var value = result switch
+        {
+            TsInt32Value intValue => intValue.Value,
+            TsFloat64Value doubleValue => (int)doubleValue.Value,
+            _ => throw new Xunit.Sdk.XunitException($"Expected a numeric result, got {result.GetType().Name}.")
+        };
+        Assert.Equal(4, value);
+    }
+
+    [Fact]
     public void ExecuteStringConcat()
     {
         var result = Run(@"

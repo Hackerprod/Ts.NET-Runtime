@@ -133,8 +133,6 @@ public sealed class IRGenerator
                 IsCompileTimeConstant(conditional.Condition)
                 && IsCompileTimeConstant(conditional.WhenTrue)
                 && IsCompileTimeConstant(conditional.WhenFalse),
-            BoundArrayLiteralExpression array => array.Elements.All(IsCompileTimeConstant),
-            BoundObjectLiteralExpression obj => obj.Properties.All(property => IsCompileTimeConstant(property.Value)),
             _ => false
         };
     }
