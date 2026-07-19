@@ -41,7 +41,10 @@ public sealed class IRGenerator
 
         var moduleInit = GenerateModuleInitializer(sourceFile);
         if (moduleInit != null)
+        {
             module.AddFunction(moduleInit);
+            DrainLiftedFunctions(module);
+        }
 
         foreach (var member in sourceFile.Members)
         {
@@ -969,21 +972,22 @@ public sealed class IRGenerator
 
     private void GenerateVariableLoad(BoundVariableExpression varExpr)
     {
-        if (varExpr.Symbol is LocalSymbol { ConstantInitializer: BoundNode exportedConstant })
+        if (varExpr.Symbol is LocalSymbol { ConstantInitializer: BoundNode exportedConstant }
+            && IsCompileTimeConstant(exportedConstant))
         {
             GenerateExpression(exportedConstant);
-            return;
-        }
-
-        if (_moduleConstantInitializers.TryGetValue(varExpr.Symbol, out var moduleConstant))
-        {
-            GenerateExpression(moduleConstant);
             return;
         }
 
         if (varExpr.Symbol is LocalSymbol moduleGlobal && IsModuleGlobalSymbol(moduleGlobal))
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadGlobal, 0, 0, GetModuleGlobalKey(moduleGlobal)));
+            return;
+        }
+
+        if (_moduleConstantInitializers.TryGetValue(varExpr.Symbol, out var moduleConstant))
+        {
+            GenerateExpression(moduleConstant);
             return;
         }
 

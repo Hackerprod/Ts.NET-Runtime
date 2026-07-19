@@ -738,6 +738,142 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task ImportedLargeModuleConstants_AreLoadedFromModuleGlobals()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_large_module_constant_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var routeEntries = string.Join(Environment.NewLine, Enumerable.Range(0, 250).Select(i =>
+                $"                    R{i}: {{ requestId: {4000 + i}, responseId: {5000 + i} }} as Route,"));
+
+            var generatedSource = """
+                export interface Route {
+                    readonly requestId: int32;
+                    readonly responseId: int32;
+                }
+
+                export const Routes = {
+                """ + Environment.NewLine + routeEntries + Environment.NewLine + """
+                } as const;
+                """;
+            File.WriteAllText(Path.Combine(dir, "generated.ts"), generatedSource);
+
+            File.WriteAllText(Path.Combine(dir, "framework.ts"), """
+                import { Route } from "./generated";
+
+                export interface HandlerContext {
+                    readonly messageId: int32;
+                    reply(value: int32): void;
+                }
+
+                export type Handler = (ctx: HandlerContext) => boolean;
+
+                interface Registration {
+                    readonly messageId: int32;
+                    readonly handler: Handler;
+                }
+
+                class Router {
+                    handlers: Map<int32, Registration>;
+
+                    constructor() {
+                        this.handlers = new Map<int32, Registration>();
+                    }
+
+                    on(route: Route, handler: Handler): void {
+                        this.handlers.set(route.requestId, {
+                            messageId: route.requestId,
+                            handler
+                        } as Registration);
+                    }
+
+                    dispatch(): boolean {
+                        const current = messageType();
+                        if (!this.handlers.has(current)) {
+                            return false;
+                        }
+
+                        const registration = this.handlers.get(current) as Registration;
+                        return registration.handler({
+                            messageId: current,
+                            reply: value => {
+                                record(value);
+                            }
+                        } as HandlerContext);
+                    }
+                }
+
+                export const gc = new Router();
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "social.ts"), """
+                import { gc } from "./framework";
+                import { Routes } from "./generated";
+
+                export function registerSocial(): void {
+                    const social = new Social();
+                    social.register();
+                }
+
+                export class Social {
+                    register(): void {
+                        gc.on(Routes.R6, ctx => this.reply(ctx, 6));
+                        gc.on(Routes.R7, ctx => this.reply(ctx, 7));
+                        gc.on(Routes.R8, ctx => this.reply(ctx, 8));
+                    }
+
+                    reply(ctx: any, value: int32): boolean {
+                        ctx.reply(value);
+                        return true;
+                    }
+                }
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "main.ts"), """
+                import { gc } from "./framework";
+                import { registerSocial } from "./social";
+
+                registerSocial();
+
+                export function handle(): boolean {
+                    return gc.dispatch();
+                }
+                """);
+
+            var recorded = new List<int>();
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .RegisterHostFunction("host", "messageType", _ => TsValue.FromInt32(4006))
+                .RegisterHostFunction("host", "record", args =>
+                {
+                    recorded.Add(args[0] switch
+                    {
+                        TsInt32Value int32 => int32.Value,
+                        TsInt64Value int64 => (int)int64.Value,
+                        TsFloat64Value number => (int)number.Value,
+                        _ => -1
+                    });
+                    return TsValue.Void;
+                })
+                .BuildAsync();
+
+            var socialModule = runtime.ActiveGeneration!.Modules["social"].Bytecode;
+            var registerFunction = socialModule.Functions.Single(f => f.Name == "Social::register");
+            Assert.True(registerFunction.Instructions.Length < 4096,
+                $"Social::register bytecode should load Routes from module storage instead of inlining it; actual length was {registerFunction.Instructions.Length}.");
+
+            var result = runtime.Invoke("handle");
+            Assert.True(((TsBoolValue)result!).Value);
+            Assert.Equal(new[] { 6 }, recorded);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ReadonlyMembers_AreRejectedOnAssignment()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_readonly_" + Guid.NewGuid().ToString("N"));

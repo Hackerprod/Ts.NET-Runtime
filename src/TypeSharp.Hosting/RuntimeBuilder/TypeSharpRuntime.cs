@@ -354,9 +354,10 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
     private static BytecodeModule CreateLinkedModule(RuntimeGeneration generation)
     {
         var functions = new List<BytecodeFunction>();
+        var duplicateFunctionNames = FindDuplicateFunctionNames(generation.Modules.Values);
         foreach (var module in generation.Modules.Values)
         {
-            var renameMap = BuildPrivateFunctionRenameMap(module);
+            var renameMap = BuildPrivateFunctionRenameMap(module, duplicateFunctionNames);
             foreach (var function in module.Bytecode.Functions)
             {
                 functions.Add(CloneLinkedFunction(function, renameMap));
@@ -366,15 +367,50 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         return new BytecodeModule($"generation-{generation.Id}", functions.ToArray());
     }
 
-    private static Dictionary<string, string> BuildPrivateFunctionRenameMap(TsModule module)
+    private static HashSet<string> FindDuplicateFunctionNames(IEnumerable<TsModule> modules)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var module in modules)
+        {
+            foreach (var function in module.Bytecode.Functions)
+            {
+                counts.TryGetValue(function.Name, out var count);
+                counts[function.Name] = count + 1;
+            }
+        }
+
+        return counts
+            .Where(pair => pair.Value > 1)
+            .Select(pair => pair.Key)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static Dictionary<string, string> BuildPrivateFunctionRenameMap(
+        TsModule module,
+        IReadOnlySet<string> duplicateFunctionNames)
     {
         var prefix = ToLinkSafeName(module.Name);
         return module.Bytecode.Functions
-            .Where(function => function.Name.StartsWith("$lambda_", StringComparison.Ordinal))
+            .Where(function => ShouldRenameLinkedFunction(function.Name, duplicateFunctionNames))
             .ToDictionary(
                 function => function.Name,
                 function => $"$module_{prefix}_{function.Name}",
                 StringComparer.Ordinal);
+    }
+
+    private static bool ShouldRenameLinkedFunction(string functionName, IReadOnlySet<string> duplicateFunctionNames)
+    {
+        if (functionName.StartsWith("$lambda_", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (functionName is "handle" or "tick" or "main")
+        {
+            return false;
+        }
+
+        return duplicateFunctionNames.Contains(functionName);
     }
 
     private static BytecodeFunction CloneLinkedFunction(

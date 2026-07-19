@@ -51,7 +51,16 @@ public sealed class ExecutionContext : IDisposable
     public void CheckMemory()
     {
         if (Heap.IsOverLimit())
-            throw new InvalidOperationException("Memory limit exceeded");
+        {
+            var frame = CallStack.Count > 0 ? CallStack.Peek() : null;
+            var frameDetail = frame == null
+                ? "frame=<none>"
+                : $"frame={frame.Function.Name}, ip={frame.InstructionPointer}, codeBytes={frame.Function.Instructions.Length}, strings={frame.Function.StringConstants.Length}";
+            throw new InvalidOperationException(
+                $"Memory limit exceeded: logicalBytes={Heap.LogicalBytes}, maxBytes={Heap.MaxBytes}, " +
+                $"objects={Heap.ObjectsCreated}, arrays={Heap.ArraysCreated}, maps={Heap.MapsCreated}, " +
+                $"instructions={InstructionCount}, {frameDetail}");
+        }
     }
 
     public void CheckCancellation()

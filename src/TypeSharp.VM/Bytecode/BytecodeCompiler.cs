@@ -429,6 +429,7 @@ public static class BytecodeCompiler
     private static string[] CollectStringConstants(FunctionIR function)
     {
         var strings = new List<string>();
+        var indexes = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var block in function.Blocks)
         {
             foreach (var instr in block.Instructions)
@@ -447,8 +448,14 @@ public static class BytecodeCompiler
                         Opcode.LoadFunc or
                         Opcode.MakeClosure)
                     {
-                        instr.Operand0 = strings.Count;
-                        strings.Add(s);
+                        if (!indexes.TryGetValue(s, out var index))
+                        {
+                            index = strings.Count;
+                            indexes.Add(s, index);
+                            strings.Add(s);
+                        }
+
+                        instr.Operand0 = index;
                     }
                 }
             }
