@@ -701,6 +701,8 @@ public sealed class Parser
             TokenKind.IfKeyword => ParseIfStatement(),
             TokenKind.WhileKeyword => ParseWhileStatement(),
             TokenKind.ForKeyword => ParseForStatement(),
+            TokenKind.BreakKeyword => ParseBreakStatement(),
+            TokenKind.ContinueKeyword => ParseContinueStatement(),
             TokenKind.ThrowKeyword => ParseThrowStatement(),
             TokenKind.TryKeyword => ParseTryStatement(),
             TokenKind.LetKeyword => ParseVariableStatement(false),
@@ -816,6 +818,20 @@ public sealed class Parser
         var body = ToStatement(ParseStatement());
         return new ForStatementSyntax(initializer, condition, iterator, body,
             new SourceRange(forKw.Location, Peek(-1).Location));
+    }
+
+    private BreakStatementSyntax ParseBreakStatement()
+    {
+        var keyword = Advance();
+        if (Check(TokenKind.Semicolon)) Advance();
+        return new BreakStatementSyntax(new SourceRange(keyword.Location, Peek(-1).Location));
+    }
+
+    private ContinueStatementSyntax ParseContinueStatement()
+    {
+        var keyword = Advance();
+        if (Check(TokenKind.Semicolon)) Advance();
+        return new ContinueStatementSyntax(new SourceRange(keyword.Location, Peek(-1).Location));
     }
 
     private ThrowStatementSyntax ParseThrowStatement()
@@ -1537,9 +1553,18 @@ public sealed class Parser
         while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
         {
             int loopStart = _position;
+            var keyStart = Peek().Location;
             var key = ExpectMemberName();
-            Expect(TokenKind.Colon);
-            var value = ParseExpression();
+            ExpressionSyntax value;
+            if (Check(TokenKind.Colon))
+            {
+                Advance();
+                value = ParseExpression();
+            }
+            else
+            {
+                value = new IdentifierExpressionSyntax(key, new SourceRange(keyStart, Peek(-1).Location));
+            }
             var propRange = new SourceRange(Peek(-1).Location, Peek().Location);
             properties.Add(new ObjectPropertySyntax(key, value, propRange));
             if (Check(TokenKind.Comma)) Advance();

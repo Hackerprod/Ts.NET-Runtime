@@ -27,6 +27,9 @@ public sealed class IRGenerator
     private readonly Dictionary<string, List<string>> _capturesByFunction = new();
     private BoundFunctionDeclaration? _currentDeclaration;
     private readonly Dictionary<Symbol, BoundNode> _moduleConstantInitializers = new();
+    private readonly Stack<LoopTargets> _loopTargets = new();
+
+    private readonly record struct LoopTargets(int BreakBlockId, int ContinueBlockId);
 
     public ModuleIR Generate(BoundSourceFile sourceFile)
     {
@@ -180,6 +183,9 @@ public sealed class IRGenerator
                 if (forStmt.Condition != null) CollectCaptureInfo(forStmt.Condition);
                 if (forStmt.Iterator != null) CollectCaptureInfo(forStmt.Iterator);
                 CollectCaptureInfo(forStmt.Body);
+                break;
+            case BoundBreakStatement:
+            case BoundContinueStatement:
                 break;
             case BoundTryStatement tryStmt:
                 CollectCaptureInfo(tryStmt.TryBlock);
@@ -544,6 +550,14 @@ public sealed class IRGenerator
                 GenerateFor(forStmt);
                 break;
 
+            case BoundBreakStatement:
+                GenerateBreak();
+                break;
+
+            case BoundContinueStatement:
+                GenerateContinue();
+                break;
+
             case BoundThrowStatement throwStmt:
                 GenerateThrow(throwStmt);
                 break;
@@ -657,9 +671,17 @@ public sealed class IRGenerator
         EmitBranch(afterBlock.Id);
 
         _currentBlock = bodyBlock;
-        GenerateStatement(whileStmt.Body);
-        if (!_currentBlock.EndsInBranch)
-            EmitBranch(conditionBlock.Id);
+        _loopTargets.Push(new LoopTargets(afterBlock.Id, conditionBlock.Id));
+        try
+        {
+            GenerateStatement(whileStmt.Body);
+            if (!_currentBlock.EndsInBranch)
+                EmitBranch(conditionBlock.Id);
+        }
+        finally
+        {
+            _loopTargets.Pop();
+        }
 
         _currentBlock = afterBlock;
     }
@@ -687,8 +709,17 @@ public sealed class IRGenerator
         EmitBranch(afterBlock.Id);
 
         _currentBlock = bodyBlock;
-        GenerateStatement(forStmt.Body);
-        EmitBranch(iteratorBlock.Id);
+        _loopTargets.Push(new LoopTargets(afterBlock.Id, iteratorBlock.Id));
+        try
+        {
+            GenerateStatement(forStmt.Body);
+            if (!_currentBlock.EndsInBranch)
+                EmitBranch(iteratorBlock.Id);
+        }
+        finally
+        {
+            _loopTargets.Pop();
+        }
 
         _currentBlock = iteratorBlock;
         if (forStmt.Iterator != null)
@@ -696,6 +727,26 @@ public sealed class IRGenerator
         EmitBranch(conditionBlock.Id);
 
         _currentBlock = afterBlock;
+    }
+
+    private void GenerateBreak()
+    {
+        if (_loopTargets.Count == 0)
+        {
+            throw new InvalidOperationException("'break' emitted outside a loop");
+        }
+
+        EmitBranch(_loopTargets.Peek().BreakBlockId);
+    }
+
+    private void GenerateContinue()
+    {
+        if (_loopTargets.Count == 0)
+        {
+            throw new InvalidOperationException("'continue' emitted outside a loop");
+        }
+
+        EmitBranch(_loopTargets.Peek().ContinueBlockId);
     }
 
     private void GenerateThrow(BoundThrowStatement throwStmt)
@@ -880,9 +931,13 @@ public sealed class IRGenerator
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_I64, 0, 0, Convert.ToInt64(lit.Value)));
                 }
-                else if (lit.Type == TsType.UInt64 || lit.Type == TsType.BigInt)
+                else if (lit.Type == TsType.UInt64)
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_U64, 0, 0, Convert.ToUInt64(lit.Value)));
+                }
+                else if (lit.Type == TsType.BigInt)
+                {
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_BigInt, 0, 0, lit.Value?.ToString() ?? "0"));
                 }
                 else if (lit.Type == TsType.Float32)
                 {
@@ -966,6 +1021,12 @@ public sealed class IRGenerator
 
     private void GenerateBinary(BoundBinaryExpression bin)
     {
+        if (bin.Operator == TokenKind.QuestionQuestion)
+        {
+            GenerateNullishCoalescing(bin);
+            return;
+        }
+
         // `&&` and `||` must short-circuit: the right operand may have host
         // side effects that TypeScript semantics require skipping.
         if (bin.Operator is TokenKind.AmpersandAmpersand or TokenKind.PipePipe)
@@ -999,7 +1060,11 @@ public sealed class IRGenerator
         GenerateExpression(bin.Right);
 
         var operandType = bin.Left.Type is TsAnyType ? bin.Right.Type : bin.Left.Type;
-        if (bin.Operator is TokenKind.TripleEquals or TokenKind.StrictNotEquals &&
+        if (bin.Operator == TokenKind.Plus && (bin.Left.Type == TsType.String || bin.Right.Type == TsType.String))
+        {
+            operandType = TsType.String;
+        }
+        else if (bin.Operator is TokenKind.TripleEquals or TokenKind.StrictNotEquals &&
             (bin.Left.Type is TsAnyType || bin.Right.Type is TsAnyType))
         {
             operandType = TsType.Any;
@@ -1018,7 +1083,36 @@ public sealed class IRGenerator
             operandType = Binder.WiderNumeric(bin.Left.Type, bin.Right.Type);
         }
         var opcode = InferBinaryOpcode(operandType, bin.Operator);
+        if (opcode == Opcode.Nop)
+            throw new InvalidOperationException(
+                $"Unsupported binary operator '{bin.Operator}' for operand type '{operandType}'");
         _currentBlock!.Instructions.Add(new Instruction(opcode));
+    }
+
+    private void GenerateNullishCoalescing(BoundBinaryExpression bin)
+    {
+        var func = _currentFunction!;
+        var rightBlock = func.CreateBlock();
+        var keepLeftBlock = func.CreateBlock();
+        var endBlock = func.CreateBlock();
+
+        GenerateExpression(bin.Left);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.NullCheck));
+        EmitBranchTrue(rightBlock.Id);
+        EmitBranch(keepLeftBlock.Id);
+
+        _currentBlock = rightBlock;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // duplicated left
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // original left
+        GenerateExpression(bin.Right);
+        EmitBranch(endBlock.Id);
+
+        _currentBlock = keepLeftBlock;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // duplicated left
+        EmitBranch(endBlock.Id);
+
+        _currentBlock = endBlock;
     }
 
     private void GenerateUnary(BoundUnaryExpression unary)
@@ -1038,7 +1132,10 @@ public sealed class IRGenerator
                               unary.Operand.Type == TsType.Float32 ? Opcode.Neg_F32 :
                               unary.Operand.Type == TsType.Decimal ? Opcode.Neg_Decimal : Opcode.Neg_F64,
             TokenKind.Bang => Opcode.Not_Bool,
-            TokenKind.Tilde => unary.Operand.Type == TsType.Int64 ? Opcode.Not_I64 : Opcode.Not_I32,
+            TokenKind.Tilde => unary.Operand.Type == TsType.Int64 ? Opcode.Not_I64 :
+                               unary.Operand.Type == TsType.UInt64 || unary.Operand.Type == TsType.BigInt
+                                   ? Opcode.Not_U64
+                                   : Opcode.Not_I32,
             TokenKind.Plus => Opcode.Nop,
             _ => Opcode.Nop
         };
@@ -1328,6 +1425,7 @@ public sealed class IRGenerator
             TsClassType cls => cls.Name,
             TsNullableType nullable => GetClassName(nullable.ElementType),
             TsGenericType generic => GetClassName(generic.Definition),
+            TsMapType => "Map",
             _ => "Unknown"
         };
     }
@@ -1469,6 +1567,11 @@ public sealed class IRGenerator
             TokenKind.LessOrEqual => Opcode.CmpLe_U64,
             TokenKind.GreaterThan => Opcode.CmpGt_U64,
             TokenKind.GreaterOrEqual => Opcode.CmpGe_U64,
+            TokenKind.Ampersand => Opcode.And_U64,
+            TokenKind.Pipe => Opcode.Or_U64,
+            TokenKind.Caret => Opcode.Xor_U64,
+            TokenKind.ShiftLeft => Opcode.Shl_U64,
+            TokenKind.ShiftRight => Opcode.Shr_U64,
             TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };
@@ -1486,6 +1589,11 @@ public sealed class IRGenerator
             TokenKind.LessOrEqual => Opcode.CmpLe_F64,
             TokenKind.GreaterThan => Opcode.CmpGt_F64,
             TokenKind.GreaterOrEqual => Opcode.CmpGe_F64,
+            TokenKind.Ampersand => Opcode.And_I32,
+            TokenKind.Pipe => Opcode.Or_I32,
+            TokenKind.Caret => Opcode.Xor_I32,
+            TokenKind.ShiftLeft => Opcode.Shl_I32,
+            TokenKind.ShiftRight => Opcode.Shr_I32,
             TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };

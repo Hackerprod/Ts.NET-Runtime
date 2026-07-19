@@ -71,6 +71,7 @@ public static class BytecodeVerifier
                 break;
             }
             case Opcodes.LoadConstString:
+            case Opcodes.LoadConstBigInt:
             case Opcodes.LoadField:
             case Opcodes.StoreField:
             case Opcodes.Call:

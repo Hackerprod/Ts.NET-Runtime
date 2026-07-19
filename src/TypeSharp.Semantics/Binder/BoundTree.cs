@@ -45,6 +45,8 @@ public enum BoundNodeKind
     IfStatement,
     WhileStatement,
     ForStatement,
+    BreakStatement,
+    ContinueStatement,
     BlockStatement,
     VariableDeclaration,
     ThrowStatement,
@@ -366,6 +368,22 @@ public sealed class BoundForStatement : BoundNode
         Condition = condition;
         Iterator = iterator;
         Body = body;
+    }
+}
+
+public sealed class BoundBreakStatement : BoundNode
+{
+    public BoundBreakStatement()
+        : base(BoundNodeKind.BreakStatement, TsType.Void)
+    {
+    }
+}
+
+public sealed class BoundContinueStatement : BoundNode
+{
+    public BoundContinueStatement()
+        : base(BoundNodeKind.ContinueStatement, TsType.Void)
+    {
     }
 }
 

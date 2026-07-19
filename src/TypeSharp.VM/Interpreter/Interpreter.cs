@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using TypeSharp.VM.Bytecode;
 using TypeSharp.VM.Memory;
@@ -244,6 +246,13 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromUInt64(ReadUInt64(bytecode, ref frame.InstructionPointer)));
                     break;
 
+                case Opcodes.LoadConstBigInt: // LOAD_CONST_BIGINT
+                {
+                    int idx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    frame.Push(TsValue.FromBigInt(BigInteger.Parse(strings[idx], CultureInfo.InvariantCulture)));
+                    break;
+                }
+
                 case Opcodes.LoadConstDecimal: // LOAD_CONST_DECIMAL
                 {
                     var decimals = frame.Function.DecimalConstants;
@@ -288,6 +297,8 @@ public sealed class Interpreter
                         frame.Push(objVal.Value.GetField(fieldName));
                     else if (obj is TsArrayValue arrVal && fieldName == "length")
                         frame.Push(TsValue.FromInt32(arrVal.Value.Count));
+                    else if (obj is TsMapValue mapVal && fieldName == "size")
+                        frame.Push(TsValue.FromFloat64(mapVal.Value.Count));
                     else if (obj is TsUint8ArrayValue bytesVal && fieldName == "length")
                         frame.Push(TsValue.FromFloat64(bytesVal.Length));
                     else if (obj is TsStringValue strVal && fieldName == "length")
@@ -426,6 +437,11 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        frame.Push(TsValue.FromBigInt(AsBigInteger(left) + AsBigInteger(right)));
+                        break;
+                    }
                     frame.Push(TsValue.FromUInt64(AsUInt64(left) + AsUInt64(right)));
                     break;
                 }
@@ -433,6 +449,11 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        frame.Push(TsValue.FromBigInt(AsBigInteger(left) - AsBigInteger(right)));
+                        break;
+                    }
                     frame.Push(TsValue.FromUInt64(AsUInt64(left) - AsUInt64(right)));
                     break;
                 }
@@ -440,6 +461,11 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        frame.Push(TsValue.FromBigInt(AsBigInteger(left) * AsBigInteger(right)));
+                        break;
+                    }
                     frame.Push(TsValue.FromUInt64(AsUInt64(left) * AsUInt64(right)));
                     break;
                 }
@@ -447,6 +473,13 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        var divisor = AsBigInteger(right);
+                        if (divisor == BigInteger.Zero) throw new InvalidOperationException("Division by zero");
+                        frame.Push(TsValue.FromBigInt(AsBigInteger(left) / divisor));
+                        break;
+                    }
                     ulong r = AsUInt64(right);
                     if (r == 0) throw new InvalidOperationException("Division by zero");
                     frame.Push(TsValue.FromUInt64(AsUInt64(left) / r));
@@ -456,9 +489,71 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        var divisor = AsBigInteger(right);
+                        if (divisor == BigInteger.Zero) throw new InvalidOperationException("Division by zero");
+                        frame.Push(TsValue.FromBigInt(AsBigInteger(left) % divisor));
+                        break;
+                    }
                     ulong r = AsUInt64(right);
                     if (r == 0) throw new InvalidOperationException("Division by zero");
                     frame.Push(TsValue.FromUInt64(AsUInt64(left) % r));
+                    break;
+                }
+                case Opcodes.AndU64: // AND_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(UsesBigIntSemantics(left, right)
+                        ? TsValue.FromBigInt(AsBigInteger(left) & AsBigInteger(right))
+                        : TsValue.FromUInt64(AsUInt64(left) & AsUInt64(right)));
+                    break;
+                }
+                case Opcodes.OrU64: // OR_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(UsesBigIntSemantics(left, right)
+                        ? TsValue.FromBigInt(AsBigInteger(left) | AsBigInteger(right))
+                        : TsValue.FromUInt64(AsUInt64(left) | AsUInt64(right)));
+                    break;
+                }
+                case Opcodes.XorU64: // XOR_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    frame.Push(UsesBigIntSemantics(left, right)
+                        ? TsValue.FromBigInt(AsBigInteger(left) ^ AsBigInteger(right))
+                        : TsValue.FromUInt64(AsUInt64(left) ^ AsUInt64(right)));
+                    break;
+                }
+                case Opcodes.NotU64: // NOT_U64
+                {
+                    var value = frame.Pop();
+                    frame.Push(value is TsBigIntValue
+                        ? TsValue.FromBigInt(~AsBigInteger(value))
+                        : TsValue.FromUInt64(~AsUInt64(value)));
+                    break;
+                }
+                case Opcodes.ShlU64: // SHL_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    var shift = AsInt32(right);
+                    frame.Push(UsesBigIntSemantics(left, right)
+                        ? TsValue.FromBigInt(AsBigInteger(left) << shift)
+                        : TsValue.FromUInt64(AsUInt64(left) << shift));
+                    break;
+                }
+                case Opcodes.ShrU64: // SHR_U64
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    var shift = AsInt32(right);
+                    frame.Push(UsesBigIntSemantics(left, right)
+                        ? TsValue.FromBigInt(AsBigInteger(left) >> shift)
+                        : TsValue.FromUInt64(AsUInt64(left) >> shift));
                     break;
                 }
 
@@ -671,6 +766,11 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        frame.Push(new TsBoolValue(AsBigInteger(left) == AsBigInteger(right)));
+                        break;
+                    }
                     frame.Push(new TsBoolValue(AsUInt64(left) == AsUInt64(right)));
                     break;
                 }
@@ -678,6 +778,11 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        frame.Push(new TsBoolValue(AsBigInteger(left) != AsBigInteger(right)));
+                        break;
+                    }
                     frame.Push(new TsBoolValue(AsUInt64(left) != AsUInt64(right)));
                     break;
                 }
@@ -685,6 +790,11 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        frame.Push(new TsBoolValue(AsBigInteger(left) < AsBigInteger(right)));
+                        break;
+                    }
                     frame.Push(new TsBoolValue(AsUInt64(left) < AsUInt64(right)));
                     break;
                 }
@@ -692,6 +802,11 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        frame.Push(new TsBoolValue(AsBigInteger(left) <= AsBigInteger(right)));
+                        break;
+                    }
                     frame.Push(new TsBoolValue(AsUInt64(left) <= AsUInt64(right)));
                     break;
                 }
@@ -699,6 +814,11 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        frame.Push(new TsBoolValue(AsBigInteger(left) > AsBigInteger(right)));
+                        break;
+                    }
                     frame.Push(new TsBoolValue(AsUInt64(left) > AsUInt64(right)));
                     break;
                 }
@@ -706,6 +826,11 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
+                    if (UsesBigIntSemantics(left, right))
+                    {
+                        frame.Push(new TsBoolValue(AsBigInteger(left) >= AsBigInteger(right)));
+                        break;
+                    }
                     frame.Push(new TsBoolValue(AsUInt64(left) >= AsUInt64(right)));
                     break;
                 }
@@ -865,8 +990,8 @@ public sealed class Interpreter
                     {
                         TsStringValue => "string",
                         TsBoolValue => "boolean",
-                        TsUInt64Value => "bigint",
-                        TsInt32Value or TsInt64Value or TsFloat32Value or
+                        TsInt64Value or TsUInt64Value or TsBigIntValue => "bigint",
+                        TsInt32Value or TsFloat32Value or
                         TsFloat64Value or TsDecimalValue => "number",
                         TsFunctionValue => "function",
                         TsNull or TsVoid => "undefined",
@@ -1119,7 +1244,8 @@ public sealed class Interpreter
                     }
                     else
                     {
-                        throw new InvalidOperationException($"Function '{calleeName}' not found");
+                        throw new InvalidOperationException(
+                            $"Function '{calleeName}' not found for receiver {DescribeReceiver(callArgs)} argCount={callArgs.Length}");
                     }
                     break;
                 }
@@ -1138,6 +1264,17 @@ public sealed class Interpreter
                         for (int i = argCount - 1; i >= 0; i--)
                             args[i] = frame.Pop();
                         frame.Push(CreateUint8Array(args));
+                        break;
+                    }
+
+                    if (typeName == "Map")
+                    {
+                        var args = new TsValue[argCount];
+                        for (int i = argCount - 1; i >= 0; i--)
+                            args[i] = frame.Pop();
+                        var map = ctx.Heap.AllocateMap();
+                        PopulateMap(map, args);
+                        frame.Push(new TsMapValue(map));
                         break;
                     }
 
@@ -1278,7 +1415,7 @@ public sealed class Interpreter
                 {
                     var right = frame.Pop();
                     var left = frame.Pop();
-                    frame.Push(TsValue.FromString($"{left}{right}"));
+                    frame.Push(TsValue.FromString(ToJsString(left) + ToJsString(right)));
                     break;
                 }
 
@@ -1312,8 +1449,9 @@ public sealed class Interpreter
                         TsUint8ArrayValue => typeName == "Uint8Array" || typeName == "Uint8ClampedArray",
                         TsStringValue => typeName == "string",
                         TsInt32Value => typeName == "int32",
-                        TsInt64Value => typeName == "int64",
-                        TsUInt64Value => typeName == "uint64",
+                        TsInt64Value => typeName == "int64" || typeName == "bigint",
+                        TsUInt64Value => typeName == "uint64" || typeName == "bigint",
+                        TsBigIntValue => typeName == "bigint",
                         TsFloat32Value => typeName == "float32",
                         TsFloat64Value => typeName == "float64",
                         TsDecimalValue => typeName == "decimal",
@@ -1327,7 +1465,7 @@ public sealed class Interpreter
                 case Opcodes.NullCheck: // NULL_CHECK
                 {
                     var val = frame.Peek();
-                    frame.Push(new TsBoolValue(val is TsNull));
+                    frame.Push(new TsBoolValue(val is TsNull or TsVoid));
                     break;
                 }
 
@@ -1529,6 +1667,7 @@ public sealed class Interpreter
         TsInt32Value v => v.Value,
         TsInt64Value v => (int)v.Value,
         TsUInt64Value v => unchecked((int)v.Value),
+        TsBigIntValue v => (int)v.Value,
         TsFloat32Value v => (int)v.Value,
         TsFloat64Value v => (int)v.Value,
         TsDecimalValue v => (int)v.Value,
@@ -1541,6 +1680,7 @@ public sealed class Interpreter
         TsInt32Value v => v.Value,
         TsInt64Value v => v.Value,
         TsUInt64Value v => unchecked((long)v.Value),
+        TsBigIntValue v => (long)v.Value,
         TsFloat32Value v => (long)v.Value,
         TsFloat64Value v => (long)v.Value,
         TsDecimalValue v => (long)v.Value,
@@ -1552,6 +1692,7 @@ public sealed class Interpreter
         TsInt32Value v => unchecked((ulong)v.Value),
         TsInt64Value v => unchecked((ulong)v.Value),
         TsUInt64Value v => v.Value,
+        TsBigIntValue v => (ulong)v.Value,
         TsFloat32Value v => Convert.ToUInt64(v.Value),
         TsFloat64Value v => Convert.ToUInt64(v.Value),
         TsDecimalValue v => Convert.ToUInt64(v.Value),
@@ -1563,6 +1704,7 @@ public sealed class Interpreter
         TsInt32Value v => v.Value,
         TsInt64Value v => v.Value,
         TsUInt64Value v => v.Value,
+        TsBigIntValue v => (float)v.Value,
         TsFloat32Value v => v.Value,
         TsFloat64Value v => (float)v.Value,
         TsDecimalValue v => (float)v.Value,
@@ -1574,6 +1716,7 @@ public sealed class Interpreter
         TsInt32Value v => v.Value,
         TsInt64Value v => v.Value,
         TsUInt64Value v => v.Value,
+        TsBigIntValue v => (double)v.Value,
         TsFloat32Value v => v.Value,
         TsFloat64Value v => v.Value,
         TsDecimalValue v => (double)v.Value,
@@ -1585,6 +1728,7 @@ public sealed class Interpreter
         TsInt32Value v => v.Value,
         TsInt64Value v => v.Value,
         TsUInt64Value v => v.Value,
+        TsBigIntValue v => (decimal)v.Value,
         TsFloat32Value v => (decimal)v.Value,
         TsFloat64Value v => (decimal)v.Value,
         TsDecimalValue v => v.Value,
@@ -1598,6 +1742,7 @@ public sealed class Interpreter
         TsInt32Value v => v.Value != 0,
         TsInt64Value v => v.Value != 0,
         TsUInt64Value v => v.Value != 0,
+        TsBigIntValue v => v.Value != BigInteger.Zero,
         TsFloat32Value v => v.Value != 0f && !float.IsNaN(v.Value),
         TsFloat64Value v => v.Value != 0.0 && !double.IsNaN(v.Value),
         TsDecimalValue v => v.Value != 0m,
@@ -1781,6 +1926,7 @@ public sealed class Interpreter
         if (left is TsObjectValue lo && right is TsObjectValue ro) return ReferenceEquals(lo.Value, ro.Value);
         if (left is TsArrayValue la && right is TsArrayValue ra) return ReferenceEquals(la.Value, ra.Value);
         if (left is TsUint8ArrayValue lbv && right is TsUint8ArrayValue rbv) return ReferenceEquals(lbv.Value, rbv.Value);
+        if (IsBigIntValue(left) || IsBigIntValue(right)) return AsBigInteger(left) == AsBigInteger(right);
         if (IsNumericValue(left) && IsNumericValue(right)) return AsFloat64(left) == AsFloat64(right);
         return false;
     }
@@ -1796,12 +1942,16 @@ public sealed class Interpreter
         if (left is TsObjectValue lo && right is TsObjectValue ro) return ReferenceEquals(lo.Value, ro.Value);
         if (left is TsArrayValue la && right is TsArrayValue ra) return ReferenceEquals(la.Value, ra.Value);
         if (left is TsUint8ArrayValue lbv && right is TsUint8ArrayValue rbv) return ReferenceEquals(lbv.Value, rbv.Value);
+        if (IsBigIntValue(left) || IsBigIntValue(right)) return IsBigIntValue(left) && IsBigIntValue(right) && AsBigInteger(left) == AsBigInteger(right);
         if (IsNumericValue(left) && IsNumericValue(right)) return AsFloat64(left) == AsFloat64(right);
         return false;
     }
 
     private static bool IsNumericValue(TsValue value) =>
-        value is TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue;
+        value is TsInt32Value or TsFloat32Value or TsFloat64Value or TsDecimalValue;
+
+    private static bool IsBigIntValue(TsValue value) =>
+        value is TsInt64Value or TsUInt64Value or TsBigIntValue;
 
     private static TsUint8ArrayValue CreateUint8Array(TsValue[] args)
     {
@@ -1831,16 +1981,60 @@ public sealed class Interpreter
         }
     }
 
+    private static void PopulateMap(TsMap map, TsValue[] args)
+    {
+        if (args.Length == 0 || args[0] is TsNull or TsVoid)
+            return;
+
+        if (args[0] is not TsArrayValue entries)
+            throw new InvalidOperationException("Map constructor expects an array of [key, value] entries");
+
+        for (int i = 0; i < entries.Value.Count; i++)
+        {
+            if (entries.Value.Get(i) is not TsArrayValue pair || pair.Value.Count < 2)
+                throw new InvalidOperationException("Map constructor entry must be a [key, value] array");
+
+            map.Set(pair.Value.Get(0), pair.Value.Get(1));
+        }
+    }
+
     internal static byte ToByte(TsValue value) => value switch
     {
         TsInt32Value v => unchecked((byte)v.Value),
         TsInt64Value v => unchecked((byte)v.Value),
         TsUInt64Value v => unchecked((byte)v.Value),
+        TsBigIntValue v => unchecked((byte)v.Value),
         TsFloat32Value v => unchecked((byte)v.Value),
         TsFloat64Value v => unchecked((byte)v.Value),
         TsDecimalValue v => unchecked((byte)v.Value),
         TsBoolValue v => v.Value ? (byte)1 : (byte)0,
         _ => 0
+    };
+
+    private static bool UsesBigIntSemantics(TsValue left, TsValue right) =>
+        left is TsBigIntValue || right is TsBigIntValue;
+
+    private static BigInteger AsBigInteger(TsValue value) => value switch
+    {
+        TsInt32Value v => v.Value,
+        TsInt64Value v => v.Value,
+        TsUInt64Value v => v.Value,
+        TsBigIntValue v => v.Value,
+        TsFloat32Value v => new BigInteger(v.Value),
+        TsFloat64Value v => new BigInteger(v.Value),
+        TsDecimalValue v => new BigInteger(v.Value),
+        TsBoolValue v => v.Value ? BigInteger.One : BigInteger.Zero,
+        _ => BigInteger.Zero
+    };
+
+    private static string ToJsString(TsValue value) => value switch
+    {
+        TsVoid => "undefined",
+        TsNull => "null",
+        TsBoolValue v => v.Value ? "true" : "false",
+        TsStringValue v => v.Value,
+        TsBigIntValue v => v.Value.ToString(CultureInfo.InvariantCulture),
+        _ => value.ToString() ?? ""
     };
 
     // Invokes any callable value (module function, closure, builtin, host
@@ -1893,7 +2087,32 @@ public sealed class Interpreter
         return args[0] switch
         {
             TsObjectValue obj => $"{obj.Value.TypeName}::{calleeName}",
+            TsMapValue => $"Map::{calleeName}",
             _ => calleeName
+        };
+    }
+
+    private static string DescribeReceiver(TsValue[] args)
+    {
+        if (args.Length == 0)
+            return "<none>";
+
+        return args[0] switch
+        {
+            TsObjectValue obj => $"object:{obj.Value.TypeName}",
+            TsArrayValue => "Array",
+            TsMapValue => "Map",
+            TsUint8ArrayValue => "Uint8Array",
+            TsFunctionValue fn => $"function:{fn.FunctionName}",
+            TsStringValue => "string",
+            TsBoolValue => "boolean",
+            TsInt32Value => "number:int32",
+            TsInt64Value => "bigint:int64",
+            TsUInt64Value => "bigint:uint64",
+            TsBigIntValue => "bigint",
+            TsNull => "null",
+            TsVoid => "void",
+            _ => args[0].GetType().Name
         };
     }
 

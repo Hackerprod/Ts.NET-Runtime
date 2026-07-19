@@ -13,12 +13,12 @@ public enum Opcode
     Neg_I32, Neg_I64, Neg_F32, Neg_F64, Neg_Decimal,
 
     // Bitwise
-    And_I32, And_I64,
-    Or_I32, Or_I64,
-    Xor_I32, Xor_I64,
-    Not_I32, Not_I64,
-    Shl_I32, Shl_I64,
-    Shr_I32, Shr_I64,
+    And_I32, And_I64, And_U64,
+    Or_I32, Or_I64, Or_U64,
+    Xor_I32, Xor_I64, Xor_U64,
+    Not_I32, Not_I64, Not_U64,
+    Shl_I32, Shl_I64, Shl_U64,
+    Shr_I32, Shr_I64, Shr_U64,
 
     // Comparison
     CmpEq_I32, CmpEq_I64, CmpEq_U64, CmpEq_F32, CmpEq_F64, CmpEq_Decimal,
@@ -35,6 +35,7 @@ public enum Opcode
     LoadConst_I32,
     LoadConst_I64,
     LoadConst_U64,
+    LoadConst_BigInt,
     LoadConst_F32,
     LoadConst_F64,
     LoadConst_Decimal,
@@ -139,6 +140,7 @@ public sealed class Instruction
         var operands = Opcode switch
         {
             Opcode.LoadConst_String => $"\"{OperandObject}\"",
+            Opcode.LoadConst_BigInt => $"{OperandObject}n",
             Opcode.LoadConst_Bool => Operand0 == 1 ? "true" : "false",
             Opcode.LoadConst_Null => "null",
             Opcode.LoadLocal or Opcode.StoreLocal or Opcode.LoadArg => $"v{Operand0}",

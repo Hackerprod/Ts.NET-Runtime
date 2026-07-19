@@ -1,4 +1,5 @@
 using TypeSharp.VM.Memory;
+using System.Numerics;
 
 namespace TypeSharp.Interop.Marshalling;
 
@@ -30,6 +31,7 @@ public static class Marshaller
             float f => TsValue.FromFloat32(f),
             double d => TsValue.FromFloat64(d),
             decimal dec => TsValue.FromDecimal(dec),
+            BigInteger bi => TsValue.FromBigInt(bi),
             string str => TsValue.FromString(str),
             Guid g => TsValue.FromString(g.ToString()),
             DateTime dt => TsValue.FromString(dt.ToString("O")),
@@ -145,17 +147,20 @@ public static class Marshaller
 
         if (targetType == typeof(long) || targetType == typeof(long?))
             return value is TsInt64Value lv ? lv.Value :
+                   value is TsBigIntValue biv ? (long)biv.Value :
                    value is TsInt32Value iv ? iv.Value :
                    value is TsFloat64Value dv ? (long)dv.Value : 0L;
 
         if (targetType == typeof(ulong) || targetType == typeof(ulong?))
             return value is TsUInt64Value uv ? uv.Value :
+                   value is TsBigIntValue biv ? (ulong)biv.Value :
                    value is TsInt64Value lv ? (ulong)lv.Value :
                    value is TsInt32Value iv ? (ulong)iv.Value :
                    value is TsFloat64Value dv ? (ulong)dv.Value : 0UL;
 
         if (targetType == typeof(uint) || targetType == typeof(uint?))
             return value is TsInt32Value iv ? (uint)iv.Value :
+                   value is TsBigIntValue biv ? (uint)biv.Value :
                    value is TsInt64Value lv ? (uint)lv.Value : 0U;
 
         if (targetType == typeof(short) || targetType == typeof(short?))
@@ -175,6 +180,7 @@ public static class Marshaller
                    value is TsFloat64Value dv ? (float)dv.Value :
                    value is TsInt32Value iv ? iv.Value :
                    value is TsInt64Value lv ? lv.Value :
+                   value is TsBigIntValue biv ? (float)biv.Value :
                    value is TsUInt64Value uv ? uv.Value : 0f;
 
         if (targetType == typeof(double) || targetType == typeof(double?))
@@ -183,6 +189,7 @@ public static class Marshaller
                    value is TsInt32Value iv ? iv.Value :
                    value is TsInt64Value lv ? lv.Value :
                    value is TsUInt64Value uv ? uv.Value :
+                   value is TsBigIntValue biv ? (double)biv.Value :
                    value is TsDecimalValue decv ? (double)decv.Value : 0.0;
 
         if (targetType == typeof(decimal) || targetType == typeof(decimal?))
@@ -191,7 +198,14 @@ public static class Marshaller
                    value is TsFloat32Value fv ? (decimal)fv.Value :
                    value is TsInt32Value iv ? iv.Value :
                    value is TsInt64Value lv ? lv.Value :
+                   value is TsBigIntValue biv ? (decimal)biv.Value :
                    value is TsUInt64Value uv ? uv.Value : 0m;
+
+        if (targetType == typeof(BigInteger) || targetType == typeof(BigInteger?))
+            return value is TsBigIntValue biv ? biv.Value :
+                   value is TsUInt64Value uv ? new BigInteger(uv.Value) :
+                   value is TsInt64Value lv ? new BigInteger(lv.Value) :
+                   value is TsInt32Value iv ? new BigInteger(iv.Value) : BigInteger.Zero;
 
         if (targetType == typeof(string))
             return value is TsStringValue sv ? sv.Value : value.ToString();

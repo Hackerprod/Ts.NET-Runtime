@@ -134,6 +134,10 @@ public static class BytecodeCompiler
                 writer.Write(Opcodes.LoadConstU64);
                 writer.WriteUInt64(Convert.ToUInt64(instr.OperandObject ?? 0UL));
                 break;
+            case Opcode.LoadConst_BigInt:
+                writer.Write(Opcodes.LoadConstBigInt);
+                writer.WriteInt32(instr.Operand0);
+                break;
             case Opcode.LoadConst_F32:
                 writer.Write(Opcodes.LoadConstF32);
                 writer.WriteFloat(Convert.ToSingle(instr.OperandObject ?? 0f));
@@ -240,6 +244,12 @@ public static class BytecodeCompiler
             case Opcode.Not_I64: writer.Write(Opcodes.NotI64); break;
             case Opcode.Shl_I64: writer.Write(Opcodes.ShlI64); break;
             case Opcode.Shr_I64: writer.Write(Opcodes.ShrI64); break;
+            case Opcode.And_U64: writer.Write(Opcodes.AndU64); break;
+            case Opcode.Or_U64: writer.Write(Opcodes.OrU64); break;
+            case Opcode.Xor_U64: writer.Write(Opcodes.XorU64); break;
+            case Opcode.Not_U64: writer.Write(Opcodes.NotU64); break;
+            case Opcode.Shl_U64: writer.Write(Opcodes.ShlU64); break;
+            case Opcode.Shr_U64: writer.Write(Opcodes.ShrU64); break;
 
             // ── I32 comparison ──
             case Opcode.CmpEq_I32: writer.Write(Opcodes.CmpEqI32); break;
@@ -426,6 +436,7 @@ public static class BytecodeCompiler
                 if (instr.OperandObject is string s)
                 {
                     if (instr.Opcode is Opcode.LoadConst_String or
+                        Opcode.LoadConst_BigInt or
                         Opcode.Call or
                         Opcode.CallVirt or
                         Opcode.NewObject or

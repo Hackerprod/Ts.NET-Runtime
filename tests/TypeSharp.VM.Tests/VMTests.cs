@@ -5,7 +5,9 @@ using TypeSharp.IR;
 using TypeSharp.Interop.HostExports;
 using TypeSharp.Interop.Marshalling;
 using TypeSharp.Interop.Proxies;
+using TypeSharp.Semantics.Binder;
 using TypeSharp.Semantics.Symbols;
+using TypeSharp.Semantics.TypeSystem;
 using Xunit;
 
 namespace TypeSharp.VM.Tests;
@@ -335,6 +337,134 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void ExecuteStructuralMethodCallThroughRegisteredClassHandler()
+    {
+        var result = Run("""
+            interface Request {
+                searchKey?: string;
+                leagueId?: number;
+                heroId?: number;
+                startGame?: number;
+                gameListIndex?: number;
+            }
+
+            interface Response {
+                searchKey: string;
+                leagueId: number;
+                heroId: number;
+                startGame: number;
+                numGames: number;
+                gameListIndex: number;
+                gameList: number[];
+                specificGames: boolean;
+            }
+
+            interface HandlerContext<TRequest, TResponse> {
+                request: TRequest;
+                reply(response: TResponse): void;
+            }
+
+            type Handler<TRequest, TResponse> = (ctx: HandlerContext<TRequest, TResponse>) => void;
+
+            class Router<TRequest, TResponse> {
+                handler: Handler<TRequest, TResponse>;
+
+                constructor(handler: Handler<TRequest, TResponse>) {
+                    this.handler = handler;
+                }
+
+                dispatch(ctx: HandlerContext<TRequest, TResponse>): void {
+                    this.handler(ctx);
+                }
+            }
+
+            class RecorderContext implements HandlerContext<Request, Response> {
+                request: Request;
+                recorded: string;
+
+                constructor() {
+                    this.request = { searchKey: "" };
+                    this.recorded = "";
+                }
+
+                reply(response: Response): void {
+                    this.recorded = response.searchKey + ":" + response.gameList.length;
+                }
+            }
+
+            class Social {
+                register(router: Router<Request, Response>): void {
+                    router.handler = (ctx) => {
+                        this.findTopSourceTvGames(ctx);
+                    };
+                }
+
+                findTopSourceTvGames(
+                    ctx: HandlerContext<Request, Response>
+                ): void {
+                    ctx.reply({
+                        searchKey: ctx.request.searchKey ?? "",
+                        leagueId: ctx.request.leagueId ?? 0,
+                        heroId: ctx.request.heroId ?? 0,
+                        startGame: ctx.request.startGame ?? 0,
+                        numGames: 0,
+                        gameListIndex: ctx.request.gameListIndex ?? 0,
+                        gameList: [],
+                        specificGames: false
+                    });
+                }
+            }
+
+            function main(): string {
+                const ctx = new RecorderContext();
+                const router = new Router<Request, Response>((unused) => {});
+                const social = new Social();
+                social.register(router);
+                router.dispatch(ctx);
+                return ctx.recorded;
+            }
+        """);
+
+        Assert.IsType<TsStringValue>(result);
+        Assert.Equal(":0", ((TsStringValue)result!).Value);
+    }
+
+    [Fact]
+    public void ExecuteNullishCoalescingEvaluatesRightOnlyForNullishValues()
+    {
+        var result = Run("""
+            class Counter {
+                calls: number;
+
+                constructor() {
+                    this.calls = 0;
+                }
+
+                fallback(): string {
+                    this.calls = this.calls + 1;
+                    return "fallback";
+                }
+            }
+
+            interface MaybeValue {
+                value?: string;
+            }
+
+            function main(): string {
+                const counter = new Counter();
+                const present: MaybeValue = { value: "present" };
+                const missing: MaybeValue = {};
+                const first = present.value ?? counter.fallback();
+                const second = missing.value ?? counter.fallback();
+                return first + ":" + second + ":" + counter.calls;
+            }
+        """);
+
+        Assert.IsType<TsStringValue>(result);
+        Assert.Equal("present:fallback:1", ((TsStringValue)result!).Value);
+    }
+
+    [Fact]
     public void ExecuteSubtractFunction()
     {
         var code = @"
@@ -466,7 +596,7 @@ public class InterpreterTests
 public class TypeCheckingTests
 {
     [Fact]
-    public void StringPlusIntProducesVoidType()
+    public void StringPlusIntProducesStringType()
     {
         var code = @"
             function main(): string {
@@ -481,9 +611,14 @@ public class TypeCheckingTests
         var syntaxTree = parser.Parse();
         var boundTree = binder.Bind(syntaxTree);
 
-        Assert.True(binder.Diagnostics.HasErrors);
-        Assert.Contains(binder.Diagnostics.All, d =>
-            d.Message.Contains("cannot be applied to types"));
+        Assert.False(
+            binder.Diagnostics.HasErrors,
+            string.Join("; ", binder.Diagnostics.GetErrors().Select(d => d.Message)));
+        var function = Assert.IsType<BoundFunctionDeclaration>(Assert.Single(boundTree.Members));
+        var block = Assert.IsType<BoundBlockStatement>(function.Body);
+        var statement = Assert.IsType<BoundReturnStatement>(Assert.Single(block.Statements));
+        Assert.NotNull(statement.Value);
+        Assert.Equal(TsType.String, statement.Value.Type);
     }
 
     [Fact]
@@ -773,12 +908,12 @@ public class HeapTests
     {
         var heap = new TsHeap();
         var map = heap.AllocateMap();
-        map.Set("key1", TsValue.FromString("value1"));
-        map.Set("key2", TsValue.FromInt32(42));
+        map.Set(TsValue.FromString("key1"), TsValue.FromString("value1"));
+        map.Set(TsValue.FromString("key2"), TsValue.FromInt32(42));
 
         Assert.Equal(2, map.Count);
-        Assert.Equal("value1", ((TsStringValue)map.Get("key1")).Value);
-        Assert.Equal(42, ((TsInt32Value)map.Get("key2")).Value);
+        Assert.Equal("value1", ((TsStringValue)map.Get(TsValue.FromString("key1"))).Value);
+        Assert.Equal(42, ((TsInt32Value)map.Get(TsValue.FromString("key2"))).Value);
     }
 
     [Fact]
@@ -1017,7 +1152,7 @@ public class InteropTests
     }
 
     [Fact]
-    public void TypeScriptBigIntLiteral_ComputesAsUnsigned64Internally()
+    public void TypeScriptBigIntLiteral_ComputesAsBigInt()
     {
         var result = Run(@"
             function main(): bigint {
@@ -1025,8 +1160,144 @@ public class InteropTests
             }
         ");
 
+        Assert.IsType<TsBigIntValue>(result);
+        Assert.Equal(new System.Numerics.BigInteger(123), ((TsBigIntValue)result!).Value);
+    }
+
+    [Fact]
+    public void TypeScriptBigIntLiteral_SupportsValuesBeyondUInt64()
+    {
+        var result = Run(@"
+            function main(): string {
+                return """" + (18446744073709551616n + 1n);
+            }
+        ");
+
+        Assert.IsType<TsStringValue>(result);
+        Assert.Equal("18446744073709551617", ((TsStringValue)result!).Value);
+    }
+
+    [Fact]
+    public void BigIntGlobal_ConvertsStandardValues()
+    {
+        var result = Run(@"
+            function main(): string {
+                return """" + (BigInt(255) + BigInt(""1""));
+            }
+        ");
+
+        Assert.IsType<TsStringValue>(result);
+        Assert.Equal("256", ((TsStringValue)result!).Value);
+    }
+
+    [Fact]
+    public void NumberGlobal_ConvertsStandardValues()
+    {
+        var result = Run(@"
+            function main(): number {
+                return Number(42n) + Number(""3"");
+            }
+        ");
+
+        Assert.IsType<TsFloat64Value>(result);
+        Assert.Equal(45d, ((TsFloat64Value)result!).Value);
+    }
+
+    [Fact]
+    public void BigIntBitwiseOperators_PreserveArbitraryPrecision()
+    {
+        var result = Run("""
+            function main(): string {
+                const high = 18446744073709551616n;
+                const xor = high ^ 1n;
+                const shifted = (1n << 65n) >> 64n;
+                return "" + (xor | shifted);
+            }
+        """);
+
+        Assert.IsType<TsStringValue>(result);
+        Assert.Equal("18446744073709551619", ((TsStringValue)result!).Value);
+    }
+
+    [Fact]
+    public void PrefixedBigIntLiterals_WorkWithBitwiseOperators()
+    {
+        var result = Run("""
+            function main(): string {
+                return "" + ((0xffffffffn & 0xffn) | 0b100000000n | 0o7n);
+            }
+        """);
+
+        Assert.IsType<TsStringValue>(result);
+        Assert.Equal("511", ((TsStringValue)result!).Value);
+    }
+
+    [Fact]
+    public void UInt64BitwiseOperators_ReturnUInt64()
+    {
+        var result = Run("""
+            function main(): uint64 {
+                const left: uint64 = 240u64;
+                const right: uint64 = 15u64;
+                return (left | right) ^ 51u64;
+            }
+        """);
+
         Assert.IsType<TsUInt64Value>(result);
-        Assert.Equal(123UL, ((TsUInt64Value)result!).Value);
+        Assert.Equal(204UL, ((TsUInt64Value)result!).Value);
+    }
+
+    [Fact]
+    public void NumberBitwiseOperators_UseInt32Semantics()
+    {
+        var result = Run("""
+            function main(): number {
+                const value: number = 0xC0 | (255 >> 6);
+                return value & 0xFF;
+            }
+        """);
+
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(195, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void LoopBreakAndContinue_WorkInForLoops()
+    {
+        var result = Run("""
+            function main(): number {
+                let sum = 0;
+                for (let i = 0; i < 8; i = i + 1) {
+                    if (i === 2) continue;
+                    if (i === 6) break;
+                    sum = sum + i;
+                }
+                return sum;
+            }
+        """);
+
+        Assert.IsType<TsFloat64Value>(result);
+        Assert.Equal(13d, ((TsFloat64Value)result!).Value);
+    }
+
+    [Fact]
+    public void Continue_WorkInWhileLoops()
+    {
+        var result = Run("""
+            function main(): number {
+                let i = 0;
+                let sum = 0;
+                while (i < 5) {
+                    i = i + 1;
+                    if (i === 3) continue;
+                    sum = sum + i;
+                }
+                return sum;
+            }
+        """);
+
+        Assert.IsType<TsFloat64Value>(result);
+        Assert.Equal(12d, ((TsFloat64Value)result!).Value);
     }
 
     [Fact]

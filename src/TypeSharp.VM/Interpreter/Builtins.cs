@@ -38,12 +38,12 @@ public static class Builtins
             // ── Number ──
             ["Number::isInteger"] = args => Bool(args[0] switch
             {
-                TsInt32Value or TsInt64Value or TsUInt64Value => true,
+                TsInt32Value => true,
                 TsFloat32Value f => float.IsFinite(f.Value) && f.Value == MathF.Truncate(f.Value),
                 TsFloat64Value d => double.IsFinite(d.Value) && d.Value == Math.Truncate(d.Value),
                 _ => false
             }),
-            ["Number::isFinite"] = args => Bool(args[0] is TsInt32Value or TsInt64Value or TsUInt64Value ||
+            ["Number::isFinite"] = args => Bool(args[0] is TsInt32Value ||
                 (args[0] is TsFloat64Value fd && double.IsFinite(fd.Value)) ||
                 (args[0] is TsFloat32Value ff && float.IsFinite(ff.Value))),
             ["Number::isNaN"] = args => Bool(
@@ -52,6 +52,7 @@ public static class Builtins
             ["Number::parseFloat"] = args => Num(double.TryParse(S(args[0]),
                 System.Globalization.CultureInfo.InvariantCulture, out var pf) ? pf : double.NaN),
             ["Number::parseInt"] = args => Num(long.TryParse(S(args[0]), out var pi) ? pi : double.NaN),
+            ["Number"] = args => Num(args.Length == 0 ? 0 : D(args[0])),
 
             // ── console ──
             ["console::log"] = args => { Console.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Null; },
@@ -120,6 +121,42 @@ public static class Builtins
                 return TsValue.Null;
             },
 
+            // ── Map instance members (receiver = args[0]) ──
+            ["Map::set"] = args =>
+            {
+                var map = Map(args[0]);
+                if (args.Length < 3)
+                    throw new InvalidOperationException("Map.set requires key and value arguments");
+                map.Set(args[1], args[2]);
+                return args[0];
+            },
+            ["Map::get"] = args =>
+            {
+                var map = Map(args[0]);
+                if (args.Length < 2)
+                    throw new InvalidOperationException("Map.get requires a key argument");
+                return map.Get(args[1]);
+            },
+            ["Map::has"] = args =>
+            {
+                var map = Map(args[0]);
+                if (args.Length < 2)
+                    throw new InvalidOperationException("Map.has requires a key argument");
+                return Bool(map.Contains(args[1]));
+            },
+            ["Map::delete"] = args =>
+            {
+                var map = Map(args[0]);
+                if (args.Length < 2)
+                    throw new InvalidOperationException("Map.delete requires a key argument");
+                return Bool(map.Remove(args[1]));
+            },
+            ["Map::clear"] = args =>
+            {
+                Map(args[0]).Clear();
+                return TsValue.Null;
+            },
+
             // ── Global functions ──
             ["parseInt"] = args =>
             {
@@ -146,6 +183,7 @@ public static class Builtins
                 TsStringValue s => s.Value.Length > 0,
                 _ => D(args[0]) != 0 && !double.IsNaN(D(args[0]))
             }),
+            ["BigInt"] = args => args.Length > 0 ? ToBigInt(args[0]) : TsValue.FromBigInt(System.Numerics.BigInteger.Zero),
 
             // ── Array instance members (receiver = args[0]) ──
             ["Array::push"] = args =>
@@ -288,16 +326,45 @@ public static class Builtins
         TsInt32Value i => i.Value,
         TsInt64Value l => l.Value,
         TsUInt64Value u => u.Value,
+        TsBigIntValue b => (double)b.Value,
         TsFloat32Value f => f.Value,
         TsFloat64Value d => d.Value,
         TsDecimalValue m => (double)m.Value,
         TsBoolValue b => b.Value ? 1 : 0,
+        TsStringValue s when double.TryParse(
+            s.Value.Trim(),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var parsed) => parsed,
         _ => double.NaN
     };
 
     private static int I(TsValue v) => (int)D(v);
 
-    private static string S(TsValue v) => v is TsStringValue s ? s.Value : v.ToString() ?? "";
+    private static TsValue ToBigInt(TsValue v) => v switch
+    {
+        TsBigIntValue => v,
+        TsInt64Value l => TsValue.FromBigInt(new System.Numerics.BigInteger(l.Value)),
+        TsUInt64Value u => TsValue.FromBigInt(new System.Numerics.BigInteger(u.Value)),
+        TsInt32Value i => TsValue.FromBigInt(new System.Numerics.BigInteger(i.Value)),
+        TsStringValue s when System.Numerics.BigInteger.TryParse(
+            s.Value.Trim(),
+            System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var parsed) => TsValue.FromBigInt(parsed),
+        TsBoolValue b => TsValue.FromBigInt(b.Value ? System.Numerics.BigInteger.One : System.Numerics.BigInteger.Zero),
+        _ => throw new InvalidOperationException("Cannot convert value to BigInt")
+    };
+
+    private static string S(TsValue v) => v switch
+    {
+        TsStringValue s => s.Value,
+        TsBoolValue b => b.Value ? "true" : "false",
+        TsNull => "null",
+        TsVoid => "undefined",
+        TsBigIntValue b => b.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        _ => v.ToString() ?? ""
+    };
 
     private static TsArray Arr(TsValue v) => v is TsArrayValue a
         ? a.Value
@@ -306,6 +373,10 @@ public static class Builtins
     private static TsUint8ArrayValue Bytes(TsValue v) => v is TsUint8ArrayValue b
         ? b
         : throw new InvalidOperationException("Receiver is not a Uint8Array");
+
+    private static TsMap Map(TsValue v) => v is TsMapValue map
+        ? map.Value
+        : throw new InvalidOperationException("Receiver is not a Map");
 
     private static TsValue Num(double value) => TsValue.FromFloat64(value);
 
@@ -338,6 +409,7 @@ public static class Builtins
         TsInt32Value v => unchecked((byte)v.Value),
         TsInt64Value v => unchecked((byte)v.Value),
         TsUInt64Value v => unchecked((byte)v.Value),
+        TsBigIntValue v => unchecked((byte)v.Value),
         TsFloat32Value v => unchecked((byte)v.Value),
         TsFloat64Value v => unchecked((byte)v.Value),
         TsDecimalValue v => unchecked((byte)v.Value),

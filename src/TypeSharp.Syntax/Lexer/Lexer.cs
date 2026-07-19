@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Numerics;
+
 namespace TypeSharp.Syntax;
 
 public sealed class Lexer
@@ -53,6 +56,8 @@ public sealed class Lexer
         ["else"] = TokenKind.ElseKeyword,
         ["while"] = TokenKind.WhileKeyword,
         ["for"] = TokenKind.ForKeyword,
+        ["break"] = TokenKind.BreakKeyword,
+        ["continue"] = TokenKind.ContinueKeyword,
         ["in"] = TokenKind.InKeyword,
         ["of"] = TokenKind.OfKeyword,
         ["new"] = TokenKind.NewKeyword,
@@ -127,8 +132,8 @@ public sealed class Lexer
         if (c == '"' || c == '\'')
             return ReadString(start);
 
-        if (c == '0' && Peek(1) == 'x')
-            return ReadHexNumber(start);
+        if (c == '0' && IsIntegerBasePrefix(Peek(1)))
+            return ReadPrefixedInteger(start);
 
         if (char.IsDigit(c))
             return ReadNumber(start);
@@ -185,7 +190,7 @@ public sealed class Lexer
         {
             _position++;
             _column++;
-            ulong bigintValue = ulong.Parse(text);
+            var bigintValue = BigInteger.Parse(text, CultureInfo.InvariantCulture);
             return new Token(TokenKind.IntegerLiteral, text + "n", start, bigintValue);
         }
 
@@ -234,23 +239,99 @@ public sealed class Lexer
         return tok;
     }
 
-    private Token ReadHexNumber(SourceLocation start)
+    private Token ReadPrefixedInteger(SourceLocation start)
     {
-        _position += 2;
-        var sb = new System.Text.StringBuilder("0x");
-        while (_position < _source.Length && IsHexDigit(Peek()))
+        char prefix = Peek(1);
+        int radix = char.ToLowerInvariant(prefix) switch
         {
-            sb.Append(Peek());
+            'x' => 16,
+            'b' => 2,
+            'o' => 8,
+            _ => throw new InvalidOperationException($"Unsupported integer prefix '{prefix}'")
+        };
+
+        _position += 2;
+        var sb = new System.Text.StringBuilder();
+        sb.Append('0');
+        sb.Append(prefix);
+
+        var digits = new System.Text.StringBuilder();
+        while (_position < _source.Length)
+        {
+            char digit = Peek();
+            if (digit == '_')
+            {
+                sb.Append(digit);
+                _position++;
+                continue;
+            }
+
+            if (!IsDigitForRadix(digit, radix))
+            {
+                break;
+            }
+
+            sb.Append(digit);
+            digits.Append(digit);
             _position++;
         }
-        string text = sb.ToString();
+
+        if (digits.Length == 0)
+        {
+            return new Token(TokenKind.IntegerLiteral, sb.ToString(), start, 0L);
+        }
+
+        bool isBigInt = Peek() == 'n';
+        if (isBigInt)
+        {
+            sb.Append('n');
+            _position++;
+        }
+
+        var text = sb.ToString();
         _column += text.Length;
-        long value = Convert.ToInt64(text, 16);
-        return new Token(TokenKind.IntegerLiteral, text, start, value);
+        var parsed = ParseIntegerDigits(digits.ToString(), radix);
+        if (isBigInt)
+        {
+            return new Token(TokenKind.IntegerLiteral, text, start, parsed);
+        }
+
+        return new Token(TokenKind.IntegerLiteral, text, start, (long)parsed);
     }
 
-    private static bool IsHexDigit(char c) =>
-        char.IsDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    private static bool IsIntegerBasePrefix(char c) =>
+        c is 'x' or 'X' or 'b' or 'B' or 'o' or 'O';
+
+    private static bool IsDigitForRadix(char c, int radix)
+    {
+        int value = c switch
+        {
+            >= '0' and <= '9' => c - '0',
+            >= 'a' and <= 'f' => c - 'a' + 10,
+            >= 'A' and <= 'F' => c - 'A' + 10,
+            _ => -1
+        };
+
+        return value >= 0 && value < radix;
+    }
+
+    private static BigInteger ParseIntegerDigits(string digits, int radix)
+    {
+        BigInteger value = BigInteger.Zero;
+        foreach (var digit in digits)
+        {
+            value *= radix;
+            value += digit switch
+            {
+                >= '0' and <= '9' => digit - '0',
+                >= 'a' and <= 'f' => digit - 'a' + 10,
+                >= 'A' and <= 'F' => digit - 'A' + 10,
+                _ => 0
+            };
+        }
+
+        return value;
+    }
 
     private Token ReadString(SourceLocation start)
     {

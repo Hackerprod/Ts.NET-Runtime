@@ -55,6 +55,8 @@ public enum TokenKind
     ElseKeyword,
     WhileKeyword,
     ForKeyword,
+    BreakKeyword,
+    ContinueKeyword,
     InKeyword,
     OfKeyword,
     NewKeyword,

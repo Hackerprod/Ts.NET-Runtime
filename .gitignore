@@ -23,3 +23,6 @@ packages/
 ## OS
 Thumbs.db
 .DS_Store
+
+## Files
+RUNTIME_HOST_CAPABILITIES_ROADMAP.md

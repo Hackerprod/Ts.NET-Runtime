@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Numerics;
+using System.Runtime.CompilerServices;
 using TypeSharp.VM.Bytecode;
 
 namespace TypeSharp.VM.Memory;
@@ -14,6 +16,7 @@ public abstract class TsValue
     public static TsValue FromInt32(int value) => new TsInt32Value(value);
     public static TsValue FromInt64(long value) => new TsInt64Value(value);
     public static TsValue FromUInt64(ulong value) => new TsUInt64Value(value);
+    public static TsValue FromBigInt(BigInteger value) => new TsBigIntValue(value);
     public static TsValue FromFloat32(float value) => new TsFloat32Value(value);
     public static TsValue FromFloat64(double value) => new TsFloat64Value(value);
     public static TsValue FromString(string value) => new TsStringValue(value);
@@ -29,7 +32,7 @@ public abstract class TsValue
 
 public enum TsValueType
 {
-    Void, Null, Bool, Int32, Int64, UInt64, Float32, Float64, Decimal, String, Object, Array, Map, Uint8Array, Promise
+    Void, Null, Bool, Int32, Int64, UInt64, BigInt, Float32, Float64, Decimal, String, Object, Array, Map, Uint8Array, Promise
 }
 
 public sealed class TsVoid : TsValue
@@ -74,6 +77,14 @@ public sealed class TsUInt64Value : TsValue
     public override TsValueType ValueType => TsValueType.UInt64;
     public override object? RawValue => Value;
     public TsUInt64Value(ulong value) => Value = value;
+}
+
+public sealed class TsBigIntValue : TsValue
+{
+    public BigInteger Value { get; }
+    public override TsValueType ValueType => TsValueType.BigInt;
+    public override object? RawValue => Value;
+    public TsBigIntValue(BigInteger value) => Value = value;
 }
 
 public sealed class TsFloat32Value : TsValue
@@ -320,19 +331,98 @@ public sealed class TsArray
 
 public sealed class TsMap
 {
-    private readonly Dictionary<string, TsValue> _entries = new();
+    private readonly Dictionary<TsValue, TsValue> _entries = new(TsValueMapKeyComparer.Instance);
 
     public int Count => _entries.Count;
 
-    public TsValue Get(string key) =>
+    public TsValue Get(TsValue key) =>
         _entries.TryGetValue(key, out var val) ? val : TsValue.Null;
 
-    public void Set(string key, TsValue value) =>
+    public void Set(TsValue key, TsValue value) =>
         _entries[key] = value;
 
-    public bool Contains(string key) => _entries.ContainsKey(key);
+    public bool Contains(TsValue key) => _entries.ContainsKey(key);
 
-    public bool Remove(string key) => _entries.Remove(key);
+    public bool Remove(TsValue key) => _entries.Remove(key);
+
+    public void Clear() => _entries.Clear();
+}
+
+internal sealed class TsValueMapKeyComparer : IEqualityComparer<TsValue>
+{
+    public static TsValueMapKeyComparer Instance { get; } = new();
+
+    private TsValueMapKeyComparer()
+    {
+    }
+
+    public bool Equals(TsValue? x, TsValue? y)
+    {
+        if (ReferenceEquals(x, y))
+            return true;
+        if (x == null || y == null)
+            return false;
+        if (x is TsNull or TsVoid || y is TsNull or TsVoid)
+            return x is TsNull or TsVoid && y is TsNull or TsVoid;
+        if (x is TsStringValue xs && y is TsStringValue ys)
+            return xs.Value == ys.Value;
+        if (x is TsBoolValue xb && y is TsBoolValue yb)
+            return xb.Value == yb.Value;
+        if (IsNumber(x) && IsNumber(y))
+            return SameValueZero(AsNumber(x), AsNumber(y));
+        if (IsBigInt(x) && IsBigInt(y))
+            return AsBigInt(x) == AsBigInt(y);
+        return false;
+    }
+
+    public int GetHashCode(TsValue obj)
+    {
+        if (obj is TsNull or TsVoid)
+            return HashCode.Combine("null");
+        if (obj is TsStringValue s)
+            return HashCode.Combine("string", s.Value);
+        if (obj is TsBoolValue b)
+            return HashCode.Combine("boolean", b.Value);
+        if (IsNumber(obj))
+        {
+            var value = AsNumber(obj);
+            if (double.IsNaN(value))
+                return HashCode.Combine("number", "NaN");
+            if (value == 0)
+                value = 0;
+            return HashCode.Combine("number", value);
+        }
+        if (IsBigInt(obj))
+            return HashCode.Combine("bigint", AsBigInt(obj));
+
+        return HashCode.Combine("ref", RuntimeHelpers.GetHashCode(obj.RawValue ?? obj));
+    }
+
+    private static bool IsNumber(TsValue value) =>
+        value is TsInt32Value or TsFloat32Value or TsFloat64Value or TsDecimalValue;
+
+    private static bool IsBigInt(TsValue value) =>
+        value is TsInt64Value or TsUInt64Value or TsBigIntValue;
+
+    private static double AsNumber(TsValue value) => value switch
+    {
+        TsInt32Value v => v.Value,
+        TsFloat32Value v => v.Value,
+        TsFloat64Value v => v.Value,
+        TsDecimalValue v => (double)v.Value,
+        _ => double.NaN
+    };
+
+    private static BigInteger AsBigInt(TsValue value) => value switch
+    {
+        TsInt64Value v => v.Value,
+        TsUInt64Value v => v.Value,
+        TsBigIntValue v => v.Value,
+        _ => BigInteger.Zero
+    };
+
+    private static bool SameValueZero(double left, double right) =>
+        left == right || double.IsNaN(left) && double.IsNaN(right);
 }
 
 // Raised by the THROW opcode; carries the thrown script value so

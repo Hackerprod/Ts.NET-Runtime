@@ -53,6 +53,7 @@ public static class Opcodes
     public const byte LoadConstNull            = 0x07;
     public const byte LoadConstU64             = 0x08;
     public const byte LoadConstDecimal         = 0x09;
+    public const byte LoadConstBigInt          = 0x0A;
 
     public const byte LoadLocal                = 0x10;
     public const byte StoreLocal               = 0x11;
@@ -148,6 +149,12 @@ public static class Opcodes
     public const byte ShrI32                   = 0x65;
     public const byte ShlI64                   = 0x66;
     public const byte ShrI64                   = 0x67;
+    public const byte AndU64                   = 0x6A;
+    public const byte OrU64                    = 0x6B;
+    public const byte XorU64                   = 0x6C;
+    public const byte NotU64                   = 0x6D;
+    public const byte ShlU64                   = 0x6E;
+    public const byte ShrU64                   = 0x6F;
 
     public const byte Branch                   = 0x70;
     public const byte BranchTrue               = 0x71;
@@ -247,6 +254,7 @@ public static class OpcodeFormats
         Reg(0x07);                     // LOAD_CONST_NULL
         Reg(0x08, OperandKind.UInt64); // LOAD_CONST_U64 ← was broken (ReadInt32)
         Reg(0x09, OperandKind.Int32);  // LOAD_CONST_DECIMAL (index)
+        Reg(0x0A, OperandKind.Int32);  // LOAD_CONST_BIGINT (string index)
 
         // ── Variables ──
         Reg(0x10, OperandKind.Int32);  // LOAD_LOCAL
@@ -300,6 +308,9 @@ public static class OpcodeFormats
 
         // ── U64 ordered comparison (upper half) ──
         Reg(0x68); Reg(0x69);
+
+        // U64/BigInt bitwise + shifts
+        Reg(0x6A); Reg(0x6B); Reg(0x6C); Reg(0x6D); Reg(0x6E); Reg(0x6F);
 
         // ── Control flow ──
         Reg(0x70, OperandKind.Branch);  // BRANCH

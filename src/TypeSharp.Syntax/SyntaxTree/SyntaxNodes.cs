@@ -31,6 +31,8 @@ public enum SyntaxNodeType
     IfStatement,
     WhileStatement,
     ForStatement,
+    BreakStatement,
+    ContinueStatement,
     BlockStatement,
     VariableDeclaration,
     ThrowStatement,
@@ -498,6 +500,32 @@ public sealed class ForStatementSyntax : StatementSyntax
         if (Condition != null) yield return Condition;
         if (Iterator != null) yield return Iterator;
         yield return Body;
+    }
+}
+
+public sealed class BreakStatementSyntax : StatementSyntax
+{
+    public BreakStatementSyntax(SourceRange range)
+        : base(SyntaxNodeType.BreakStatement, range)
+    {
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        yield break;
+    }
+}
+
+public sealed class ContinueStatementSyntax : StatementSyntax
+{
+    public ContinueStatementSyntax(SourceRange range)
+        : base(SyntaxNodeType.ContinueStatement, range)
+    {
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        yield break;
     }
 }
 

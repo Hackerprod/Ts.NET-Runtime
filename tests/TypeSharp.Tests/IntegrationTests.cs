@@ -219,6 +219,90 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task NullCheck_NarrowsUnionInsidePositiveBranch()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_null_narrow_positive_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "main.ts");
+        try
+        {
+            File.WriteAllText(file, """
+                interface CatalogItem {
+                    readonly defIndex: number;
+                }
+
+                function main(): number {
+                    const item: CatalogItem | null = getItem();
+                    if (item !== null) {
+                        return item.defIndex;
+                    }
+
+                    return 0;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .RegisterHostFunction("test", "getItem", _ =>
+                {
+                    var item = new TsObject("CatalogItem");
+                    item.SetField("defIndex", TsValue.FromInt32(42));
+                    return TsValue.FromObject(item);
+                })
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>(Path.GetFileName(dir), "main");
+            Assert.Equal(42d, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task NullCheck_NarrowsUnionInsideElseBranch()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_null_narrow_else_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "main.ts");
+        try
+        {
+            File.WriteAllText(file, """
+                interface CatalogItem {
+                    readonly defIndex: number;
+                }
+
+                function main(): number {
+                    const item: CatalogItem | null = getItem();
+                    if (item === null) {
+                        return 0;
+                    } else {
+                        return item.defIndex;
+                    }
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .RegisterHostFunction("test", "getItem", _ =>
+                {
+                    var item = new TsObject("CatalogItem");
+                    item.SetField("defIndex", TsValue.FromInt32(64));
+                    return TsValue.FromObject(item);
+                })
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>(Path.GetFileName(dir), "main");
+            Assert.Equal(64d, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task IdiomaticCallbackRoute_CanUseExportedConstObjectAndInlineLambda()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_callback_route_" + Guid.NewGuid().ToString("N"));
@@ -472,6 +556,75 @@ public class IntegrationTests
             Assert.IsType<TsBoolValue>(result);
             Assert.True(((TsBoolValue)result!).Value);
             Assert.Equal(7, recorded);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Map_SupportsTypedLookupMutationAndSameValueZeroKeys()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_map_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                function main(): number {
+                    const handlers = new Map<any, number>();
+                    handlers.set(10, 1).set("10", 2);
+
+                    if (!handlers.has(10) || !handlers.has("10")) {
+                        return -1;
+                    }
+
+                    const numeric = handlers.get(10) as number;
+                    const text = handlers.get("10") as number;
+                    const beforeDelete = handlers.size;
+                    const deleted = handlers.delete(10);
+                    const stillHasNumeric = handlers.has(10);
+
+                    handlers.clear();
+
+                    return numeric + text + beforeDelete + handlers.size +
+                        (deleted ? 10 : 0) +
+                        (stillHasNumeric ? 100 : 0);
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(15, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StringConcatenation_AllowsPrimitiveOperands()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_string_concat_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                function main(): string {
+                    return "message=" + 4006 + " steam=" + 76561197960265728n + " ok=" + true;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<string>("app", "main");
+            Assert.Equal("message=4006 steam=76561197960265728 ok=true", result);
         }
         finally
         {

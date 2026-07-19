@@ -1,6 +1,7 @@
 using TypeSharp.Syntax;
 using TypeSharp.Syntax.Parser;
 using TypeSharp.Syntax.SyntaxTree;
+using System.Numerics;
 using Xunit;
 
 namespace TypeSharp.Syntax.Tests;
@@ -33,6 +34,16 @@ public class LexerTests
         var tokens = lexer.Tokenize();
         Assert.Equal(TokenKind.FloatLiteral, tokens[0].Kind);
         Assert.Equal(3.14, tokens[0].Value);
+    }
+
+    [Fact]
+    public void TokenizeBigIntLiteralBeyondUInt64()
+    {
+        var lexer = new Lexer("18446744073709551616n");
+        var tokens = lexer.Tokenize();
+        Assert.Equal(TokenKind.IntegerLiteral, tokens[0].Kind);
+        Assert.Equal("18446744073709551616n", tokens[0].Text);
+        Assert.Equal(BigInteger.Parse("18446744073709551616"), tokens[0].Value);
     }
 
     [Fact]
@@ -101,6 +112,21 @@ public class LexerTests
         var tokens = lexer.Tokenize();
         Assert.Equal(TokenKind.IntegerLiteral, tokens[0].Kind);
         Assert.Equal(255L, tokens[0].Value);
+    }
+
+    [Fact]
+    public void TokenizePrefixedBigIntLiterals()
+    {
+        var lexer = new Lexer("0xffffffffn 0b1010n 0o17n 0XFFn");
+        var tokens = lexer.Tokenize();
+        Assert.Equal(TokenKind.IntegerLiteral, tokens[0].Kind);
+        Assert.Equal(new BigInteger(4294967295UL), tokens[0].Value);
+        Assert.Equal(TokenKind.IntegerLiteral, tokens[1].Kind);
+        Assert.Equal(new BigInteger(10), tokens[1].Value);
+        Assert.Equal(TokenKind.IntegerLiteral, tokens[2].Kind);
+        Assert.Equal(new BigInteger(15), tokens[2].Value);
+        Assert.Equal(TokenKind.IntegerLiteral, tokens[3].Kind);
+        Assert.Equal(new BigInteger(255), tokens[3].Value);
     }
 
     [Fact]
@@ -245,6 +271,20 @@ public class ParserTests
         var arrayType = Assert.IsType<ArrayTypeSyntax>(field.TypeAnnotation);
 
         Assert.IsType<UnionTypeSyntax>(arrayType.ElementType);
+    }
+
+    [Fact]
+    public void ParseObjectLiteralShorthandProperty()
+    {
+        var tree = Parse("const messageId = 42; const registration = { messageId, raw: true };");
+        Assert.Equal(2, tree.Members.Count);
+        var registration = Assert.IsType<VariableDeclarationSyntax>(tree.Members[1]);
+        var literal = Assert.IsType<ObjectLiteralExpressionSyntax>(registration.Initializer);
+
+        Assert.Equal("messageId", literal.Properties[0].Key);
+        var shorthandValue = Assert.IsType<IdentifierExpressionSyntax>(literal.Properties[0].Value);
+        Assert.Equal("messageId", shorthandValue.Name);
+        Assert.Equal("raw", literal.Properties[1].Key);
     }
 
     [Fact]

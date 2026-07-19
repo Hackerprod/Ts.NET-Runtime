@@ -1,4 +1,5 @@
 using TypeSharp.Semantics.Symbols;
+using System.Numerics;
 using TypeSharp.Semantics.TypeSystem;
 using TypeSharp.Syntax;
 using TypeSharp.Syntax.Diagnostics;
@@ -22,6 +23,7 @@ public sealed class Binder
     private bool _inConstructor;
     private int _lambdaCounter;
     private int _forOfCounter;
+    private int _loopDepth;
     private string _currentSourceFileName = "module";
 
     // Generic type parameters in scope, innermost last.
@@ -33,6 +35,8 @@ public sealed class Binder
     private int _functionDepth;
     private readonly Dictionary<Symbol, int> _symbolFunctionDepth = new();
     private readonly List<(int FunctionDepth, List<Symbol> Captured)> _captureCollectors = new();
+
+    private sealed record NullCheckNarrowing(Symbol Symbol, TsType TrueType, TsType FalseType);
 
     private void DefineWithDepth(Symbol symbol)
     {
@@ -127,18 +131,6 @@ public sealed class Binder
         listType.Methods["firstOrNull"] = new TsMethod("firstOrNull", TsType.Any, new List<TsParameter>());
         _classTypes["List"] = listType;
 
-        var mapType = new TsClassType("Map");
-        mapType.Methods["set"] = new TsMethod("set", TsType.Void, new List<TsParameter>
-        {
-            new("key", TsType.Any),
-            new("value", TsType.Any)
-        });
-        mapType.Methods["get"] = new TsMethod("get", TsType.Any, new List<TsParameter>
-        {
-            new("key", TsType.Any)
-        });
-        _classTypes["Map"] = mapType;
-
         RegisterJsGlobals();
     }
 
@@ -209,7 +201,9 @@ public sealed class Binder
         DefineGlobalFunction("isNaN", TsType.Bool);
         DefineGlobalFunction("isFinite", TsType.Bool);
         DefineGlobalFunction("String", TsType.String);
+        DefineGlobalFunction("Number", TsType.Number);
         DefineGlobalFunction("Boolean", TsType.Bool);
+        DefineGlobalFunction("BigInt", TsType.BigInt);
     }
 
     private void DefineGlobalFunction(string name, TsType returnType)
@@ -931,6 +925,8 @@ public sealed class Binder
             IfStatementSyntax ifStmt => BindIf(ifStmt),
             WhileStatementSyntax whileStmt => BindWhile(whileStmt),
             ForStatementSyntax forStmt => BindFor(forStmt),
+            BreakStatementSyntax breakStmt => BindBreak(breakStmt),
+            ContinueStatementSyntax continueStmt => BindContinue(continueStmt),
             ThrowStatementSyntax throwStmt => BindThrow(throwStmt),
             TryStatementSyntax tryStmt => BindTry(tryStmt),
             ForOfStatementSyntax forOf => BindForOf(forOf),
@@ -1061,7 +1057,14 @@ public sealed class Binder
 
     private BoundReturnStatement BindReturn(ReturnStatementSyntax ret)
     {
-        BoundNode? value = ret.Value != null ? BindExpression(ret.Value) : null;
+        var expectedReturnType = _currentFunctionReturnType is { } functionReturnType && functionReturnType != TsType.Void
+            ? functionReturnType
+            : null;
+        BoundNode? value = ret.Value != null
+            ? expectedReturnType != null
+                ? BindExpressionWithExpectedType(ret.Value, expectedReturnType)
+                : BindExpression(ret.Value)
+            : null;
 
         if (_currentFunctionReturnType != null && _currentFunctionReturnType != TsType.Void)
         {
@@ -1117,16 +1120,159 @@ public sealed class Binder
     {
         var condition = BindExpression(ifStmt.Condition);
         ValidateCondition(condition, ifStmt.Condition.Range.Start);
-        var thenBranch = BindStatement(ifStmt.ThenBranch);
-        var elseBranch = ifStmt.ElseBranch != null ? BindStatement(ifStmt.ElseBranch) : null;
+        var narrowing = TryGetNullCheckNarrowing(ifStmt.Condition);
+        var thenBranch = narrowing != null
+            ? BindStatementWithTemporaryType(ifStmt.ThenBranch, narrowing.Symbol, narrowing.TrueType)
+            : BindStatement(ifStmt.ThenBranch);
+        var elseBranch = ifStmt.ElseBranch != null
+            ? narrowing != null
+                ? BindStatementWithTemporaryType(ifStmt.ElseBranch, narrowing.Symbol, narrowing.FalseType)
+                : BindStatement(ifStmt.ElseBranch)
+            : null;
         return new BoundIfStatement(condition, thenBranch, elseBranch);
+    }
+
+    private BoundNode BindStatementWithTemporaryType(SyntaxNode statement, Symbol symbol, TsType type)
+    {
+        var previous = symbol.Type;
+        symbol.Type = type;
+        try
+        {
+            return BindStatement(statement);
+        }
+        finally
+        {
+            symbol.Type = previous;
+        }
+    }
+
+    private NullCheckNarrowing? TryGetNullCheckNarrowing(ExpressionSyntax condition)
+    {
+        if (condition is not BinaryExpressionSyntax binary)
+        {
+            return null;
+        }
+
+        if (!TryGetIdentifierNullComparison(binary, out var identifierName, out var equalityIsTrueWhenNull))
+        {
+            return null;
+        }
+
+        var symbol = _symbolTable.Lookup(identifierName);
+        if (symbol is not (LocalSymbol or ParameterSymbol))
+        {
+            return null;
+        }
+
+        if (!TryRemoveNull(symbol.Type, out var nonNullType))
+        {
+            return null;
+        }
+
+        return equalityIsTrueWhenNull
+            ? new NullCheckNarrowing(symbol, TsType.Null, nonNullType)
+            : new NullCheckNarrowing(symbol, nonNullType, TsType.Null);
+    }
+
+    private static bool TryGetIdentifierNullComparison(
+        BinaryExpressionSyntax binary,
+        out string identifierName,
+        out bool equalityIsTrueWhenNull)
+    {
+        identifierName = string.Empty;
+        equalityIsTrueWhenNull = false;
+
+        var comparesEqual = binary.OperatorToken.Kind is TokenKind.DoubleEquals or TokenKind.TripleEquals;
+        var comparesNotEqual = binary.OperatorToken.Kind is TokenKind.NotEquals or TokenKind.StrictNotEquals;
+        if (!comparesEqual && !comparesNotEqual)
+        {
+            return false;
+        }
+
+        IdentifierExpressionSyntax? identifier = null;
+        if (binary.Left is IdentifierExpressionSyntax left && IsNullLiteral(binary.Right))
+        {
+            identifier = left;
+        }
+        else if (binary.Right is IdentifierExpressionSyntax right && IsNullLiteral(binary.Left))
+        {
+            identifier = right;
+        }
+
+        if (identifier == null)
+        {
+            return false;
+        }
+
+        identifierName = identifier.Name;
+        equalityIsTrueWhenNull = comparesEqual;
+        return true;
+    }
+
+    private static bool IsNullLiteral(ExpressionSyntax expression) =>
+        expression is LiteralExpressionSyntax literal && literal.Token.Kind == TokenKind.NullLiteral;
+
+    private static bool TryRemoveNull(TsType type, out TsType nonNullType)
+    {
+        switch (type)
+        {
+            case TsNullableType nullable:
+                nonNullType = nullable.ElementType;
+                return true;
+            case TsUnionType union:
+                var narrowed = new List<TsType>();
+                var changed = false;
+                foreach (var candidate in union.Types)
+                {
+                    if (candidate is TsNullType)
+                    {
+                        changed = true;
+                        continue;
+                    }
+
+                    if (candidate is TsNullableType nullableCandidate)
+                    {
+                        narrowed.Add(nullableCandidate.ElementType);
+                        changed = true;
+                        continue;
+                    }
+
+                    narrowed.Add(candidate);
+                }
+
+                if (!changed)
+                {
+                    nonNullType = type;
+                    return false;
+                }
+
+                nonNullType = narrowed.Count switch
+                {
+                    0 => TsType.Void,
+                    1 => narrowed[0],
+                    _ => new TsUnionType(narrowed)
+                };
+                return true;
+            default:
+                nonNullType = type;
+                return false;
+        }
     }
 
     private BoundWhileStatement BindWhile(WhileStatementSyntax whileStmt)
     {
         var condition = BindExpression(whileStmt.Condition);
         ValidateCondition(condition, whileStmt.Condition.Range.Start);
-        var body = BindStatement(whileStmt.Body);
+        _loopDepth++;
+        BoundNode body;
+        try
+        {
+            body = BindStatement(whileStmt.Body);
+        }
+        finally
+        {
+            _loopDepth--;
+        }
         return new BoundWhileStatement(condition, body);
     }
 
@@ -1155,11 +1301,40 @@ public sealed class Binder
         BoundNode? initializer = forStmt.Initializer != null ? BindStatement(forStmt.Initializer) : null;
         BoundNode? condition = forStmt.Condition != null ? BindExpression(forStmt.Condition) : null;
         BoundNode? iterator = forStmt.Iterator != null ? BindExpression(forStmt.Iterator) : null;
-        var body = BindStatement(forStmt.Body);
+        _loopDepth++;
+        BoundNode body;
+        try
+        {
+            body = BindStatement(forStmt.Body);
+        }
+        finally
+        {
+            _loopDepth--;
+        }
 
         _symbolTable.PopScope();
 
         return new BoundForStatement(initializer, condition, iterator, body);
+    }
+
+    private BoundBreakStatement BindBreak(BreakStatementSyntax breakStmt)
+    {
+        if (_loopDepth == 0)
+        {
+            _diagnostics.Error("'break' can only be used inside a loop", breakStmt.Range.Start, DiagnosticCode.TS2016);
+        }
+
+        return new BoundBreakStatement();
+    }
+
+    private BoundContinueStatement BindContinue(ContinueStatementSyntax continueStmt)
+    {
+        if (_loopDepth == 0)
+        {
+            _diagnostics.Error("'continue' can only be used inside a loop", continueStmt.Range.Start, DiagnosticCode.TS2016);
+        }
+
+        return new BoundContinueStatement();
     }
 
     private BoundThrowStatement BindThrow(ThrowStatementSyntax throwStmt)
@@ -1240,7 +1415,12 @@ public sealed class Binder
         switch (lit.Token.Kind)
         {
             case TokenKind.IntegerLiteral:
-                if (lit.Token.Value is ulong ul)
+                if (lit.Token.Value is BigInteger bi)
+                {
+                    type = TsType.BigInt;
+                    value = bi;
+                }
+                else if (lit.Token.Value is ulong ul)
                 {
                     type = lit.Token.Text.EndsWith("n", StringComparison.Ordinal)
                         ? TsType.BigInt
@@ -1538,13 +1718,6 @@ public sealed class Binder
         IReadOnlyDictionary<string, TsType> genericMap = new Dictionary<string, TsType>();
         if (objType is TsGenericType generic)
         {
-            if (generic.Definition is TsClassType { Name: "Map" } &&
-                member.MemberName == "get" && generic.TypeArguments.Count == 2)
-            {
-                var getSymbol = new MethodSymbol("get", new TsNullableType(generic.TypeArguments[1]), member.Range);
-                getSymbol.Parameters.Add(new ParameterSymbol("key", generic.TypeArguments[0], member.Range));
-                return new BoundMemberAccessExpression(obj, getSymbol);
-            }
             if (generic.Definition is TsClassType genericClass)
                 genericMap = TsType.CreateGenericMap(genericClass.TypeParameters, generic.TypeArguments);
             else if (generic.Definition is TsInterfaceType genericInterface)
@@ -1593,6 +1766,10 @@ public sealed class Binder
         else if (objType is TsArrayType arrayType)
         {
             memberSym = BindArrayMember(arrayType, member.MemberName, member.Range);
+        }
+        else if (objType is TsMapType mapType)
+        {
+            memberSym = BindMapMember(mapType, member.MemberName, member.Range);
         }
         else if (objType is TsTupleType tupleType)
         {
@@ -2111,7 +2288,16 @@ public sealed class Binder
                 new BoundVariableExpression(idxSym),
                 elementType));
 
-        var body = BindStatement(forOf.Body);
+        _loopDepth++;
+        BoundNode body;
+        try
+        {
+            body = BindStatement(forOf.Body);
+        }
+        finally
+        {
+            _loopDepth--;
+        }
         var loopBody = new BoundBlockStatement(new List<BoundNode> { elementDecl, body });
         var loop = new BoundForStatement(idxDecl, condition, increment, loopBody);
 
@@ -2249,6 +2435,44 @@ public sealed class Binder
         return null;
     }
 
+    private Symbol? BindMapMember(TsMapType mapType, string name, SourceRange range)
+    {
+        switch (name)
+        {
+            case "size":
+                return new PropertySymbol("size", TsType.Number, range) { IsReadonly = true };
+            case "set":
+            {
+                var set = new MethodSymbol("set", mapType, range) { DeclaringClassName = "Map" };
+                set.Parameters.Add(new ParameterSymbol("key", mapType.KeyType, range));
+                set.Parameters.Add(new ParameterSymbol("value", mapType.ValueType, range));
+                return set;
+            }
+            case "get":
+            {
+                var get = new MethodSymbol("get", new TsNullableType(mapType.ValueType), range) { DeclaringClassName = "Map" };
+                get.Parameters.Add(new ParameterSymbol("key", mapType.KeyType, range));
+                return get;
+            }
+            case "has":
+            {
+                var has = new MethodSymbol("has", TsType.Bool, range) { DeclaringClassName = "Map" };
+                has.Parameters.Add(new ParameterSymbol("key", mapType.KeyType, range));
+                return has;
+            }
+            case "delete":
+            {
+                var delete = new MethodSymbol("delete", TsType.Bool, range) { DeclaringClassName = "Map" };
+                delete.Parameters.Add(new ParameterSymbol("key", mapType.KeyType, range));
+                return delete;
+            }
+            case "clear":
+                return new MethodSymbol("clear", TsType.Void, range) { DeclaringClassName = "Map" };
+            default:
+                return null;
+        }
+    }
+
     private TsType ResolveNamedType(NamedTypeSyntax named)
     {
         if (named.Name is "null" or "undefined")
@@ -2269,6 +2493,13 @@ public sealed class Binder
             return new TsPromiseType(named.TypeArguments.Count > 0
                 ? ResolveType(named.TypeArguments[0])
                 : TsType.Any);
+        }
+
+        if (named.Name == "Map")
+        {
+            return new TsMapType(
+                named.TypeArguments.Count > 0 ? ResolveType(named.TypeArguments[0]) : TsType.Any,
+                named.TypeArguments.Count > 1 ? ResolveType(named.TypeArguments[1]) : TsType.Any);
         }
 
         if (named.Name is "Uint8Array" or "Uint8ClampedArray")
@@ -2328,6 +2559,23 @@ public sealed class Binder
     // Type inference helpers
     private static TsType InferBinaryResultType(TsType left, TsType right, TokenKind op)
     {
+        if (op == TokenKind.QuestionQuestion)
+        {
+            if (left is TsNullableType nullableLeft)
+            {
+                return TsType.IsCompatibleWith(nullableLeft.ElementType, right)
+                    ? nullableLeft.ElementType
+                    : right;
+            }
+
+            if (left is TsNullType or TsAnyType)
+            {
+                return right;
+            }
+
+            return TsType.IsCompatibleWith(left, right) ? left : right;
+        }
+
         if (left is TsAnyType || right is TsAnyType)
         {
             // Comparisons stay bool; arithmetic on a dynamic operand stays
@@ -2341,6 +2589,9 @@ public sealed class Binder
                 _ => TsType.Any
             };
         }
+
+        if (op == TokenKind.Plus && (left == TsType.String || right == TsType.String))
+            return TsType.String;
 
         if (left == TsType.BigInt || right == TsType.BigInt)
         {
@@ -2361,12 +2612,7 @@ public sealed class Binder
             TokenKind.LessOrEqual or TokenKind.GreaterOrEqual or
             TokenKind.AmpersandAmpersand or TokenKind.PipePipe => TsType.Bool,
 
-            TokenKind.QuestionQuestion => right,
-
             TokenKind.StarStar => TsType.Number,
-
-            TokenKind.Plus when left == TsType.String && right == TsType.String => TsType.String,
-
             _ => left.IsNumeric && right.IsNumeric ? WiderNumeric(left, right) : TsType.Void
         };
     }
