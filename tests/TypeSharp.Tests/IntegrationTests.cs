@@ -436,6 +436,49 @@ function main(): int32 {
     }
 
     [Fact]
+    public void Compilation_ClassMethodCanCallLaterMethod()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "worker.ts"), @"
+export class Worker {
+    run(value: int32): boolean {
+        return this.isExpected(value);
+    }
+
+    isExpected(value: int32): boolean {
+        return value == 42;
+    }
+}
+");
+            File.WriteAllText(Path.Combine(dir, "app.ts"), @"
+import { Worker } from './worker';
+
+function main(): boolean {
+    const worker = new Worker();
+    return worker.run(42);
+}
+");
+
+            var runtime = new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync()
+                .GetAwaiter()
+                .GetResult();
+
+            var result = runtime.Invoke("main");
+
+            Assert.NotNull(result);
+            Assert.IsType<TsBoolValue>(result);
+            Assert.True(((TsBoolValue)result).Value);
+
+            runtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
     public void Compilation_ImportBinding_SecondModule()
     {
         var dir = TempDir();

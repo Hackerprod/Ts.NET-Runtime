@@ -284,9 +284,45 @@ public sealed class Binder
                 PopTypeParameters();
                 break;
             case ClassDeclarationSyntax cls:
-                if (cls.BaseType != null && ResolveType(cls.BaseType) is TsClassType baseClass &&
-                    _classTypes.TryGetValue(cls.Name, out var classType))
+                if (!_classTypes.TryGetValue(cls.Name, out var classType))
+                    break;
+
+                PushTypeParameters(cls.GenericParameters);
+
+                if (cls.BaseType != null && ResolveType(cls.BaseType) is TsClassType baseClass)
                     classType.BaseType = baseClass;
+
+                foreach (var classMember in cls.Members)
+                {
+                    switch (classMember)
+                    {
+                        case ConstructorDeclarationSyntax ctor:
+                            classType.Constructor = new TsMethod("constructor", TsType.Void,
+                                ctor.Parameters.Select(p => new TsParameter(p.Name, ResolveType(p.TypeAnnotation))).ToList());
+                            foreach (var p in ctor.Parameters)
+                            {
+                                if (p.IsPropertyParameter)
+                                    classType.Fields[p.Name] = new TsField(p.Name, ResolveType(p.TypeAnnotation));
+                            }
+                            break;
+
+                        case FieldDeclarationSyntax field:
+                            classType.Fields[field.Name] = new TsField(field.Name, ResolveType(field.TypeAnnotation));
+                            break;
+
+                        case MethodDeclarationSyntax method:
+                            classType.Methods[method.Name] = new TsMethod(method.Name,
+                                ResolveType(method.ReturnType) ?? TsType.Void,
+                                method.Parameters.Select(p => new TsParameter(p.Name, ResolveType(p.TypeAnnotation))).ToList());
+                            break;
+
+                        case PropertyDeclarationSyntax prop:
+                            classType.Properties[prop.Name] = new TsProperty(prop.Name, ResolveType(prop.TypeAnnotation));
+                            break;
+                    }
+                }
+
+                PopTypeParameters();
                 break;
 
             case InterfaceDeclarationSyntax iface:
