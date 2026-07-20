@@ -476,9 +476,13 @@ public readonly record struct TryHandler(int HandlerOffset, int StackDepth);
 // Frame for VM execution
 public sealed class CallFrame
 {
+    private const int InitialStackSlots = 256;
+    private const int MaxStackSlots = 1_048_576;
+    private TsValue[] _stack;
+
     public BytecodeFunction Function { get; }
     public TsValue[] Locals { get; }
-    public TsValue[] Stack { get; }
+    public TsValue[] Stack => _stack;
     public int StackPointer { get; set; }
     public int InstructionPointer;
     public CallFrame? Caller { get; set; }
@@ -488,7 +492,7 @@ public sealed class CallFrame
     {
         Function = function;
         Locals = new TsValue[function.LocalCount + function.ParameterCount];
-        Stack = new TsValue[256]; // fixed stack size for now
+        _stack = new TsValue[InitialStackSlots];
         StackPointer = 0;
         InstructionPointer = 0;
         Caller = caller;
@@ -499,8 +503,7 @@ public sealed class CallFrame
 
     public void Push(TsValue value)
     {
-        if (StackPointer >= Stack.Length)
-            throw new InvalidOperationException("Stack overflow");
+        EnsureStackCapacity(StackPointer + 1);
         Stack[StackPointer++] = value;
     }
 
@@ -508,10 +511,35 @@ public sealed class CallFrame
     {
         if (StackPointer <= 0)
             throw new InvalidOperationException("Stack underflow");
-        return Stack[--StackPointer];
+
+        var value = Stack[--StackPointer];
+        Stack[StackPointer] = TsValue.Void;
+        return value;
     }
 
     public TsValue Peek() => StackPointer > 0 ? Stack[StackPointer - 1] : TsValue.Null;
+
+    private void EnsureStackCapacity(int neededSlots)
+    {
+        if (neededSlots <= _stack.Length)
+            return;
+
+        if (neededSlots > MaxStackSlots)
+            throw new InvalidOperationException($"Operand stack limit exceeded ({neededSlots} > {MaxStackSlots})");
+
+        var newLength = _stack.Length;
+        while (newLength < neededSlots)
+        {
+            newLength *= 2;
+            if (newLength < 0 || newLength > MaxStackSlots)
+            {
+                newLength = MaxStackSlots;
+                break;
+            }
+        }
+
+        Array.Resize(ref _stack, newLength);
+    }
 }
 
 // Heap for object allocation
