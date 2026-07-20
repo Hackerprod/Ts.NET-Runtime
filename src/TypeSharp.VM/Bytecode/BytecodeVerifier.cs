@@ -112,6 +112,12 @@ public static class BytecodeVerifier
             case Opcodes.LoadConstBool:
                 if (code[offset] > 1) Fail(function, "boolean literal must be 0 or 1");
                 break;
+            case Opcodes.DeleteField:
+            {
+                int first = ReadInt32(code, offset);
+                if (first < 0 || first >= function.StringConstants.Length) Fail(function, $"string index {first} is out of range");
+                break;
+            }
         }
     }
 

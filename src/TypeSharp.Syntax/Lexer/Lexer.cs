@@ -54,7 +54,10 @@ public sealed class Lexer
         ["return"] = TokenKind.ReturnKeyword,
         ["if"] = TokenKind.IfKeyword,
         ["else"] = TokenKind.ElseKeyword,
+        ["switch"] = TokenKind.SwitchKeyword,
+        ["case"] = TokenKind.CaseKeyword,
         ["while"] = TokenKind.WhileKeyword,
+        ["do"] = TokenKind.DoKeyword,
         ["for"] = TokenKind.ForKeyword,
         ["break"] = TokenKind.BreakKeyword,
         ["continue"] = TokenKind.ContinueKeyword,
@@ -75,6 +78,7 @@ public sealed class Lexer
         ["try"] = TokenKind.TryKeyword,
         ["catch"] = TokenKind.CatchKeyword,
         ["finally"] = TokenKind.FinallyKeyword,
+        ["delete"] = TokenKind.DeleteKeyword,
     };
 
     public Lexer(string source, string fileName = "<input>")

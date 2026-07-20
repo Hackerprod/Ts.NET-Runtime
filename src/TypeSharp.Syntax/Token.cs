@@ -53,7 +53,10 @@ public enum TokenKind
     ReturnKeyword,
     IfKeyword,
     ElseKeyword,
+    SwitchKeyword,
+    CaseKeyword,
     WhileKeyword,
+    DoKeyword,
     ForKeyword,
     BreakKeyword,
     ContinueKeyword,
@@ -80,6 +83,7 @@ public enum TokenKind
     PromiseKeyword,
     InstanceofKeyword,
     ExtendsKeyword,
+    DeleteKeyword,
 
     // Punctuation
     OpenParen,

@@ -13,10 +13,11 @@ public sealed class BytecodeFunction
     public long[] IntegerConstants { get; }
     public double[] DoubleConstants { get; }
     public decimal[] DecimalConstants { get; }
+    public int OperandStackCapacity { get; }
 
     public BytecodeFunction(string name, byte[] instructions, int parameterCount, int localCount,
         bool isAsync, string[] stringConstants, long[] integerConstants, double[] doubleConstants,
-        decimal[]? decimalConstants = null)
+        decimal[]? decimalConstants = null, int operandStackCapacity = 0)
     {
         Name = name;
         Instructions = instructions;
@@ -27,6 +28,7 @@ public sealed class BytecodeFunction
         IntegerConstants = integerConstants;
         DoubleConstants = doubleConstants;
         DecimalConstants = decimalConstants ?? Array.Empty<decimal>();
+        OperandStackCapacity = operandStackCapacity;
     }
 }
 
@@ -95,6 +97,7 @@ public static class BytecodeCompiler
 
         var bytecode = writer.ToArray();
         PatchBranchTargets(bytecode, function.Blocks, blockStarts);
+        var stackCapacity = ComputeMaxStackDepth(function);
 
         return new BytecodeFunction(
             function.Name,
@@ -105,8 +108,111 @@ public static class BytecodeCompiler
             stringConstants,
             intConstants,
             doubleConstants,
-            decimalConstants);
+            decimalConstants,
+            stackCapacity);
     }
+
+    // ────────────────────────────────────────────────────────
+    //  Stack depth analysis
+    // ────────────────────────────────────────────────────────
+
+    private static int ComputeMaxStackDepth(FunctionIR function)
+    {
+        // Conservative linear scan: walk all blocks tracking peak depth.
+        // Each block is analyzed independently starting from depth 0
+        // (safe upper bound since blocks may be reached from different depths).
+        int maxDepth = 0;
+
+        foreach (var block in function.Blocks)
+        {
+            int currentDepth = 0;
+            foreach (var instr in block.Instructions)
+            {
+                int delta = StackDelta(instr);
+                currentDepth += delta;
+                if (currentDepth > maxDepth)
+                    maxDepth = currentDepth;
+            }
+        }
+
+        return Math.Max(maxDepth + 4, 256); // small safety margin
+    }
+
+    private static int StackDelta(Instruction instr) => instr.Opcode switch
+    {
+        // Pushes
+        Opcode.LoadConst_I32 or Opcode.LoadConst_I64 or Opcode.LoadConst_U64 or
+        Opcode.LoadConst_BigInt or Opcode.LoadConst_F32 or Opcode.LoadConst_F64 or
+        Opcode.LoadConst_Decimal or Opcode.LoadConst_String or Opcode.LoadConst_Bool or
+        Opcode.LoadConst_Null or Opcode.LoadConst_Void or
+        Opcode.LoadLocal or Opcode.LoadArg or Opcode.LoadThis or
+        Opcode.LoadField or Opcode.LoadGlobal or
+        Opcode.LoadFunc => 1,
+
+        Opcode.CopyObjectFields => -2,
+        Opcode.LoadElement => -1, // pop obj + index, push value
+        Opcode.NewMap => 1,
+
+        // NewArray: pops N (operand0) elements, pushes 1 array
+        Opcode.NewArray => 1 - instr.Operand0,
+        // NewObject: pops args (operand1), pushes 1 result
+        Opcode.NewObject => 1 - instr.Operand1,
+        Opcode.Add_I32 or Opcode.Sub_I32 or Opcode.Mul_I32 or Opcode.Div_I32 or Opcode.Mod_I32 or
+        Opcode.Add_I64 or Opcode.Sub_I64 or Opcode.Mul_I64 or Opcode.Div_I64 or Opcode.Mod_I64 or
+        Opcode.Add_U64 or Opcode.Sub_U64 or Opcode.Mul_U64 or Opcode.Div_U64 or Opcode.Mod_U64 or
+        Opcode.Add_F32 or Opcode.Sub_F32 or Opcode.Mul_F32 or Opcode.Div_F32 or
+        Opcode.Add_F64 or Opcode.Sub_F64 or Opcode.Mul_F64 or Opcode.Div_F64 or Opcode.Pow_F64 or
+        Opcode.Add_Decimal or Opcode.Sub_Decimal or Opcode.Mul_Decimal or Opcode.Div_Decimal or Opcode.Mod_Decimal or
+        Opcode.And_I32 or Opcode.And_I64 or Opcode.And_U64 or
+        Opcode.Or_I32 or Opcode.Or_I64 or Opcode.Or_U64 or
+        Opcode.Xor_I32 or Opcode.Xor_I64 or Opcode.Xor_U64 or
+        Opcode.Shl_I32 or Opcode.Shl_I64 or Opcode.Shl_U64 or
+        Opcode.Shr_I32 or Opcode.Shr_I64 or Opcode.Shr_U64 or
+        Opcode.CmpEq_I32 or Opcode.CmpNe_I32 or Opcode.CmpLt_I32 or Opcode.CmpLe_I32 or Opcode.CmpGt_I32 or Opcode.CmpGe_I32 or
+        Opcode.CmpEq_I64 or Opcode.CmpNe_I64 or Opcode.CmpLt_I64 or Opcode.CmpLe_I64 or Opcode.CmpGt_I64 or Opcode.CmpGe_I64 or
+        Opcode.CmpEq_U64 or Opcode.CmpNe_U64 or Opcode.CmpLt_U64 or Opcode.CmpLe_U64 or Opcode.CmpGt_U64 or Opcode.CmpGe_U64 or
+        Opcode.CmpEq_F32 or Opcode.CmpNe_F32 or Opcode.CmpLt_F32 or Opcode.CmpLe_F32 or Opcode.CmpGt_F32 or Opcode.CmpGe_F32 or
+        Opcode.CmpEq_F64 or Opcode.CmpNe_F64 or Opcode.CmpLt_F64 or Opcode.CmpLe_F64 or Opcode.CmpGt_F64 or Opcode.CmpGe_F64 or
+        Opcode.CmpEq_Decimal or Opcode.CmpNe_Decimal or Opcode.CmpLt_Decimal or Opcode.CmpLe_Decimal or Opcode.CmpGt_Decimal or Opcode.CmpGe_Decimal or
+        Opcode.CmpEq_Any or Opcode.CmpNe_Any or Opcode.CmpStrictEq_Any or Opcode.CmpStrictNe_Any or
+        Opcode.And_Bool or Opcode.Or_Bool or
+        Opcode.ConcatString => -1,
+
+        // Store operations
+        Opcode.StoreLocal or Opcode.StoreGlobal => -1, // pop value
+        Opcode.StoreField => -2, // pop value + obj
+        Opcode.StoreElement => -3, // pop value + index + obj
+        Opcode.Pop or Opcode.Return => -1,
+
+        // Dup: push 1
+        Opcode.Dup => 1,
+
+        // Call: -(argCount + 1) + 1 = -argCount
+        Opcode.Call or Opcode.CallVirt => -(instr.Operand1),
+        Opcode.CallDynamic => -(instr.Operand1),
+
+        // Return
+        Opcode.ReturnVoid => 0,
+
+        // Branch/flow: neutral
+        Opcode.Branch => 0,
+        Opcode.BranchTrue or Opcode.BranchFalse => -1,
+
+        // Exception
+        Opcode.Throw => -1,
+        Opcode.EnterTry or Opcode.LeaveTry => 0,
+
+        // Misc
+        Opcode.Nop => 0,
+        Opcode.NullCheck => 1, // peek + push
+        Opcode.TypeCheck => 1, // peek + push
+
+        // Delete
+        Opcode.DeleteField => -1, // pop obj, push bool
+        Opcode.DeleteIndex => -2, // pop obj + index, push bool
+
+        _ => 0,
+    };
 
     // ────────────────────────────────────────────────────────
     //  Emit single instruction
@@ -407,6 +513,11 @@ public static class BytecodeCompiler
             case Opcode.CmpStrictNe_Any: writer.Write(Opcodes.CmpStrictNeAny); break;
             case Opcode.Pow_F64: writer.Write(Opcodes.PowF64); break;
             case Opcode.TypeOf: writer.Write(Opcodes.TypeOf); break;
+            case Opcode.DeleteField:
+                writer.Write(Opcodes.DeleteField);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.DeleteIndex: writer.Write(Opcodes.DeleteIndex); break;
             case Opcode.EnterTry:
                 writer.Write(Opcodes.EnterTry);
                 writer.WriteInt32(instr.Operand0);
@@ -447,6 +558,7 @@ public static class BytecodeCompiler
                         Opcode.NewObject or
                         Opcode.LoadField or
                         Opcode.StoreField or
+                        Opcode.DeleteField or
                         Opcode.LoadGlobal or
                         Opcode.StoreGlobal or
                         Opcode.LoadFunc or

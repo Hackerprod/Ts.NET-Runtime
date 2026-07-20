@@ -18,6 +18,8 @@ public enum SyntaxNodeType
     LambdaExpression,
     AwaitExpression,
     TypeofExpression,
+    VoidExpression,
+    DeleteExpression,
     ObjectLiteralExpression,
     ArrayLiteralExpression,
     AsExpression,
@@ -29,7 +31,10 @@ public enum SyntaxNodeType
     ExpressionStatement,
     ReturnStatement,
     IfStatement,
+    SwitchStatement,
+    SwitchClause,
     WhileStatement,
+    DoWhileStatement,
     ForStatement,
     BreakStatement,
     ContinueStatement,
@@ -480,6 +485,45 @@ public sealed class IfStatementSyntax : StatementSyntax
     }
 }
 
+public sealed class SwitchClauseSyntax : SyntaxNode
+{
+    public ExpressionSyntax? Test { get; }
+    public List<SyntaxNode> Statements { get; }
+    public bool IsDefault => Test == null;
+
+    public SwitchClauseSyntax(ExpressionSyntax? test, List<SyntaxNode> statements, SourceRange range)
+        : base(SyntaxNodeType.SwitchClause, range)
+    {
+        Test = test;
+        Statements = statements;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        if (Test != null) yield return Test;
+        foreach (var statement in Statements) yield return statement;
+    }
+}
+
+public sealed class SwitchStatementSyntax : StatementSyntax
+{
+    public ExpressionSyntax Expression { get; }
+    public List<SwitchClauseSyntax> Clauses { get; }
+
+    public SwitchStatementSyntax(ExpressionSyntax expression, List<SwitchClauseSyntax> clauses, SourceRange range)
+        : base(SyntaxNodeType.SwitchStatement, range)
+    {
+        Expression = expression;
+        Clauses = clauses;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        yield return Expression;
+        foreach (var clause in Clauses) yield return clause;
+    }
+}
+
 public sealed class WhileStatementSyntax : StatementSyntax
 {
     public ExpressionSyntax Condition { get; }
@@ -493,6 +537,21 @@ public sealed class WhileStatementSyntax : StatementSyntax
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Condition, Body };
+}
+
+public sealed class DoWhileStatementSyntax : StatementSyntax
+{
+    public StatementSyntax Body { get; }
+    public ExpressionSyntax Condition { get; }
+
+    public DoWhileStatementSyntax(StatementSyntax body, ExpressionSyntax condition, SourceRange range)
+        : base(SyntaxNodeType.DoWhileStatement, range)
+    {
+        Body = body;
+        Condition = condition;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Body, Condition };
 }
 
 public sealed class ForStatementSyntax : StatementSyntax
@@ -1045,6 +1104,34 @@ public sealed class TypeofExpressionSyntax : ExpressionSyntax
 
     public TypeofExpressionSyntax(ExpressionSyntax operand, SourceRange range)
         : base(SyntaxNodeType.TypeofExpressionNode, range)
+    {
+        Operand = operand;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Operand };
+}
+
+// `void expr` — evaluates the operand, discards result, returns undefined.
+public sealed class VoidExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Operand { get; }
+
+    public VoidExpressionSyntax(ExpressionSyntax operand, SourceRange range)
+        : base(SyntaxNodeType.VoidExpression, range)
+    {
+        Operand = operand;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Operand };
+}
+
+// `delete obj.prop` or `delete obj[expr]` — removes a property, returns bool.
+public sealed class DeleteExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Operand { get; }
+
+    public DeleteExpressionSyntax(ExpressionSyntax operand, SourceRange range)
+        : base(SyntaxNodeType.DeleteExpression, range)
     {
         Operand = operand;
     }

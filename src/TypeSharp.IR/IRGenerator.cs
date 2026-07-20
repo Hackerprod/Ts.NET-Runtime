@@ -28,6 +28,10 @@ public sealed class IRGenerator
     private BoundFunctionDeclaration? _currentDeclaration;
     private readonly Dictionary<Symbol, BoundNode> _moduleConstantInitializers = new();
     private readonly Stack<LoopTargets> _loopTargets = new();
+    // `break` applies to both loops and switches, while `continue` applies to
+    // loops only.  Keep separate stacks so a switch nested in a loop preserves
+    // the enclosing loop's continue target.
+    private readonly Stack<int> _breakTargets = new();
 
     private readonly record struct LoopTargets(int BreakBlockId, int ContinueBlockId);
 
@@ -175,9 +179,21 @@ public sealed class IRGenerator
                 CollectCaptureInfo(ifStmt.ThenBranch);
                 if (ifStmt.ElseBranch != null) CollectCaptureInfo(ifStmt.ElseBranch);
                 break;
+            case BoundSwitchStatement switchStmt:
+                CollectCaptureInfo(switchStmt.Expression);
+                foreach (var clause in switchStmt.Clauses)
+                {
+                    if (clause.Test != null) CollectCaptureInfo(clause.Test);
+                    foreach (var statement in clause.Statements) CollectCaptureInfo(statement);
+                }
+                break;
             case BoundWhileStatement whileStmt:
                 CollectCaptureInfo(whileStmt.Condition);
                 CollectCaptureInfo(whileStmt.Body);
+                break;
+            case BoundDoWhileStatement doWhileStmt:
+                CollectCaptureInfo(doWhileStmt.Body);
+                CollectCaptureInfo(doWhileStmt.Condition);
                 break;
             case BoundForStatement forStmt:
                 if (forStmt.Initializer != null) CollectCaptureInfo(forStmt.Initializer);
@@ -241,6 +257,19 @@ public sealed class IRGenerator
             case BoundTypeofExpression typeofExpr:
                 CollectCaptureInfo(typeofExpr.Operand);
                 break;
+            case BoundVoidExpression voidExpr:
+                CollectCaptureInfo(voidExpr.Operand);
+                break;
+            case BoundDeleteFieldExpression deleteField:
+                CollectCaptureInfo(deleteField.Object);
+                break;
+            case BoundDeleteIndexExpression deleteIndex:
+                CollectCaptureInfo(deleteIndex.Object);
+                CollectCaptureInfo(deleteIndex.Index);
+                break;
+            case BoundDeleteNonReferenceExpression deleteNonRef:
+                CollectCaptureInfo(deleteNonRef.Operand);
+                break;
             case BoundNewExpression newExpr:
                 foreach (var arg in newExpr.Arguments) CollectCaptureInfo(arg);
                 break;
@@ -279,12 +308,19 @@ public sealed class IRGenerator
                 return ContainsCapturedThis(stmt.Expression);
             case BoundReturnStatement { Value: not null } ret:
                 return ContainsCapturedThis(ret.Value);
+            case BoundSwitchStatement switchStmt:
+                return ContainsCapturedThis(switchStmt.Expression)
+                    || switchStmt.Clauses.Any(clause =>
+                        (clause.Test != null && ContainsCapturedThis(clause.Test))
+                        || clause.Statements.Any(ContainsCapturedThis));
             case BoundIfStatement ifStmt:
                 return ContainsCapturedThis(ifStmt.Condition)
                     || ContainsCapturedThis(ifStmt.ThenBranch)
                     || (ifStmt.ElseBranch != null && ContainsCapturedThis(ifStmt.ElseBranch));
             case BoundWhileStatement whileStmt:
                 return ContainsCapturedThis(whileStmt.Condition) || ContainsCapturedThis(whileStmt.Body);
+            case BoundDoWhileStatement doWhileStmt:
+                return ContainsCapturedThis(doWhileStmt.Body) || ContainsCapturedThis(doWhileStmt.Condition);
             case BoundForStatement forStmt:
                 return (forStmt.Initializer != null && ContainsCapturedThis(forStmt.Initializer))
                     || (forStmt.Condition != null && ContainsCapturedThis(forStmt.Condition))
@@ -322,6 +358,8 @@ public sealed class IRGenerator
                 return ContainsCapturedThis(cast.Operand);
             case BoundTypeofExpression typeofExpr:
                 return ContainsCapturedThis(typeofExpr.Operand);
+            case BoundVoidExpression voidExpr:
+                return ContainsCapturedThis(voidExpr.Operand);
             case BoundNewExpression newExpr:
                 return newExpr.Arguments.Any(ContainsCapturedThis);
             case BoundAwaitExpression awaitExpr:
@@ -547,8 +585,16 @@ public sealed class IRGenerator
                 GenerateIf(ifStmt);
                 break;
 
+            case BoundSwitchStatement switchStmt:
+                GenerateSwitch(switchStmt);
+                break;
+
             case BoundWhileStatement whileStmt:
                 GenerateWhile(whileStmt);
+                break;
+
+            case BoundDoWhileStatement doWhileStmt:
+                GenerateDoWhile(doWhileStmt);
                 break;
 
             case BoundForStatement forStmt:
@@ -680,6 +726,64 @@ public sealed class IRGenerator
         _currentBlock = continuationBlock;
     }
 
+    private void GenerateSwitch(BoundSwitchStatement switchStmt)
+    {
+        var function = _currentFunction!;
+        var afterBlock = function.CreateBlock();
+        var clauseBlocks = switchStmt.Clauses.Select(_ => function.CreateBlock()).ToList();
+
+        // Evaluate the discriminant exactly once. Case expressions are then
+        // evaluated in source order, which preserves their side effects.
+        GenerateExpression(switchStmt.Expression);
+        int discriminantSlot = _tempCounter++;
+        EmitStoreLocal(discriminantSlot);
+
+        int defaultClause = -1;
+        for (int i = 0; i < switchStmt.Clauses.Count; i++)
+        {
+            if (switchStmt.Clauses[i].Test == null)
+            {
+                defaultClause = i;
+                continue;
+            }
+
+            var nextComparison = function.CreateBlock();
+            EmitLoadLocal(discriminantSlot);
+            GenerateExpression(switchStmt.Clauses[i].Test!);
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.CmpStrictEq_Any));
+            EmitBranchTrue(clauseBlocks[i].Id);
+            EmitBranch(nextComparison.Id);
+            _currentBlock = nextComparison;
+        }
+
+        EmitBranch(defaultClause >= 0 ? clauseBlocks[defaultClause].Id : afterBlock.Id);
+
+        _breakTargets.Push(afterBlock.Id);
+        try
+        {
+            for (int i = 0; i < switchStmt.Clauses.Count; i++)
+            {
+                _currentBlock = clauseBlocks[i];
+                foreach (var statement in switchStmt.Clauses[i].Statements)
+                    GenerateStatement(statement);
+
+                // Cases fall through unless their body explicitly branches
+                // (break, return, throw or continue in an enclosing loop).
+                if (!_currentBlock.EndsInBranch)
+                {
+                    int next = i + 1 < clauseBlocks.Count ? clauseBlocks[i + 1].Id : afterBlock.Id;
+                    EmitBranch(next);
+                }
+            }
+        }
+        finally
+        {
+            _breakTargets.Pop();
+        }
+
+        _currentBlock = afterBlock;
+    }
+
     private void GenerateWhile(BoundWhileStatement whileStmt)
     {
         var func = _currentFunction!;
@@ -696,6 +800,7 @@ public sealed class IRGenerator
         EmitBranch(afterBlock.Id);
 
         _currentBlock = bodyBlock;
+        _breakTargets.Push(afterBlock.Id);
         _loopTargets.Push(new LoopTargets(afterBlock.Id, conditionBlock.Id));
         try
         {
@@ -706,7 +811,41 @@ public sealed class IRGenerator
         finally
         {
             _loopTargets.Pop();
+            _breakTargets.Pop();
         }
+
+        _currentBlock = afterBlock;
+    }
+
+    private void GenerateDoWhile(BoundDoWhileStatement doWhileStmt)
+    {
+        var func = _currentFunction!;
+        var bodyBlock = func.CreateBlock();
+        var conditionBlock = func.CreateBlock();
+        var afterBlock = func.CreateBlock();
+
+        if (!_currentBlock!.EndsInBranch)
+            EmitBranch(bodyBlock.Id);
+
+        _currentBlock = bodyBlock;
+        _breakTargets.Push(afterBlock.Id);
+        _loopTargets.Push(new LoopTargets(afterBlock.Id, conditionBlock.Id));
+        try
+        {
+            GenerateStatement(doWhileStmt.Body);
+            if (!_currentBlock.EndsInBranch)
+                EmitBranch(conditionBlock.Id);
+        }
+        finally
+        {
+            _loopTargets.Pop();
+            _breakTargets.Pop();
+        }
+
+        _currentBlock = conditionBlock;
+        GenerateExpression(doWhileStmt.Condition);
+        EmitBranchTrue(bodyBlock.Id);
+        EmitBranch(afterBlock.Id);
 
         _currentBlock = afterBlock;
     }
@@ -734,6 +873,7 @@ public sealed class IRGenerator
         EmitBranch(afterBlock.Id);
 
         _currentBlock = bodyBlock;
+        _breakTargets.Push(afterBlock.Id);
         _loopTargets.Push(new LoopTargets(afterBlock.Id, iteratorBlock.Id));
         try
         {
@@ -744,6 +884,7 @@ public sealed class IRGenerator
         finally
         {
             _loopTargets.Pop();
+            _breakTargets.Pop();
         }
 
         _currentBlock = iteratorBlock;
@@ -756,12 +897,12 @@ public sealed class IRGenerator
 
     private void GenerateBreak()
     {
-        if (_loopTargets.Count == 0)
+        if (_breakTargets.Count == 0)
         {
-            throw new InvalidOperationException("'break' emitted outside a loop");
+            throw new InvalidOperationException("'break' emitted outside a loop or switch");
         }
 
-        EmitBranch(_loopTargets.Peek().BreakBlockId);
+        EmitBranch(_breakTargets.Peek());
     }
 
     private void GenerateContinue()
@@ -898,6 +1039,55 @@ public sealed class IRGenerator
             case BoundTypeofExpression typeofExpr:
                 GenerateExpression(typeofExpr.Operand);
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.TypeOf));
+                break;
+            case BoundVoidExpression voidExpr:
+                GenerateExpression(voidExpr.Operand);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
+                _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+                break;
+            case BoundDeleteFieldExpression deleteField:
+            {
+                GenerateExpression(deleteField.Object);
+                if (deleteField.IsNullConditional)
+                {
+                    var func = _currentFunction!;
+                    var nullBlock = func.CreateBlock();
+                    var doDeleteBlock = func.CreateBlock();
+                    var endBlock = func.CreateBlock();
+
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+                    _currentBlock.Instructions.Add(new Instruction(Opcode.NullCheck));
+                    EmitBranchTrue(nullBlock.Id);
+                    EmitBranch(doDeleteBlock.Id);
+
+                    _currentBlock = nullBlock;
+                    _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+                    _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+                    _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Bool, 1));
+                    EmitBranch(endBlock.Id);
+
+                    _currentBlock = doDeleteBlock;
+                    _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.DeleteField, 0, 0, deleteField.FieldName));
+                    EmitBranch(endBlock.Id);
+
+                    _currentBlock = endBlock;
+                }
+                else
+                {
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.DeleteField, 0, 0, deleteField.FieldName));
+                }
+                break;
+            }
+            case BoundDeleteIndexExpression deleteIndex:
+                GenerateExpression(deleteIndex.Object);
+                GenerateExpression(deleteIndex.Index);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.DeleteIndex));
+                break;
+            case BoundDeleteNonReferenceExpression deleteNonRef:
+                GenerateExpression(deleteNonRef.Operand);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Bool, 0));
                 break;
             case BoundArrayConstructionExpression arrCtor:
                 foreach (var arg in arrCtor.Arguments)

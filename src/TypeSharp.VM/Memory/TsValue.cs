@@ -272,6 +272,7 @@ public sealed class TsObject
 public sealed class TsArray
 {
     private TsValue[] _elements;
+    private bool[]? _presence;
     private int _count;
 
     public int Count => _count;
@@ -286,6 +287,7 @@ public sealed class TsArray
     public TsValue Get(int index)
     {
         if (index < 0 || index >= _count) return TsValue.Null;
+        if (_presence != null && !_presence[index]) return TsValue.Void;
         return _elements[index];
     }
 
@@ -293,13 +295,26 @@ public sealed class TsArray
     {
         if (index < 0) return;
         EnsureCapacity(index + 1);
+        if (index >= _count)
+        {
+            var presence = EnsurePresence();
+            for (int i = _count; i < index; i++)
+                presence[i] = false;
+            presence[index] = true;
+            _count = index + 1;
+        }
+        else
+        {
+            var presence = _presence;
+            if (presence != null) presence[index] = true;
+        }
         _elements[index] = value;
-        if (index >= _count) _count = index + 1;
     }
 
     public void Add(TsValue value)
     {
         EnsureCapacity(_count + 1);
+        if (_presence != null) _presence[_count] = true;
         _elements[_count++] = value;
     }
 
@@ -312,6 +327,11 @@ public sealed class TsArray
     {
         if (index < 0 || index >= _count) return;
         Array.Copy(_elements, index + 1, _elements, index, _count - index - 1);
+        if (_presence != null)
+        {
+            Array.Copy(_presence, index + 1, _presence, index, _count - index - 1);
+            _presence[_count - 1] = false;
+        }
         _count--;
     }
 
@@ -322,10 +342,50 @@ public sealed class TsArray
         EnsureCapacity(_count + 1);
         Array.Copy(_elements, index, _elements, index + 1, _count - index);
         _elements[index] = value;
+        if (_presence != null)
+        {
+            Array.Copy(_presence, index, _presence, index + 1, _count - index);
+            _presence[index] = true;
+        }
         _count++;
     }
 
-    public void Reverse() => Array.Reverse(_elements, 0, _count);
+    public void DeleteAt(int index)
+    {
+        if (index < 0 || index >= _count) return;
+        var presence = EnsurePresence();
+        _elements[index] = TsValue.Void;
+        presence[index] = false;
+    }
+
+    // Extends the array when necessary and marks the target slot absent.
+    // This is intentionally distinct from Set(index, TsValue.Void): a hole
+    // is observable by array iteration methods even though reading it yields
+    // undefined.
+    public void SetHole(int index)
+    {
+        if (index < 0) return;
+        EnsureCapacity(index + 1);
+        var presence = EnsurePresence();
+
+        if (index >= _count)
+            _count = index + 1;
+
+        _elements[index] = TsValue.Void;
+        presence[index] = false;
+    }
+
+    public bool IsHole(int index)
+    {
+        if (index < 0 || index >= _count) return true;
+        return _presence != null && !_presence[index];
+    }
+
+    public void Reverse()
+    {
+        Array.Reverse(_elements, 0, _count);
+        if (_presence != null) Array.Reverse(_presence, 0, _count);
+    }
 
     private void EnsureCapacity(int required)
     {
@@ -334,6 +394,24 @@ public sealed class TsArray
         var newElements = new TsValue[newCapacity];
         Array.Copy(_elements, newElements, _count);
         _elements = newElements;
+        if (_presence != null)
+        {
+            var newPresence = new bool[newCapacity];
+            Array.Copy(_presence, newPresence, _count);
+            _presence = newPresence;
+        }
+    }
+
+    private bool[] EnsurePresence()
+    {
+        if (_presence == null)
+        {
+            _presence = new bool[_elements.Length];
+            for (int i = 0; i < _count; i++)
+                _presence[i] = true;
+        }
+
+        return _presence;
     }
 }
 
@@ -492,7 +570,10 @@ public sealed class CallFrame
     {
         Function = function;
         Locals = new TsValue[function.LocalCount + function.ParameterCount];
-        _stack = new TsValue[InitialStackSlots];
+        int capacity = function.OperandStackCapacity > 0
+            ? function.OperandStackCapacity
+            : InitialStackSlots;
+        _stack = new TsValue[capacity];
         StackPointer = 0;
         InstructionPointer = 0;
         Caller = caller;
@@ -519,6 +600,10 @@ public sealed class CallFrame
 
     public TsValue Peek() => StackPointer > 0 ? Stack[StackPointer - 1] : TsValue.Null;
 
+    // The compiler-estimated stack depth is an initial allocation hint. Runtime
+    // opcodes can still produce deeper transient stacks, so frames grow on
+    // demand up to the VM guardrail instead of treating the estimate as a hard
+    // execution limit.
     private void EnsureStackCapacity(int neededSlots)
     {
         if (neededSlots <= _stack.Length)

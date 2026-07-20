@@ -1026,6 +1026,38 @@ public sealed class Interpreter
                     }));
                     break;
                 }
+                case Opcodes.DeleteField: // DELETE_FIELD
+                {
+                    int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var fieldName = strings[fieldIdx];
+                    var obj = frame.Pop();
+                    bool deleted = false;
+                    if (obj is TsObjectValue objVal)
+                        deleted = objVal.Value.Fields.Remove(fieldName);
+                    frame.Push(new TsBoolValue(deleted));
+                    break;
+                }
+                case Opcodes.DeleteIndex: // DELETE_INDEX
+                {
+                    var indexVal = frame.Pop();
+                    var obj = frame.Pop();
+                    bool deleted = false;
+                    if (obj is TsArrayValue arrVal && indexVal is TsInt32Value idx)
+                    {
+                        int i = idx.Value;
+                        if (i >= 0 && i < arrVal.Value.Count && !arrVal.Value.IsHole(i))
+                        {
+                            arrVal.Value.DeleteAt(i);
+                            deleted = true;
+                        }
+                    }
+                    else if (obj is TsMapValue mapVal)
+                    {
+                        deleted = mapVal.Value.Remove(indexVal);
+                    }
+                    frame.Push(new TsBoolValue(deleted));
+                    break;
+                }
 
                 // ── I64 bitwise ──
 
@@ -1881,7 +1913,16 @@ public sealed class Interpreter
             {
                 var mapped = new TsArray(arr.Count);
                 for (int i = 0; i < arr.Count; i++)
-                    mapped.Add(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i)));
+                {
+                    if (arr.IsHole(i))
+                    {
+                        mapped.SetHole(i);
+                    }
+                    else
+                    {
+                        mapped.Set(i, Invoke(callback!, arr.Get(i), TsValue.FromInt32(i)));
+                    }
+                }
                 return new TsArrayValue(mapped);
             }
             case "Array::flatMap":
@@ -1889,6 +1930,7 @@ public sealed class Interpreter
                 var flat = new TsArray(arr.Count);
                 for (int i = 0; i < arr.Count; i++)
                 {
+                    if (arr.IsHole(i)) continue;
                     var produced = Invoke(callback!, arr.Get(i), TsValue.FromInt32(i));
                     if (produced is TsArrayValue nested)
                         for (int j = 0; j < nested.Value.Count; j++) flat.Add(nested.Value.Get(j));
@@ -1902,6 +1944,7 @@ public sealed class Interpreter
                 var filtered = new TsArray();
                 for (int i = 0; i < arr.Count; i++)
                 {
+                    if (arr.IsHole(i)) continue;
                     var element = arr.Get(i);
                     if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i))))
                         filtered.Add(element);
@@ -1911,7 +1954,10 @@ public sealed class Interpreter
             case "Array::forEach":
             {
                 for (int i = 0; i < arr.Count; i++)
+                {
+                    if (arr.IsHole(i)) continue;
                     Invoke(callback!, arr.Get(i), TsValue.FromInt32(i));
+                }
                 return TsValue.Null;
             }
             case "Array::reduce":
@@ -1926,31 +1972,44 @@ public sealed class Interpreter
                 {
                     if (arr.Count == 0)
                         throw new InvalidOperationException("Reduce of empty array with no initial value");
-                    accumulator = arr.Get(0);
-                    start = 1;
+                    while (start < arr.Count && arr.IsHole(start)) start++;
+                    if (start >= arr.Count)
+                        throw new InvalidOperationException("Reduce of empty array with no initial value");
+                    accumulator = arr.Get(start);
+                    start++;
                 }
                 for (int i = start; i < arr.Count; i++)
+                {
+                    if (arr.IsHole(i)) continue;
                     accumulator = Invoke(callback!, accumulator, arr.Get(i), TsValue.FromInt32(i));
+                }
                 return accumulator;
             }
             case "Array::some":
             {
                 for (int i = 0; i < arr.Count; i++)
+                {
+                    if (arr.IsHole(i)) continue;
                     if (AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i))))
                         return new TsBoolValue(true);
+                }
                 return new TsBoolValue(false);
             }
             case "Array::every":
             {
                 for (int i = 0; i < arr.Count; i++)
+                {
+                    if (arr.IsHole(i)) continue;
                     if (!AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i))))
                         return new TsBoolValue(false);
+                }
                 return new TsBoolValue(true);
             }
             case "Array::find":
             {
                 for (int i = 0; i < arr.Count; i++)
                 {
+                    if (arr.IsHole(i)) continue;
                     var element = arr.Get(i);
                     if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i))))
                         return element;

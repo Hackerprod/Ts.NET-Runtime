@@ -663,6 +663,449 @@ public class InterpreterTests
         Assert.IsType<TsUInt64Value>(result);
         Assert.Equal(18446744073709551615UL, ((TsUInt64Value)result).Value);
     }
+
+    // ── void operator tests ──
+
+    [Fact]
+    public void Void_ReturnsUndefined()
+    {
+        var result = Run(@"
+            function main() {
+                return void 42;
+            }
+        ");
+        Assert.NotNull(result);
+        Assert.IsType<TsVoid>(result);
+    }
+
+    [Fact]
+    public void Void_EvaluatesOperand_ForSideEffects()
+    {
+        var result = Run(@"
+            function bump(t: any): int32 {
+                t.count = t.count + 1;
+                return t.count;
+            }
+            function main(): int32 {
+                let tracker = { count: 0 };
+                void bump(tracker);
+                void bump(tracker);
+                void bump(tracker);
+                return tracker.count as int32;
+            }
+        ");
+        Assert.NotNull(result);
+        Assert.Equal(3, Convert.ToInt32(result!.RawValue));
+    }
+
+    [Fact]
+    public void Void_FunctionCall_DiscardsReturnValue()
+    {
+        var result = Run(@"
+            function sideEffect(t: any): int32 {
+                t.used = 1;
+                return 99;
+            }
+            function main(): int32 {
+                let tracker = { used: 0 };
+                void sideEffect(tracker);
+                return tracker.used as int32;
+            }
+        ");
+        Assert.NotNull(result);
+        Assert.Equal(1, Convert.ToInt32(result!.RawValue));
+    }
+
+    // ── delete operator tests ──
+
+    [Fact]
+    public void Delete_Field_ReturnsTrue_WhenExists()
+    {
+        var result = Run(@"
+            function main() {
+                const obj = { a: 1, b: 2, c: 3 };
+                return delete obj.b;
+            }
+        ");
+        Assert.True(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_Field_RemovesField()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const obj = { a: 1, b: 2 };
+                delete obj.a;
+                if (obj.a != null) return 999;
+                return obj.b;
+            }
+        ");
+        Assert.Equal(2, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_Field_NonExistent_ReturnsFalse()
+    {
+        var result = Run(@"
+            function main() {
+                const obj = { a: 1 };
+                return delete obj.z;
+            }
+        ");
+        Assert.False(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_NonReference_ReturnsFalse()
+    {
+        var result = Run(@"
+            function main() {
+                let x: int32 = 42;
+                return delete x;
+            }
+        ");
+        Assert.False(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_NonReference_EvaluatesOperandForSideEffects()
+    {
+        var result = Run(@"
+            function incrementTracker(t: any): int32 {
+                t.calls = t.calls + 1;
+                return t.calls;
+            }
+            function main(): int32 {
+                let tracker = { calls: 0 };
+                delete incrementTracker(tracker);
+                return tracker.calls as int32;
+            }
+        ");
+        Assert.NotNull(result);
+        Assert.Equal(1, Convert.ToInt32(result!.RawValue));
+    }
+
+    [Fact]
+    public void Delete_Array_PreservesHoles()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const arr = [10, 20, 30, 40];
+                const deleted = delete arr[1];
+                if (!deleted) return -1;
+                if (arr.length != 4) return -2;
+                if (arr[0] != 10) return -3;
+                if (arr[2] != 30) return -4;
+                if (arr[3] != 40) return -5;
+                if (arr[1] != null) return -6;
+                return 1;
+            }
+        ");
+        Assert.Equal(1, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_Array_HoleIsSkippedByIteration()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                let arr = [10, 20, 30];
+                delete arr[1];
+                let sum: int32 = 0;
+                let i: int32 = 0;
+                while (i < arr.length) {
+                    if (arr[i] != null) sum = sum + arr[i];
+                    i = i + 1;
+                }
+                return sum;
+            }
+        ");
+        Assert.Equal(40, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_Array_OutOfRange_ReturnsFalse()
+    {
+        var result = Run(@"
+            function main() {
+                const arr = [1, 2, 3];
+                return delete arr[10];
+            }
+        ");
+        Assert.False(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_Array_AlreadyHole_ReturnsFalse()
+    {
+        var result = Run(@"
+            function main() {
+                let arr = [1, 2, 3];
+                delete arr[1];
+                return delete arr[1];
+            }
+        ");
+        Assert.False(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
+    public void Array_SparseAssignment_CreatesHoles()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                let arr = [];
+                arr[0] = 10;
+                arr[3] = 40;
+                if (arr.length != 4) return -1;
+                if (arr[0] != 10) return -2;
+                if (arr[1] != null) return -3;
+                if (arr[2] != null) return -4;
+                if (arr[3] != 40) return -5;
+                return 1;
+            }
+        ");
+        Assert.Equal(1, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void Array_Map_PreservesHoles()
+    {
+        var result = Run(@"
+            function doubleIt(val: int32, idx: int32): int32 {
+                return val * 2;
+            }
+            function main(): int32 {
+                let arr = [10, 20, 30];
+                delete arr[1];
+                let mapped = arr.map(doubleIt);
+                if (mapped.length != 3) return -1;
+                if (mapped[0] != 20) return -2;
+                if (mapped[1] != null) return -3;
+                if (mapped[2] != 60) return -4;
+                let visits = 0;
+                mapped.forEach((value, index) => { visits = visits + 1; });
+                if (visits != 2) return -5;
+                return 1;
+            }
+        ");
+        Assert.Equal(1, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_MapOperator_RemovesKey()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const m = new Map();
+                m.set(""a"", 100);
+                m.set(""b"", 200);
+                delete m[""a""];
+                if (m.size != 1) return -1;
+                return 1;
+            }
+        ");
+        Assert.Equal(1, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_OptionalChaining_NullReceiver_ReturnsTrue()
+    {
+        var result = Run(@"
+            function main() {
+                const obj = null;
+                return delete obj?.x;
+            }
+        ");
+        Assert.True(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_OptionalChaining_NonNull_Deletes()
+    {
+        var result = Run(@"
+            function main() {
+                const obj = { x: 10, y: 20 };
+                return delete obj?.x;
+            }
+        ");
+        Assert.True(((TsBoolValue)result!).Value);
+    }
+
+    [Fact]
+    public void Delete_MultipleFields()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const obj = { a: 1, b: 2, c: 3, d: 4, e: 5 };
+                delete obj.a;
+                delete obj.c;
+                delete obj.e;
+                let sum: int32 = 0;
+                if (obj.b != null) sum = sum + obj.b;
+                if (obj.d != null) sum = sum + obj.d;
+                return sum;
+            }
+        ");
+        Assert.Equal(6, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void Void_InExpression_Context()
+    {
+        var result = Run("""
+            var results = "";
+            function main() {
+                var a = void 1;
+                var b = void "hello";
+                var c = void (1 + 2);
+                return 42;
+            }
+            """);
+        Assert.Equal(42, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void DoWhile_BasicExecutesAtLeastOnce()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                let i: int32 = 10;
+                do {
+                    i = i + 1;
+                } while (false);
+                return i;
+            }
+        ");
+        Assert.Equal(11, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void DoWhile_CountsMultipleIterations()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                let sum: int32 = 0;
+                let i: int32 = 1;
+                do {
+                    sum = sum + i;
+                    i = i + 1;
+                } while (i <= 5);
+                return sum;
+            }
+        ");
+        Assert.Equal(15, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void DoWhile_BreakExitsLoop()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                let sum: int32 = 0;
+                let i: int32 = 1;
+                do {
+                    if (i == 4) break;
+                    sum = sum + i;
+                    i = i + 1;
+                } while (i <= 10);
+                return sum;
+            }
+        ");
+        Assert.Equal(6, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void DoWhile_ContinueSkipsToCondition()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                let sum: int32 = 0;
+                let i: int32 = 0;
+                do {
+                    i = i + 1;
+                    if (i % 2 == 0) continue;
+                    sum = sum + i;
+                } while (i < 5);
+                return sum;
+            }
+        ");
+        Assert.Equal(9, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void DoWhile_ConditionFalseAtStart_StillExecutesBody()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                let executed: int32 = 0;
+                do {
+                    executed = 1;
+                } while (false);
+                return executed;
+            }
+        ");
+        Assert.Equal(1, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void DoWhile_Nested()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                let sum: int32 = 0;
+                let i: int32 = 0;
+                do {
+                    let j: int32 = 0;
+                    do {
+                        sum = sum + 1;
+                        j = j + 1;
+                    } while (j < 3);
+                    i = i + 1;
+                } while (i < 2);
+                return sum;
+            }
+        ");
+        Assert.Equal(6, ((TsInt32Value)result!).Value);
+    }
+
+    [Fact]
+    public void DoWhile_SideEffectEvaluation()
+    {
+        var result = Run(@"
+            function bump(t: any): int32 {
+                t.count = t.count + 1;
+                return t.count;
+            }
+            function main(): int32 {
+                let tracker = { count: 0 };
+                do {
+                    bump(tracker);
+                } while (tracker.count < 3);
+                return tracker.count as int32;
+            }
+        ");
+        Assert.Equal(3, Convert.ToInt32(result!.RawValue));
+    }
+
+    [Fact]
+    public void DoWhile_WithElseNotConfused()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                let x: int32 = 0;
+                if (true) {
+                    do {
+                        x = x + 1;
+                    } while (x < 3);
+                } else {
+                    x = -1;
+                }
+                return x;
+            }
+        ");
+        Assert.Equal(3, ((TsInt32Value)result!).Value);
+    }
 }
 
 public class TypeCheckingTests
@@ -1652,24 +2095,35 @@ public class NegativeTests
     }
 
     [Fact]
-    public void StackOverflow_OnPush_Throws()
+    public void OperandStack_GrowsBeyondInitialCapacity()
     {
-        var ms = new System.IO.MemoryStream();
-        var w = new System.IO.BinaryWriter(ms);
-        w.Write(Opcodes.LoadConstI32);
-        w.Write(0);
-        for (int i = 0; i < 256; i++)
-        {
-            w.Write(Opcodes.Dup);
-        }
-        var func = new BytecodeFunction("test", ms.ToArray(), 0, 0, false,
-            Array.Empty<string>(), new long[] { 42 }, Array.Empty<double>());
-        var module = new BytecodeModule("test", new[] { func });
-        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var func = new BytecodeFunction("test", Array.Empty<byte>(), 0, 0, false,
+            Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>());
+        var frame = new CallFrame(func);
 
-        var ex = Record.Exception(() => interpreter.Execute(module, "test"));
+        for (int i = 0; i < 300; i++)
+            frame.Push(TsValue.Void);
+
+        Assert.Equal(300, frame.StackPointer);
+        Assert.True(frame.Stack.Length >= 300);
+    }
+
+    [Fact]
+    public void OperandStack_ExceedingGuardrail_Throws()
+    {
+        var maxStackSlots = (int)typeof(CallFrame)
+            .GetField("MaxStackSlots", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+            .GetRawConstantValue()!;
+        var func = new BytecodeFunction("test", Array.Empty<byte>(), 0, 0, false,
+            Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>());
+        var frame = new CallFrame(func);
+
+        for (int i = 0; i < maxStackSlots; i++)
+            frame.Push(TsValue.Void);
+
+        var ex = Record.Exception(() => frame.Push(TsValue.Void));
         Assert.NotNull(ex);
-        Assert.Contains("Stack overflow", ex.Message);
+        Assert.Contains("Operand stack limit exceeded", ex.Message);
     }
 
     [Fact]
@@ -1819,6 +2273,76 @@ public class NegativeTests
         var ex = Record.Exception(() => interpreter.Execute(module, "test"));
         Assert.NotNull(ex);
         Assert.Contains("Stack underflow", ex.Message);
+    }
+
+    [Fact]
+    public void Switch_SelectsCase_FallsThrough_AndBreaks()
+    {
+        var code = @"
+            function main(value: int32): int32 {
+                let result: int32 = 0;
+                switch (value) {
+                    case 1:
+                        result = result + 10;
+                    case 2:
+                        result = result + 2;
+                        break;
+                    default:
+                        result = 99;
+                }
+                return result;
+            }
+        ";
+
+        Assert.Equal(12, ((TsInt32Value)Run(code, "main", new TsValue[] { new TsInt32Value(1) })!).Value);
+        Assert.Equal(2, ((TsInt32Value)Run(code, "main", new TsValue[] { new TsInt32Value(2) })!).Value);
+        Assert.Equal(99, ((TsInt32Value)Run(code, "main", new TsValue[] { new TsInt32Value(7) })!).Value);
+    }
+
+    [Fact]
+    public void Switch_EvaluatesDiscriminantExactlyOnce()
+    {
+        var code = @"
+            function main(): int32 {
+                let index: int32 = 0;
+                const values: int32[] = [2];
+                let result: int32 = 0;
+                switch (values[index++]) {
+                    case 1:
+                        result = 1;
+                        break;
+                    case 2:
+                        result = 2;
+                        break;
+                    default:
+                        result = 3;
+                }
+                return index * 10 + result;
+            }
+        ";
+
+        Assert.Equal(12, ((TsInt32Value)Run(code)!).Value);
+    }
+
+    [Fact]
+    public void ContinueInsideSwitch_ContinuesEnclosingLoop()
+    {
+        var code = @"
+            function main(): int32 {
+                let sum: int32 = 0;
+                for (let i: int32 = 0; i < 3; i++) {
+                    switch (i) {
+                        case 1:
+                            continue;
+                        default:
+                            sum = sum + i;
+                    }
+                }
+                return sum;
+            }
+        ";
+
+        Assert.Equal(2, ((TsInt32Value)Run(code)!).Value);
     }
 
     private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)

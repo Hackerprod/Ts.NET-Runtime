@@ -84,6 +84,10 @@ public enum Opcode
     LoadElement,
     StoreElement,
 
+    // Delete
+    DeleteField,
+    DeleteIndex,
+
     // Exception regions
     EnterTry,
     LeaveTry,

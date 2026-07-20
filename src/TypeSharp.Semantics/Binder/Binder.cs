@@ -26,6 +26,7 @@ public sealed class Binder
     private int _lambdaCounter;
     private int _forOfCounter;
     private int _loopDepth;
+    private int _breakableDepth;
     private string _currentSourceFileName = "module";
 
     // Generic type parameters in scope, innermost last.
@@ -1076,7 +1077,9 @@ public sealed class Binder
             VariableDeclarationSyntax varDecl => BindVariableDeclaration(varDecl),
             ReturnStatementSyntax ret => BindReturn(ret),
             IfStatementSyntax ifStmt => BindIf(ifStmt),
+            SwitchStatementSyntax switchStmt => BindSwitch(switchStmt),
             WhileStatementSyntax whileStmt => BindWhile(whileStmt),
+            DoWhileStatementSyntax doWhileStmt => BindDoWhile(doWhileStmt),
             ForStatementSyntax forStmt => BindFor(forStmt),
             BreakStatementSyntax breakStmt => BindBreak(breakStmt),
             ContinueStatementSyntax continueStmt => BindContinue(continueStmt),
@@ -1343,6 +1346,42 @@ public sealed class Binder
                 : BindStatement(ifStmt.ElseBranch)
             : null;
         return new BoundIfStatement(condition, thenBranch, elseBranch);
+    }
+
+    private BoundSwitchStatement BindSwitch(SwitchStatementSyntax switchStmt)
+    {
+        // A switch introduces one lexical scope shared by every clause.  This
+        // matters for `let`/`const` declarations and for closures created in a
+        // clause; creating a scope per case would not match JavaScript.
+        var expression = BindExpression(switchStmt.Expression);
+        _symbolTable.PushScope();
+        _breakableDepth++;
+        try
+        {
+            // Function declarations are hoisted across the switch body just as
+            // they are across a normal block.
+            foreach (var declaration in switchStmt.Clauses
+                         .SelectMany(clause => clause.Statements)
+                         .OfType<FunctionDeclarationSyntax>())
+            {
+                DeclareFunctionSignature(declaration);
+            }
+
+            var clauses = new List<BoundSwitchClause>();
+            foreach (var clause in switchStmt.Clauses)
+            {
+                var test = clause.Test != null ? BindExpression(clause.Test) : null;
+                var statements = clause.Statements.Select(BindStatement).ToList();
+                clauses.Add(new BoundSwitchClause(test, statements));
+            }
+
+            return new BoundSwitchStatement(expression, clauses);
+        }
+        finally
+        {
+            _breakableDepth--;
+            _symbolTable.PopScope();
+        }
     }
 
     private BoundNode BindStatementWithTemporaryType(SyntaxNode statement, Symbol symbol, TsType type)
@@ -1698,6 +1737,7 @@ public sealed class Binder
         var condition = BindExpression(whileStmt.Condition);
         ValidateCondition(condition, whileStmt.Condition.Range.Start);
         _loopDepth++;
+        _breakableDepth++;
         BoundNode body;
         try
         {
@@ -1706,8 +1746,29 @@ public sealed class Binder
         finally
         {
             _loopDepth--;
+            _breakableDepth--;
         }
         return new BoundWhileStatement(condition, body);
+    }
+
+    private BoundDoWhileStatement BindDoWhile(DoWhileStatementSyntax doWhileStmt)
+    {
+        _loopDepth++;
+        _breakableDepth++;
+        BoundNode body;
+        BoundNode condition;
+        try
+        {
+            body = BindStatement(doWhileStmt.Body);
+            condition = BindExpression(doWhileStmt.Condition);
+            ValidateCondition(condition, doWhileStmt.Condition.Range.Start);
+        }
+        finally
+        {
+            _loopDepth--;
+            _breakableDepth--;
+        }
+        return new BoundDoWhileStatement(body, condition);
     }
 
     private void ValidateCondition(BoundNode condition, SourceLocation location)
@@ -1736,6 +1797,8 @@ public sealed class Binder
         BoundNode? condition = forStmt.Condition != null ? BindExpression(forStmt.Condition) : null;
         BoundNode? iterator = forStmt.Iterator != null ? BindExpression(forStmt.Iterator) : null;
         _loopDepth++;
+        _breakableDepth++;
+        _breakableDepth++;
         BoundNode body;
         try
         {
@@ -1744,6 +1807,8 @@ public sealed class Binder
         finally
         {
             _loopDepth--;
+            _breakableDepth--;
+            _breakableDepth--;
         }
 
         _symbolTable.PopScope();
@@ -1753,9 +1818,9 @@ public sealed class Binder
 
     private BoundBreakStatement BindBreak(BreakStatementSyntax breakStmt)
     {
-        if (_loopDepth == 0)
+        if (_breakableDepth == 0)
         {
-            _diagnostics.Error("'break' can only be used inside a loop", breakStmt.Range.Start, DiagnosticCode.TS2016);
+            _diagnostics.Error("'break' can only be used inside a loop or switch", breakStmt.Range.Start, DiagnosticCode.TS2016);
         }
 
         return new BoundBreakStatement();
@@ -1834,6 +1899,8 @@ public sealed class Binder
             LambdaExpressionSyntax lambda => BindInlineLambda(lambda),
             AsExpressionSyntax asExpr => BindAsExpression(asExpr),
             TypeofExpressionSyntax typeofExpr => BindTypeof(typeofExpr),
+            VoidExpressionSyntax voidExpr => BindVoid(voidExpr),
+            DeleteExpressionSyntax deleteExpr => BindDelete(deleteExpr),
             TemplatePartSyntax templatePart => new BoundCastExpression(
                 BindExpression(templatePart.Expression), TsType.String),
             NonNullAssertionSyntax nonNull => BindNonNullAssertion(nonNull),
@@ -2855,6 +2922,37 @@ public sealed class Binder
             return new BoundLiteralExpression(known, TsType.String);
 
         return new BoundTypeofExpression(operand);
+    }
+
+    private BoundNode BindVoid(VoidExpressionSyntax voidExpr)
+    {
+        var operand = BindExpression(voidExpr.Operand);
+        return new BoundVoidExpression(operand);
+    }
+
+    private BoundNode BindDelete(DeleteExpressionSyntax deleteExpr)
+    {
+        switch (deleteExpr.Operand)
+        {
+            case MemberAccessExpressionSyntax memberAccess:
+            {
+                var obj = BindExpression(memberAccess.Object);
+                return new BoundDeleteFieldExpression(obj, memberAccess.MemberName, memberAccess.IsNullConditional);
+            }
+            case IndexExpressionSyntax indexExpr:
+            {
+                var obj = BindExpression(indexExpr.Object);
+                var index = BindExpression(indexExpr.Index);
+                return new BoundDeleteIndexExpression(obj, index);
+            }
+            default:
+            {
+                // Evaluate operand for side effects, result discarded.
+                // `delete <non-target>` is a no-op returning false.
+                var operand = BindExpression(deleteExpr.Operand);
+                return new BoundDeleteNonReferenceExpression(operand);
+            }
+        }
     }
 
     private BoundNode BindNonNullAssertion(NonNullAssertionSyntax nonNull)

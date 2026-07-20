@@ -39,11 +39,17 @@ public enum BoundNodeKind
     LambdaExpression,
     CastExpression,
     TypeofExpression,
+    VoidExpression,
+    DeleteFieldExpression,
+    DeleteIndexExpression,
+    DeleteNonReferenceExpression,
 
     ExpressionStatement,
     ReturnStatement,
     IfStatement,
+    SwitchStatement,
     WhileStatement,
+    DoWhileStatement,
     ForStatement,
     BreakStatement,
     ContinueStatement,
@@ -160,6 +166,60 @@ public sealed class BoundTypeofExpression : BoundNode
 
     public BoundTypeofExpression(BoundNode operand)
         : base(BoundNodeKind.TypeofExpression, TsType.String)
+    {
+        Operand = operand;
+    }
+}
+
+// `void expr` — evaluates operand, discards result, yields undefined.
+public sealed class BoundVoidExpression : BoundNode
+{
+    public BoundNode Operand { get; }
+
+    public BoundVoidExpression(BoundNode operand)
+        : base(BoundNodeKind.VoidExpression, TsType.Void)
+    {
+        Operand = operand;
+    }
+}
+
+// `delete obj.prop` — removes a named field, returns bool.
+public sealed class BoundDeleteFieldExpression : BoundNode
+{
+    public BoundNode Object { get; }
+    public string FieldName { get; }
+    public bool IsNullConditional { get; }
+
+    public BoundDeleteFieldExpression(BoundNode obj, string fieldName, bool isNullConditional = false)
+        : base(BoundNodeKind.DeleteFieldExpression, TsType.Bool)
+    {
+        Object = obj;
+        FieldName = fieldName;
+        IsNullConditional = isNullConditional;
+    }
+}
+
+// `delete obj[expr]` — removes an indexed element, returns bool.
+public sealed class BoundDeleteIndexExpression : BoundNode
+{
+    public BoundNode Object { get; }
+    public BoundNode Index { get; }
+
+    public BoundDeleteIndexExpression(BoundNode obj, BoundNode index)
+        : base(BoundNodeKind.DeleteIndexExpression, TsType.Bool)
+    {
+        Object = obj;
+        Index = index;
+    }
+}
+
+// `delete nonReference` — evaluates operand for side effects, returns false.
+public sealed class BoundDeleteNonReferenceExpression : BoundNode
+{
+    public BoundNode Operand { get; }
+
+    public BoundDeleteNonReferenceExpression(BoundNode operand)
+        : base(BoundNodeKind.DeleteNonReferenceExpression, TsType.Bool)
     {
         Operand = operand;
     }
@@ -343,6 +403,32 @@ public sealed class BoundIfStatement : BoundNode
     }
 }
 
+public sealed class BoundSwitchClause
+{
+    public BoundNode? Test { get; }
+    public List<BoundNode> Statements { get; }
+    public bool IsDefault => Test == null;
+
+    public BoundSwitchClause(BoundNode? test, List<BoundNode> statements)
+    {
+        Test = test;
+        Statements = statements;
+    }
+}
+
+public sealed class BoundSwitchStatement : BoundNode
+{
+    public BoundNode Expression { get; }
+    public List<BoundSwitchClause> Clauses { get; }
+
+    public BoundSwitchStatement(BoundNode expression, List<BoundSwitchClause> clauses)
+        : base(BoundNodeKind.SwitchStatement, TsType.Void)
+    {
+        Expression = expression;
+        Clauses = clauses;
+    }
+}
+
 public sealed class BoundWhileStatement : BoundNode
 {
     public BoundNode Condition { get; }
@@ -353,6 +439,19 @@ public sealed class BoundWhileStatement : BoundNode
     {
         Condition = condition;
         Body = body;
+    }
+}
+
+public sealed class BoundDoWhileStatement : BoundNode
+{
+    public BoundNode Body { get; }
+    public BoundNode Condition { get; }
+
+    public BoundDoWhileStatement(BoundNode body, BoundNode condition)
+        : base(BoundNodeKind.DoWhileStatement, TsType.Void)
+    {
+        Body = body;
+        Condition = condition;
     }
 }
 

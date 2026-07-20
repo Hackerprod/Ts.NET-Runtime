@@ -74,7 +74,7 @@ public static class BytecodeSerializer
             decimals[i] = new decimal(new[] { reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32() });
 
         return new BytecodeFunction(name, instructions, parameterCount, localCount, isAsync,
-            strings, integers, doubles, decimals);
+            strings, integers, doubles, decimals, operandStackCapacity: 0);
     }
 
     private static void WriteArray<T>(BinaryWriter writer, T[] values, Action<T> write)

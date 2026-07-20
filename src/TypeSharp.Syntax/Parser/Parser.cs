@@ -759,7 +759,9 @@ public sealed class Parser
             TokenKind.FuncKeyword => ParseFunctionDeclaration(new List<SyntaxToken>()),
             TokenKind.ReturnKeyword => ParseReturnStatement(),
             TokenKind.IfKeyword => ParseIfStatement(),
+            TokenKind.SwitchKeyword => ParseSwitchStatement(),
             TokenKind.WhileKeyword => ParseWhileStatement(),
+            TokenKind.DoKeyword => ParseDoWhileStatement(),
             TokenKind.ForKeyword => ParseForStatement(),
             TokenKind.BreakKeyword => ParseBreakStatement(),
             TokenKind.ContinueKeyword => ParseContinueStatement(),
@@ -821,6 +823,64 @@ public sealed class Parser
             new SourceRange(ifKw.Location, Peek(-1).Location));
     }
 
+    private SwitchStatementSyntax ParseSwitchStatement()
+    {
+        var switchKeyword = Advance();
+        Expect(TokenKind.OpenParen);
+        var expression = ParseExpression();
+        Expect(TokenKind.CloseParen);
+        Expect(TokenKind.OpenBrace);
+
+        var clauses = new List<SwitchClauseSyntax>();
+        bool seenDefault = false;
+        while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
+        {
+            int clauseStart = _position;
+            ExpressionSyntax? test;
+            var start = Peek().Location;
+            if (Check(TokenKind.CaseKeyword))
+            {
+                Advance();
+                test = ParseExpression();
+                Expect(TokenKind.Colon);
+            }
+            else if (Check(TokenKind.DefaultKeyword))
+            {
+                Advance();
+                test = null;
+                if (seenDefault)
+                    Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                        "A switch statement can only contain one default clause", start));
+                seenDefault = true;
+                Expect(TokenKind.Colon);
+            }
+            else
+            {
+                Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                    $"Expected 'case' or 'default', got {Peek().Kind}", start));
+                Advance();
+                continue;
+            }
+
+            var statements = new List<SyntaxNode>();
+            while (!Check(TokenKind.CaseKeyword) && !Check(TokenKind.DefaultKeyword) &&
+                   !Check(TokenKind.CloseBrace) && !IsAtEnd())
+            {
+                int statementStart = _position;
+                statements.Add(ParseStatement());
+                if (_position == statementStart) Advance();
+            }
+
+            clauses.Add(new SwitchClauseSyntax(test, statements,
+                new SourceRange(start, Previous().Location)));
+            if (_position == clauseStart) Advance();
+        }
+
+        var closeBrace = Expect(TokenKind.CloseBrace);
+        return new SwitchStatementSyntax(expression, clauses,
+            new SourceRange(switchKeyword.Location, closeBrace.Location));
+    }
+
     private WhileStatementSyntax ParseWhileStatement()
     {
         var whileKw = Advance();
@@ -829,6 +889,18 @@ public sealed class Parser
         Expect(TokenKind.CloseParen);
         var body = ToStatement(ParseStatement());
         return new WhileStatementSyntax(condition, body, new SourceRange(whileKw.Location, Peek(-1).Location));
+    }
+
+    private DoWhileStatementSyntax ParseDoWhileStatement()
+    {
+        var doKw = Advance();
+        var body = ToStatement(ParseStatement());
+        Expect(TokenKind.WhileKeyword);
+        Expect(TokenKind.OpenParen);
+        var condition = ParseExpression();
+        Expect(TokenKind.CloseParen);
+        Expect(TokenKind.Semicolon);
+        return new DoWhileStatementSyntax(body, condition, new SourceRange(doKw.Location, Peek(-1).Location));
     }
 
     private StatementSyntax ParseForStatement()
@@ -1202,6 +1274,20 @@ public sealed class Parser
             var typeofTok = Advance();
             var operand = ParseUnary();
             return new TypeofExpressionSyntax(operand, new SourceRange(typeofTok.Location, operand.Range.End));
+        }
+
+        if (Check(TokenKind.VoidKeyword))
+        {
+            var voidTok = Advance();
+            var operand = ParseUnary();
+            return new VoidExpressionSyntax(operand, new SourceRange(voidTok.Location, operand.Range.End));
+        }
+
+        if (Check(TokenKind.DeleteKeyword))
+        {
+            var deleteTok = Advance();
+            var operand = ParseUnary();
+            return new DeleteExpressionSyntax(operand, new SourceRange(deleteTok.Location, operand.Range.End));
         }
 
         if (Check(TokenKind.AwaitKeyword))
@@ -1751,7 +1837,7 @@ public sealed class Parser
     private static bool IsMemberNameToken(TokenKind kind) =>
         kind == TokenKind.Identifier || IsTypeKeyword(kind) ||
         kind is TokenKind.TypeKeyword or TokenKind.FromKeyword or TokenKind.AsKeyword or
-        TokenKind.OfKeyword or TokenKind.MatchKeyword;
+        TokenKind.OfKeyword or TokenKind.MatchKeyword or TokenKind.DeleteKeyword;
 
     private string ExpectMemberName()
     {
