@@ -198,6 +198,11 @@ public sealed class Binder
         _classTypes["ArrayBuffer"] = arrayBufferGlobal;
         _symbolTable.Define(new ClassSymbol("ArrayBuffer", arrayBufferGlobal, default));
 
+        var dateGlobal = new TsClassType("Date");
+        dateGlobal.Methods["getTime"] = new TsMethod("getTime", TsType.Number, new List<TsParameter>());
+        _classTypes["Date"] = dateGlobal;
+        _symbolTable.Define(new ClassSymbol("Date", dateGlobal, default));
+
         DefineGlobalFunction("parseInt", TsType.Number);
         DefineGlobalFunction("parseFloat", TsType.Number);
         DefineGlobalFunction("isNaN", TsType.Bool);
@@ -1120,18 +1125,26 @@ public sealed class Binder
             return;
         }
 
-        var narrowing = TryGetNullCheckNarrowing(ifStmt.Condition);
-        if (narrowing == null || narrowing.FalseType.Equals(narrowing.Symbol.Type))
+        var narrowings = TryGetFalsePathNullCheckNarrowings(ifStmt.Condition);
+        if (narrowings.Count == 0)
         {
             return;
         }
 
-        if (!originalTypes.ContainsKey(narrowing.Symbol))
+        foreach (var narrowing in narrowings)
         {
-            originalTypes[narrowing.Symbol] = narrowing.Symbol.Type;
-        }
+            if (narrowing.FalseType.Equals(narrowing.Symbol.Type))
+            {
+                continue;
+            }
 
-        narrowing.Symbol.Type = narrowing.FalseType;
+            if (!originalTypes.ContainsKey(narrowing.Symbol))
+            {
+                originalTypes[narrowing.Symbol] = narrowing.Symbol.Type;
+            }
+
+            narrowing.Symbol.Type = narrowing.FalseType;
+        }
     }
 
     private static bool DefinitelyExits(BoundNode statement) =>
@@ -1310,13 +1323,20 @@ public sealed class Binder
     {
         var condition = BindExpression(ifStmt.Condition);
         ValidateCondition(condition, ifStmt.Condition.Range.Start);
-        var narrowing = TryGetNullCheckNarrowing(ifStmt.Condition);
-        var thenBranch = narrowing != null
-            ? BindStatementWithTemporaryType(ifStmt.ThenBranch, narrowing.Symbol, narrowing.TrueType)
+        var trueNarrowings = TryGetTruePathNullCheckNarrowings(ifStmt.Condition);
+        var thenBranch = trueNarrowings.Count > 0
+            ? BindStatementWithTemporaryTypes(
+                ifStmt.ThenBranch,
+                trueNarrowings.Select(n => (n.Symbol, n.TrueType)).ToList())
             : BindStatement(ifStmt.ThenBranch);
+        var falseNarrowings = ifStmt.ElseBranch != null
+            ? TryGetFalsePathNullCheckNarrowings(ifStmt.Condition)
+            : new List<NullCheckNarrowing>();
         var elseBranch = ifStmt.ElseBranch != null
-            ? narrowing != null
-                ? BindStatementWithTemporaryType(ifStmt.ElseBranch, narrowing.Symbol, narrowing.FalseType)
+            ? falseNarrowings.Count > 0
+                ? BindStatementWithTemporaryTypes(
+                    ifStmt.ElseBranch,
+                    falseNarrowings.Select(n => (n.Symbol, n.FalseType)).ToList())
                 : BindStatement(ifStmt.ElseBranch)
             : null;
         return new BoundIfStatement(condition, thenBranch, elseBranch);
@@ -1333,6 +1353,30 @@ public sealed class Binder
         finally
         {
             symbol.Type = previous;
+        }
+    }
+
+    private BoundNode BindStatementWithTemporaryTypes(
+        SyntaxNode statement,
+        IReadOnlyList<(Symbol Symbol, TsType Type)> types)
+    {
+        var previous = new List<(Symbol Symbol, TsType Type)>();
+        foreach (var item in types)
+        {
+            previous.Add((item.Symbol, item.Symbol.Type));
+            item.Symbol.Type = item.Type;
+        }
+
+        try
+        {
+            return BindStatement(statement);
+        }
+        finally
+        {
+            for (int i = previous.Count - 1; i >= 0; i--)
+            {
+                previous[i].Symbol.Type = previous[i].Type;
+            }
         }
     }
 
@@ -1396,6 +1440,44 @@ public sealed class Binder
         return equalityIsTrueWhenNull
             ? new NullCheckNarrowing(symbol, TsType.Null, nonNullType)
             : new NullCheckNarrowing(symbol, nonNullType, TsType.Null);
+    }
+
+    private List<NullCheckNarrowing> TryGetFalsePathNullCheckNarrowings(ExpressionSyntax condition)
+    {
+        if (condition is not BinaryExpressionSyntax binary)
+        {
+            var single = TryGetNullCheckNarrowing(condition);
+            return single == null ? new List<NullCheckNarrowing>() : new List<NullCheckNarrowing> { single };
+        }
+
+        if (binary.OperatorToken.Kind == TokenKind.PipePipe)
+        {
+            var result = TryGetFalsePathNullCheckNarrowings(binary.Left);
+            result.AddRange(TryGetFalsePathNullCheckNarrowings(binary.Right));
+            return result;
+        }
+
+        var narrowing = TryGetNullCheckNarrowing(condition);
+        return narrowing == null ? new List<NullCheckNarrowing>() : new List<NullCheckNarrowing> { narrowing };
+    }
+
+    private List<NullCheckNarrowing> TryGetTruePathNullCheckNarrowings(ExpressionSyntax condition)
+    {
+        if (condition is not BinaryExpressionSyntax binary)
+        {
+            var single = TryGetNullCheckNarrowing(condition);
+            return single == null ? new List<NullCheckNarrowing>() : new List<NullCheckNarrowing> { single };
+        }
+
+        if (binary.OperatorToken.Kind == TokenKind.AmpersandAmpersand)
+        {
+            var result = TryGetTruePathNullCheckNarrowings(binary.Left);
+            result.AddRange(TryGetTruePathNullCheckNarrowings(binary.Right));
+            return result;
+        }
+
+        var narrowing = TryGetNullCheckNarrowing(condition);
+        return narrowing == null ? new List<NullCheckNarrowing>() : new List<NullCheckNarrowing> { narrowing };
     }
 
     private static bool TryGetIdentifierNullComparison(
@@ -1799,6 +1881,30 @@ public sealed class Binder
         finally
         {
             symbol.Type = previous;
+        }
+    }
+
+    private BoundNode BindExpressionWithTemporaryTypes(
+        ExpressionSyntax expression,
+        IReadOnlyList<(Symbol Symbol, TsType Type)> types)
+    {
+        var previous = new List<(Symbol Symbol, TsType Type)>();
+        foreach (var item in types)
+        {
+            previous.Add((item.Symbol, item.Symbol.Type));
+            item.Symbol.Type = item.Type;
+        }
+
+        try
+        {
+            return BindExpression(expression);
+        }
+        finally
+        {
+            for (int i = previous.Count - 1; i >= 0; i--)
+            {
+                previous[i].Symbol.Type = previous[i].Type;
+            }
         }
     }
 
@@ -2304,8 +2410,16 @@ public sealed class Binder
     {
         var condition = BindExpression(cond.Condition);
         ValidateCondition(condition, cond.Condition.Range.Start);
-        var whenTrue = BindExpression(cond.WhenTrue);
-        var whenFalse = BindExpression(cond.WhenFalse);
+        var narrowing = TryGetNullCheckNarrowing(cond.Condition);
+        var whenTrue = narrowing != null
+            ? BindExpressionWithTemporaryType(cond.WhenTrue, narrowing.Symbol, narrowing.TrueType)
+            : BindExpression(cond.WhenTrue);
+        var falseNarrowings = TryGetFalsePathNullCheckNarrowings(cond.Condition);
+        var whenFalse = falseNarrowings.Count > 0
+            ? BindExpressionWithTemporaryTypes(
+                cond.WhenFalse,
+                falseNarrowings.Select(n => (n.Symbol, n.FalseType)).ToList())
+            : BindExpression(cond.WhenFalse);
 
         TsType resultType = InferConditionalResultType(whenTrue.Type, whenFalse.Type);
 
@@ -2806,6 +2920,14 @@ public sealed class Binder
             }
             case "clear":
                 return new MethodSymbol("clear", TsType.Void, range) { DeclaringClassName = "Map" };
+            case "values":
+                return new MethodSymbol("values", new TsArrayType(mapType.ValueType), range) { DeclaringClassName = "Map" };
+            case "forEach":
+            {
+                var forEach = new MethodSymbol("forEach", TsType.Void, range) { DeclaringClassName = "Map" };
+                forEach.Parameters.Add(new ParameterSymbol("callback", TsType.Any, range));
+                return forEach;
+            }
             default:
                 return null;
         }
@@ -2945,9 +3067,19 @@ public sealed class Binder
         {
             if (left is TsNullableType nullableLeft)
             {
+                if (right is TsNullType or TsPrimitiveType { Name: "void" })
+                {
+                    return left;
+                }
+
+                if (nullableLeft.ElementType.IsNumeric && right.IsNumeric)
+                {
+                    return WiderNumeric(nullableLeft.ElementType, right);
+                }
+
                 return TsType.IsCompatibleWith(nullableLeft.ElementType, right)
                     ? nullableLeft.ElementType
-                    : right;
+                    : new TsUnionType(new List<TsType> { nullableLeft.ElementType, right });
             }
 
             if (left is TsNullType or TsAnyType)

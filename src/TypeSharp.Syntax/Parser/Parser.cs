@@ -450,9 +450,15 @@ public sealed class Parser
     // Type parsing
     public TypeSyntax ParseType()
     {
+        var hasLeadingPipe = Check(TokenKind.Pipe);
+        if (hasLeadingPipe)
+        {
+            Advance();
+        }
+
         var type = ParseTypeWithSuffixes();
 
-        if (Check(TokenKind.Pipe))
+        if (hasLeadingPipe || Check(TokenKind.Pipe))
         {
             var members = new List<TypeSyntax> { type };
             while (Check(TokenKind.Pipe))
@@ -1212,7 +1218,8 @@ public sealed class Parser
             Expect(TokenKind.OpenParen);
             var args = ParseArguments();
             Expect(TokenKind.CloseParen);
-            return new NewExpressionSyntax(type, args, new SourceRange(newKw.Location, Peek(-1).Location));
+            return ParsePostfixContinuation(
+                new NewExpressionSyntax(type, args, new SourceRange(newKw.Location, Peek(-1).Location)));
         }
 
         return ParsePostfix();
@@ -1220,8 +1227,11 @@ public sealed class Parser
 
     private ExpressionSyntax ParsePostfix()
     {
-        var expr = ParsePrimary();
+        return ParsePostfixContinuation(ParsePrimary());
+    }
 
+    private ExpressionSyntax ParsePostfixContinuation(ExpressionSyntax expr)
+    {
         while (true)
         {
             var typeArguments = TryParseCallTypeArguments();

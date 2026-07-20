@@ -343,6 +343,8 @@ public sealed class TsMap
 
     public int Count => _entries.Count;
 
+    public IEnumerable<KeyValuePair<TsValue, TsValue>> Entries => _entries;
+
     public TsValue Get(TsValue key) =>
         _entries.TryGetValue(key, out var val) ? val : TsValue.Null;
 

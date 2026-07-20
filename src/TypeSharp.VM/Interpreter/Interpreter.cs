@@ -1282,6 +1282,17 @@ public sealed class Interpreter
                         break;
                     }
 
+                    if (typeName == "Date")
+                    {
+                        for (int i = 0; i < argCount; i++)
+                            frame.Pop();
+                        var date = ctx.Heap.AllocateObject("Date");
+                        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        date.SetField("__timestampMs", TsValue.FromFloat64(timestamp));
+                        frame.Push(new TsObjectValue(date));
+                        break;
+                    }
+
                     if (typeName == "Map")
                     {
                         var args = new TsValue[argCount];
@@ -1785,7 +1796,7 @@ public sealed class Interpreter
     {
         "Array::map", "Array::filter", "Array::forEach", "Array::reduce",
         "Array::some", "Array::every", "Array::find", "Array::findIndex",
-        "Array::sort", "Array::flatMap", "Array::from"
+        "Array::sort", "Array::flatMap", "Array::from", "Map::forEach"
     };
 
     // Array members that take callbacks execute here, where the interpreter
@@ -1824,6 +1835,17 @@ public sealed class Interpreter
                     break;
             }
             return new TsArrayValue(result);
+        }
+
+        if (name == "Map::forEach")
+        {
+            if (args.Length < 2 || args[0] is not TsMapValue mapReceiver)
+                throw new InvalidOperationException("'Map::forEach' requires a map receiver and callback");
+
+            var callbackValue = args[1];
+            foreach (var entry in mapReceiver.Value.Entries)
+                Invoke(callbackValue, entry.Value, entry.Key, args[0]);
+            return TsValue.Null;
         }
 
         if (args.Length == 0 || args[0] is not TsArrayValue receiver)

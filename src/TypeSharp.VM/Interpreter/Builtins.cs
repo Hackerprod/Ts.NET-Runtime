@@ -156,6 +156,21 @@ public static class Builtins
                 Map(args[0]).Clear();
                 return TsValue.Null;
             },
+            ["Map::values"] = args =>
+            {
+                var result = new TsArray();
+                foreach (var entry in Map(args[0]).Entries)
+                    result.Add(entry.Value);
+                return new TsArrayValue(result);
+            },
+
+            // Date instance members (receiver = args[0]).
+            ["Date::getTime"] = args =>
+            {
+                if (args[0] is TsObjectValue obj && obj.Value.GetField("__timestampMs") is TsFloat64Value timestamp)
+                    return timestamp;
+                throw new InvalidOperationException("Receiver is not a Date");
+            },
 
             // Set instance members (receiver = args[0]).
             ["Set::add"] = args =>

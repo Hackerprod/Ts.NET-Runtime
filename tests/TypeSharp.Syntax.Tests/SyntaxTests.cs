@@ -298,6 +298,30 @@ public class ParserTests
     }
 
     [Fact]
+    public void ParseLeadingPipeUnionTypeAlias()
+    {
+        var tree = Parse("""
+            type Message =
+                | Created
+                | Updated
+                | Deleted;
+            """);
+        var alias = Assert.IsType<TypeAliasDeclarationSyntax>(Assert.Single(tree.Members));
+        var union = Assert.IsType<UnionTypeSyntax>(alias.Type);
+
+        Assert.Equal(3, union.Types.Count);
+    }
+
+    [Fact]
+    public void ParsePostfixAccessAfterNewExpression()
+    {
+        var tree = Parse("const timestamp = Math.floor(new Date().getTime() / 1000);");
+        var declaration = Assert.IsType<VariableDeclarationSyntax>(Assert.Single(tree.Members));
+
+        Assert.NotNull(declaration.Initializer);
+    }
+
+    [Fact]
     public void ParseObjectLiteralShorthandProperty()
     {
         var tree = Parse("const messageId = 42; const registration = { messageId, raw: true };");

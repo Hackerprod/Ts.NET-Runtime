@@ -718,6 +718,69 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task Map_SupportsValuesAndForEach()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_map_iteration_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                export function main(): number {
+                    const values = new Map<number, number>();
+                    values.set(1, 10).set(2, 20).set(3, 30);
+
+                    let total = 0;
+                    values.forEach((value, key) => {
+                        total = total + value + key;
+                    });
+
+                    const onlyValues = values.values();
+                    return total + onlyValues.length;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(69, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Date_GetTime_ReturnsUnixMilliseconds()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_date_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                export function main(): number {
+                    return Math.floor(new Date().getTime() / 1000);
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var before = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            var after = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            Assert.InRange(result, before - 1, after + 1);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Set_SupportsTypedMembershipMutationAndSize()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_set_" + Guid.NewGuid().ToString("N"));
@@ -1701,6 +1764,19 @@ function guardAndBranch(flag: boolean): number {
     const party = maybeParty(flag);
     if (party !== null && party.id > 0) {
         return party.id;
+    }
+    return 0;
+}
+
+function readBoth(left: Party, right: Party): number {
+    return left.id + right.id;
+}
+
+function guardAndNarrowsMultipleSymbols(leftFlag: boolean, rightFlag: boolean): number {
+    const left = maybeParty(leftFlag);
+    const right = maybeParty(rightFlag);
+    if (left !== null && right !== null) {
+        return readBoth(left, right);
     }
     return 0;
 }
