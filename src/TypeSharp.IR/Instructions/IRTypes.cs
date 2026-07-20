@@ -78,6 +78,7 @@ public enum Opcode
 
     // Object
     NewObject,
+    CopyObjectFields,
     NewArray,
     NewMap,
     LoadElement,

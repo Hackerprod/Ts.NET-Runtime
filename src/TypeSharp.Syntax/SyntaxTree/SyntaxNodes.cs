@@ -379,7 +379,7 @@ public sealed class AwaitExpressionSyntax : ExpressionSyntax
     public override IEnumerable<SyntaxNode> GetChildren() => new[] { Expression };
 }
 
-public sealed class ObjectPropertySyntax : SyntaxNode
+public class ObjectPropertySyntax : SyntaxNode
 {
     public string Key { get; }
     public ExpressionSyntax Value { get; }
@@ -392,6 +392,14 @@ public sealed class ObjectPropertySyntax : SyntaxNode
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => new[] { Value };
+}
+
+public sealed class ObjectSpreadPropertySyntax : ObjectPropertySyntax
+{
+    public ObjectSpreadPropertySyntax(ExpressionSyntax value, SourceRange range)
+        : base(string.Empty, value, range)
+    {
+    }
 }
 
 public sealed class ArrayLiteralExpressionSyntax : ExpressionSyntax

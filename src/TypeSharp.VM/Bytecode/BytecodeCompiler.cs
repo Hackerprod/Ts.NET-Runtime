@@ -329,6 +329,7 @@ public static class BytecodeCompiler
                 writer.WriteInt32(instr.Operand0);
                 writer.WriteInt32(instr.Operand1);
                 break;
+            case Opcode.CopyObjectFields: writer.Write(Opcodes.CopyObjectFields); break;
             case Opcode.Dup: writer.Write(Opcodes.Dup); break;
             case Opcode.Pop: writer.Write(Opcodes.Pop); break;
 

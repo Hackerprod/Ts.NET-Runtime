@@ -334,6 +334,18 @@ public sealed class Interpreter
                     break;
                 }
 
+                case Opcodes.CopyObjectFields:
+                {
+                    var source = frame.Pop();
+                    var target = frame.Pop();
+                    if (target is TsObjectValue targetObject && source is TsObjectValue sourceObject)
+                    {
+                        foreach (var field in sourceObject.Value.Fields)
+                            targetObject.Value.SetField(field.Key, field.Value);
+                    }
+                    break;
+                }
+
                 case Opcodes.LoadGlobal: // LOAD_GLOBAL
                 {
                     int globalIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -1250,6 +1262,16 @@ public sealed class Interpreter
                             ctx.CallStack.Pop();
                         }
                         frame.Push(FinishFunctionResult(calleeFunc, result));
+                    }
+                    else if (HigherOrderIntrinsics.Contains(resolvedName)
+                        || (resolvedName == calleeName && HigherOrderIntrinsics.Contains(calleeName)))
+                    {
+                        frame.Push(ExecuteHigherOrderIntrinsic(resolvedName, callArgs, module, ctx, frame));
+                    }
+                    else if (Builtins.TryGet(resolvedName, out var builtin)
+                        || (resolvedName == calleeName && Builtins.TryGet(calleeName, out builtin)))
+                    {
+                        frame.Push(builtin(callArgs));
                     }
                     else if (TryGetHostFunction(resolvedName, out var hostFunc)
                         || (resolvedName == calleeName && TryGetHostFunction(calleeName, out hostFunc)))

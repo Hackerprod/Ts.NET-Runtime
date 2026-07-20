@@ -471,7 +471,9 @@ public sealed class Lexer
             ';' => new Token(TokenKind.Semicolon, ";", start),
             ':' => new Token(TokenKind.Colon, ":", start),
             ',' => new Token(TokenKind.Comma, ",", start),
-            '.' => new Token(TokenKind.Dot, ".", start),
+            '.' => Peek() == '.' && Peek(1) == '.'
+                ? AdvanceAnd(TokenKind.DotDotDot, "...")
+                : new Token(TokenKind.Dot, ".", start),
             '~' => new Token(TokenKind.Tilde, "~", start),
             '?' => Peek() switch
             {

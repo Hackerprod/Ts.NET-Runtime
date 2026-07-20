@@ -1659,6 +1659,16 @@ public sealed class Parser
         while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
         {
             int loopStart = _position;
+            if (Check(TokenKind.DotDotDot))
+            {
+                var spread = Advance();
+                var spreadValue = ParseExpression();
+                properties.Add(new ObjectSpreadPropertySyntax(spreadValue, new SourceRange(spread.Location, Peek(-1).Location)));
+                if (Check(TokenKind.Comma)) Advance();
+                if (_position == loopStart) Advance();
+                continue;
+            }
+
             var keyStart = Peek().Location;
             var key = ExpectMemberName();
             ExpressionSyntax value;

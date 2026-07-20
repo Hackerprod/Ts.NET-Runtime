@@ -272,12 +272,14 @@ public sealed class BoundObjectPropertyNode : BoundNode
 {
     public string Key { get; }
     public BoundNode Value { get; }
+    public bool IsSpread { get; }
 
-    public BoundObjectPropertyNode(string key, BoundNode value, TsType type)
+    public BoundObjectPropertyNode(string key, BoundNode value, TsType type, bool isSpread = false)
         : base(BoundNodeKind.ObjectProperty, type)
     {
         Key = key;
         Value = value;
+        IsSpread = isSpread;
     }
 }
 

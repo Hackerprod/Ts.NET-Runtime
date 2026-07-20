@@ -1361,7 +1361,10 @@ public sealed class IRGenerator
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
             GenerateExpression(prop.Value);
-            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, prop.Key));
+            if (prop.IsSpread)
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.CopyObjectFields));
+            else
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, prop.Key));
         }
     }
 

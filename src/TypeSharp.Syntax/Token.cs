@@ -92,6 +92,7 @@ public enum TokenKind
     Colon,
     Comma,
     Dot,
+    DotDotDot,
     Question,
     QuestionDot,
     QuestionQuestion,

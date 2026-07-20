@@ -186,6 +186,7 @@ public static class Opcodes
     public const byte LoadFunc                 = 0x8C;
     public const byte CallDynamic              = 0x8D;
     public const byte MakeClosure              = 0x8E;
+    public const byte CopyObjectFields         = 0x8F;
 
     public const byte CmpEqAny                 = 0xA2;
     public const byte CmpNeAny                 = 0xA3;
@@ -354,6 +355,7 @@ public static class OpcodeFormats
         Reg(0x8C, OperandKind.Int32);    // LOAD_FUNC (string index)
         Reg(0x8D, OperandKind.Int32);    // CALL_DYNAMIC (arg count)
         Reg(0x8E, OperandKind.Int32x2);  // MAKE_CLOSURE (string index + capture count)
+        Reg(0x8F);                       // COPY_OBJECT_FIELDS
 
         // ── Dynamic semantics ──
         Reg(0xA2);                       // CMP_EQ_ANY

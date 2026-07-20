@@ -85,6 +85,71 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task ObjectSpreadCopiesFieldsAndPreservesOverrideOrder()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_object_spread_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "object-spread.ts");
+        await File.WriteAllTextAsync(file, """
+            export function scenario(): number {
+                const base = { a: 1, c: 10 };
+                const merged = { ...base, b: 5, a: 4 };
+                return merged.a + merged.b + merged.c;
+            }
+            """);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("object-spread", "scenario");
+            Assert.Equal(19, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public async Task VirtualArrayBuiltinsSupportStandardVarArgsCalls()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_array_builtins_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "array-builtins.ts");
+        await File.WriteAllTextAsync(file, """
+            export function scenario(): number {
+                const values: number[] = [];
+                const lengthAfterPush = values.push(10, 20);
+                values.unshift(5, 1);
+                const joined = values.join(",");
+
+                if (joined !== "5,1,10,20") {
+                    return -1;
+                }
+
+                return lengthAfterPush + values.length;
+            }
+            """);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("array-builtins", "scenario");
+            Assert.Equal(6, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
     public async Task EndToEndGreet()
     {
         var builder = new TypeSharpRuntimeBuilder();

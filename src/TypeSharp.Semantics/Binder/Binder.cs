@@ -38,7 +38,14 @@ public sealed class Binder
     private readonly Dictionary<Symbol, int> _symbolFunctionDepth = new();
     private readonly List<(int FunctionDepth, List<Symbol> Captured)> _captureCollectors = new();
 
-    private sealed record NullCheckNarrowing(Symbol Symbol, TsType TrueType, TsType FalseType);
+    private sealed record NullCheckNarrowing(
+        Symbol? Symbol,
+        string? AccessPath,
+        TsType OriginalType,
+        TsType TrueType,
+        TsType FalseType);
+
+    private readonly Stack<Dictionary<string, TsType>> _memberAccessNarrowingScopes = new();
 
     private void DefineWithDepth(Symbol symbol)
     {
@@ -1133,7 +1140,7 @@ public sealed class Binder
 
         foreach (var narrowing in narrowings)
         {
-            if (narrowing.FalseType.Equals(narrowing.Symbol.Type))
+            if (narrowing.Symbol == null || narrowing.FalseType.Equals(narrowing.Symbol.Type))
             {
                 continue;
             }
@@ -1325,18 +1332,14 @@ public sealed class Binder
         ValidateCondition(condition, ifStmt.Condition.Range.Start);
         var trueNarrowings = TryGetTruePathNullCheckNarrowings(ifStmt.Condition);
         var thenBranch = trueNarrowings.Count > 0
-            ? BindStatementWithTemporaryTypes(
-                ifStmt.ThenBranch,
-                trueNarrowings.Select(n => (n.Symbol, n.TrueType)).ToList())
+            ? BindStatementWithTemporaryNarrowings(ifStmt.ThenBranch, trueNarrowings, useTrueType: true)
             : BindStatement(ifStmt.ThenBranch);
         var falseNarrowings = ifStmt.ElseBranch != null
             ? TryGetFalsePathNullCheckNarrowings(ifStmt.Condition)
             : new List<NullCheckNarrowing>();
         var elseBranch = ifStmt.ElseBranch != null
             ? falseNarrowings.Count > 0
-                ? BindStatementWithTemporaryTypes(
-                    ifStmt.ElseBranch,
-                    falseNarrowings.Select(n => (n.Symbol, n.FalseType)).ToList())
+                ? BindStatementWithTemporaryNarrowings(ifStmt.ElseBranch, falseNarrowings, useTrueType: false)
                 : BindStatement(ifStmt.ElseBranch)
             : null;
         return new BoundIfStatement(condition, thenBranch, elseBranch);
@@ -1380,6 +1383,62 @@ public sealed class Binder
         }
     }
 
+    private BoundNode BindStatementWithTemporaryNarrowings(
+        SyntaxNode statement,
+        IReadOnlyList<NullCheckNarrowing> narrowings,
+        bool useTrueType)
+    {
+        return BindWithTemporaryNarrowings(narrowings, useTrueType, () => BindStatement(statement));
+    }
+
+    private T BindWithTemporaryNarrowings<T>(
+        IReadOnlyList<NullCheckNarrowing> narrowings,
+        bool useTrueType,
+        Func<T> bind)
+    {
+        var previousSymbols = new List<(Symbol Symbol, TsType Type)>();
+        Dictionary<string, TsType>? memberTypes = null;
+
+        foreach (var narrowing in narrowings)
+        {
+            var narrowedType = useTrueType ? narrowing.TrueType : narrowing.FalseType;
+            if (narrowing.Symbol != null)
+            {
+                previousSymbols.Add((narrowing.Symbol, narrowing.Symbol.Type));
+                narrowing.Symbol.Type = narrowedType;
+                continue;
+            }
+
+            if (narrowing.AccessPath != null)
+            {
+                memberTypes ??= new Dictionary<string, TsType>();
+                memberTypes[narrowing.AccessPath] = narrowedType;
+            }
+        }
+
+        if (memberTypes != null)
+        {
+            _memberAccessNarrowingScopes.Push(memberTypes);
+        }
+
+        try
+        {
+            return bind();
+        }
+        finally
+        {
+            if (memberTypes != null)
+            {
+                _memberAccessNarrowingScopes.Pop();
+            }
+
+            for (int i = previousSymbols.Count - 1; i >= 0; i--)
+            {
+                previousSymbols[i].Symbol.Type = previousSymbols[i].Type;
+            }
+        }
+    }
+
     private NullCheckNarrowing? TryGetNullCheckNarrowing(ExpressionSyntax condition)
     {
         if (condition is not BinaryExpressionSyntax binary)
@@ -1390,15 +1449,15 @@ public sealed class Binder
         if (binary.OperatorToken.Kind == TokenKind.AmpersandAmpersand)
         {
             var left = TryGetNullCheckNarrowing(binary.Left);
-            if (left != null && !left.TrueType.Equals(left.Symbol.Type))
+            if (left != null && !left.TrueType.Equals(left.OriginalType))
             {
-                return new NullCheckNarrowing(left.Symbol, left.TrueType, left.Symbol.Type);
+                return new NullCheckNarrowing(left.Symbol, left.AccessPath, left.OriginalType, left.TrueType, left.OriginalType);
             }
 
             var right = TryGetNullCheckNarrowing(binary.Right);
-            if (right != null && !right.TrueType.Equals(right.Symbol.Type))
+            if (right != null && !right.TrueType.Equals(right.OriginalType))
             {
-                return new NullCheckNarrowing(right.Symbol, right.TrueType, right.Symbol.Type);
+                return new NullCheckNarrowing(right.Symbol, right.AccessPath, right.OriginalType, right.TrueType, right.OriginalType);
             }
 
             return null;
@@ -1407,15 +1466,15 @@ public sealed class Binder
         if (binary.OperatorToken.Kind == TokenKind.PipePipe)
         {
             var left = TryGetNullCheckNarrowing(binary.Left);
-            if (left != null && !left.FalseType.Equals(left.Symbol.Type))
+            if (left != null && !left.FalseType.Equals(left.OriginalType))
             {
-                return new NullCheckNarrowing(left.Symbol, left.Symbol.Type, left.FalseType);
+                return new NullCheckNarrowing(left.Symbol, left.AccessPath, left.OriginalType, left.OriginalType, left.FalseType);
             }
 
             var right = TryGetNullCheckNarrowing(binary.Right);
-            if (right != null && !right.FalseType.Equals(right.Symbol.Type))
+            if (right != null && !right.FalseType.Equals(right.OriginalType))
             {
-                return new NullCheckNarrowing(right.Symbol, right.Symbol.Type, right.FalseType);
+                return new NullCheckNarrowing(right.Symbol, right.AccessPath, right.OriginalType, right.OriginalType, right.FalseType);
             }
 
             return null;
@@ -1423,7 +1482,7 @@ public sealed class Binder
 
         if (!TryGetIdentifierNullComparison(binary, out var identifierName, out var equalityIsTrueWhenNull))
         {
-            return null;
+            return TryGetMemberAccessNullCheckNarrowing(binary);
         }
 
         var symbol = _symbolTable.Lookup(identifierName);
@@ -1438,8 +1497,32 @@ public sealed class Binder
         }
 
         return equalityIsTrueWhenNull
-            ? new NullCheckNarrowing(symbol, TsType.Null, nonNullType)
-            : new NullCheckNarrowing(symbol, nonNullType, TsType.Null);
+            ? new NullCheckNarrowing(symbol, null, symbol.Type, TsType.Null, nonNullType)
+            : new NullCheckNarrowing(symbol, null, symbol.Type, nonNullType, TsType.Null);
+    }
+
+    private NullCheckNarrowing? TryGetMemberAccessNullCheckNarrowing(BinaryExpressionSyntax binary)
+    {
+        if (!TryGetMemberAccessNullComparison(binary, out var accessExpression, out var equalityIsTrueWhenNull))
+        {
+            return null;
+        }
+
+        var accessPath = GetMemberAccessPath(accessExpression);
+        if (accessPath == null)
+        {
+            return null;
+        }
+
+        var boundAccess = BindExpression(accessExpression);
+        if (!TryRemoveNullish(boundAccess.Type, out var nonNullType))
+        {
+            return null;
+        }
+
+        return equalityIsTrueWhenNull
+            ? new NullCheckNarrowing(null, accessPath, boundAccess.Type, TsType.Null, nonNullType)
+            : new NullCheckNarrowing(null, accessPath, boundAccess.Type, nonNullType, TsType.Null);
     }
 
     private List<NullCheckNarrowing> TryGetFalsePathNullCheckNarrowings(ExpressionSyntax condition)
@@ -1513,6 +1596,50 @@ public sealed class Binder
         identifierName = identifier.Name;
         equalityIsTrueWhenNull = comparesEqual;
         return true;
+    }
+
+    private static bool TryGetMemberAccessNullComparison(
+        BinaryExpressionSyntax binary,
+        out MemberAccessExpressionSyntax accessExpression,
+        out bool equalityIsTrueWhenNull)
+    {
+        accessExpression = null!;
+        equalityIsTrueWhenNull = false;
+
+        var comparesEqual = binary.OperatorToken.Kind is TokenKind.DoubleEquals or TokenKind.TripleEquals;
+        var comparesNotEqual = binary.OperatorToken.Kind is TokenKind.NotEquals or TokenKind.StrictNotEquals;
+        if (!comparesEqual && !comparesNotEqual)
+        {
+            return false;
+        }
+
+        if (binary.Left is MemberAccessExpressionSyntax left && IsNullishLiteral(binary.Right))
+        {
+            accessExpression = left;
+        }
+        else if (binary.Right is MemberAccessExpressionSyntax right && IsNullishLiteral(binary.Left))
+        {
+            accessExpression = right;
+        }
+
+        if (accessExpression == null)
+        {
+            return false;
+        }
+
+        equalityIsTrueWhenNull = comparesEqual;
+        return true;
+    }
+
+    private static string? GetMemberAccessPath(ExpressionSyntax expression)
+    {
+        return expression switch
+        {
+            IdentifierExpressionSyntax identifier => identifier.Name,
+            MemberAccessExpressionSyntax member when GetMemberAccessPath(member.Object) is { } owner =>
+                owner + "." + member.MemberName,
+            _ => null
+        };
     }
 
     private static bool IsNullishLiteral(ExpressionSyntax expression) =>
@@ -1862,12 +1989,15 @@ public sealed class Binder
         var rightType = binary.OperatorToken.Kind == TokenKind.AmpersandAmpersand
             ? narrowing.TrueType
             : narrowing.FalseType;
-        if (rightType.Equals(narrowing.Symbol.Type))
+        if (rightType.Equals(narrowing.OriginalType))
         {
             return BindExpression(binary.Right);
         }
 
-        return BindExpressionWithTemporaryType(binary.Right, narrowing.Symbol, rightType);
+        return BindExpressionWithTemporaryNarrowings(
+            binary.Right,
+            new List<NullCheckNarrowing> { narrowing },
+            binary.OperatorToken.Kind == TokenKind.AmpersandAmpersand);
     }
 
     private BoundNode BindExpressionWithTemporaryType(ExpressionSyntax expression, Symbol symbol, TsType type)
@@ -1906,6 +2036,14 @@ public sealed class Binder
                 previous[i].Symbol.Type = previous[i].Type;
             }
         }
+    }
+
+    private BoundNode BindExpressionWithTemporaryNarrowings(
+        ExpressionSyntax expression,
+        IReadOnlyList<NullCheckNarrowing> narrowings,
+        bool useTrueType)
+    {
+        return BindWithTemporaryNarrowings(narrowings, useTrueType, () => BindExpression(expression));
     }
 
     private BoundUnaryExpression BindUnary(UnaryExpressionSyntax unary)
@@ -2212,7 +2350,27 @@ public sealed class Binder
             ? new TsNullableType(memberSym.Type)
             : memberSym.Type;
 
+        if (GetMemberAccessPath(member) is { } accessPath &&
+            TryGetTemporaryMemberAccessType(accessPath, out var narrowedType))
+        {
+            resultType = narrowedType;
+        }
+
         return new BoundMemberAccessExpression(obj, memberSym, member.IsNullConditional, resultType);
+    }
+
+    private bool TryGetTemporaryMemberAccessType(string accessPath, out TsType type)
+    {
+        foreach (var scope in _memberAccessNarrowingScopes)
+        {
+            if (scope.TryGetValue(accessPath, out type!))
+            {
+                return true;
+            }
+        }
+
+        type = TsType.Void;
+        return false;
     }
 
     // Array/string builtin members: methods dispatch through the VM builtin
@@ -2410,15 +2568,13 @@ public sealed class Binder
     {
         var condition = BindExpression(cond.Condition);
         ValidateCondition(condition, cond.Condition.Range.Start);
-        var narrowing = TryGetNullCheckNarrowing(cond.Condition);
-        var whenTrue = narrowing != null
-            ? BindExpressionWithTemporaryType(cond.WhenTrue, narrowing.Symbol, narrowing.TrueType)
+        var trueNarrowings = TryGetTruePathNullCheckNarrowings(cond.Condition);
+        var whenTrue = trueNarrowings.Count > 0
+            ? BindExpressionWithTemporaryNarrowings(cond.WhenTrue, trueNarrowings, useTrueType: true)
             : BindExpression(cond.WhenTrue);
         var falseNarrowings = TryGetFalsePathNullCheckNarrowings(cond.Condition);
         var whenFalse = falseNarrowings.Count > 0
-            ? BindExpressionWithTemporaryTypes(
-                cond.WhenFalse,
-                falseNarrowings.Select(n => (n.Symbol, n.FalseType)).ToList())
+            ? BindExpressionWithTemporaryNarrowings(cond.WhenFalse, falseNarrowings, useTrueType: false)
             : BindExpression(cond.WhenFalse);
 
         TsType resultType = InferConditionalResultType(whenTrue.Type, whenFalse.Type);
@@ -2526,6 +2682,13 @@ public sealed class Binder
             resultType = originalExpectedType is TsGenericType ? originalExpectedType : ifaceType;
             foreach (var prop in objLit.Properties)
             {
+                if (prop is ObjectSpreadPropertySyntax)
+                {
+                    var spreadValue = BindExpression(prop.Value);
+                    properties.Add(new BoundObjectPropertyNode(string.Empty, spreadValue, spreadValue.Type, isSpread: true));
+                    continue;
+                }
+
                 TsType expectedPropertyType;
                 if (ifaceType.Properties.TryGetValue(prop.Key, out var ifaceProp))
                 {
@@ -2587,12 +2750,42 @@ public sealed class Binder
             foreach (var prop in objLit.Properties)
             {
                 var value = BindExpression(prop.Value);
+                if (prop is ObjectSpreadPropertySyntax)
+                {
+                    properties.Add(new BoundObjectPropertyNode(string.Empty, value, value.Type, isSpread: true));
+                    AddSpreadFieldsToStructuralType(structuralType, value.Type);
+                    continue;
+                }
+
                 properties.Add(new BoundObjectPropertyNode(prop.Key, value, value.Type));
                 structuralType.Fields[prop.Key] = new TsField(prop.Key, value.Type);
             }
         }
 
         return new BoundObjectLiteralExpression(properties, resultType);
+    }
+
+    private static void AddSpreadFieldsToStructuralType(TsClassType target, TsType spreadType)
+    {
+        if (spreadType is TsClassType classType)
+        {
+            foreach (var field in classType.Fields.Values)
+                target.Fields[field.Name] = new TsField(field.Name, field.Type)
+                {
+                    IsReadonly = field.IsReadonly,
+                    IsStatic = field.IsStatic,
+                    AccessModifier = field.AccessModifier
+                };
+        }
+        else if (spreadType is TsInterfaceType interfaceType)
+        {
+            foreach (var property in interfaceType.Properties.Values)
+                target.Fields[property.Name] = new TsField(property.Name, property.Type)
+                {
+                    IsReadonly = property.IsReadonly,
+                    AccessModifier = property.AccessModifier
+                };
+        }
     }
 
     private BoundNode BindExpressionWithExpectedType(ExpressionSyntax expression, TsType expectedType)
