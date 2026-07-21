@@ -139,9 +139,16 @@ public sealed class Parser
         var returnType = Check(TokenKind.Colon) ? (TypeSyntax?)ParseTypeAnnotation() : null;
 
         SyntaxNode body;
+        var isOverloadSignature = false;
         if (Check(TokenKind.OpenBrace))
         {
             body = ParseBlock();
+        }
+        else if (Check(TokenKind.Semicolon))
+        {
+            var semi = Advance();
+            isOverloadSignature = true;
+            body = new BlockStatementSyntax(new List<SyntaxNode>(), new SourceRange(semi.Location, semi.Location));
         }
         else
         {
@@ -152,7 +159,7 @@ public sealed class Parser
         }
 
         var funcDecl = new FunctionDeclarationSyntax(name, parameters, returnType, body, isAsync,
-            new SourceRange(funcKw.Location, body.Range.End), isGenerator);
+            new SourceRange(funcKw.Location, body.Range.End), isGenerator, isOverloadSignature);
         funcDecl.GenericParameters.AddRange(genericParams);
         return funcDecl;
     }
@@ -579,6 +586,11 @@ public sealed class Parser
                 Advance();
                 param.Constraints.Add(ParseType());
             }
+            if (Check(TokenKind.Equals))
+            {
+                Advance();
+                param.DefaultType = ParseType();
+            }
             result.Add(param);
             if (Check(TokenKind.Comma)) Advance();
             if (_position == loopStart) Advance();
@@ -596,7 +608,34 @@ public sealed class Parser
             Advance();
         }
 
-        var type = ParseTypeWithSuffixes();
+        if (Check(TokenKind.Identifier) && Peek().Text == "asserts")
+        {
+            var assertsTok = Advance();
+            var parameterName = ExpectMemberName();
+            TypeSyntax? targetType = null;
+            if (Check(TokenKind.Identifier) && Peek().Text == "is")
+            {
+                Advance();
+                targetType = ParseType();
+            }
+
+            return new AssertionTypeSyntax(parameterName, targetType,
+                new SourceRange(assertsTok.Location, (targetType?.Range.End) ?? Peek(-1).Location));
+        }
+
+        var type = ParseIntersectionType();
+
+        if (Check(TokenKind.ExtendsKeyword))
+        {
+            Advance();
+            var extendsType = ParseIntersectionType();
+            Expect(TokenKind.Question);
+            var trueType = ParseType();
+            Expect(TokenKind.Colon);
+            var falseType = ParseType();
+            type = new ConditionalTypeSyntax(type, extendsType, trueType, falseType,
+                new SourceRange(type.Range.Start, falseType.Range.End));
+        }
 
         if (hasLeadingPipe || Check(TokenKind.Pipe))
         {
@@ -604,7 +643,7 @@ public sealed class Parser
             while (Check(TokenKind.Pipe))
             {
                 Advance();
-                members.Add(ParseTypeWithSuffixes());
+                members.Add(ParseIntersectionType());
             }
             type = new UnionTypeSyntax(members,
                 new SourceRange(members[0].Range.Start, members[^1].Range.End));
@@ -616,7 +655,34 @@ public sealed class Parser
             type = new NullableTypeSyntax(type, new SourceRange(type.Range.Start, Peek(-1).Location));
         }
 
+        if (type is NamedTypeSyntax { TypeArguments.Count: 0 } namedPredicateTarget &&
+            Check(TokenKind.Identifier) &&
+            Peek().Text == "is")
+        {
+            Advance();
+            var targetType = ParseType();
+            type = new TypePredicateSyntax(namedPredicateTarget.Name, targetType,
+                new SourceRange(namedPredicateTarget.Range.Start, targetType.Range.End));
+        }
+
         return type;
+    }
+
+    private TypeSyntax ParseIntersectionType()
+    {
+        var type = ParseTypeWithSuffixes();
+        if (!Check(TokenKind.Ampersand))
+            return type;
+
+        var members = new List<TypeSyntax> { type };
+        while (Check(TokenKind.Ampersand))
+        {
+            Advance();
+            members.Add(ParseTypeWithSuffixes());
+        }
+
+        return new IntersectionTypeSyntax(members,
+            new SourceRange(members[0].Range.Start, members[^1].Range.End));
     }
 
     private TypeSyntax ParseTypeWithSuffixes()
@@ -661,6 +727,27 @@ public sealed class Parser
 
     private TypeSyntax ParsePrimaryType()
     {
+        if (Check(TokenKind.Identifier) && Peek().Text == "keyof")
+        {
+            var keyofTok = Advance();
+            var operand = ParseTypeWithSuffixes();
+            return new KeyofTypeSyntax(operand, new SourceRange(keyofTok.Location, operand.Range.End));
+        }
+
+        if (Check(TokenKind.Identifier) && Peek().Text == "typeof")
+        {
+            var typeofTok = Advance();
+            var operand = ParsePostfix();
+            return new TypeofTypeSyntax(operand, new SourceRange(typeofTok.Location, operand.Range.End));
+        }
+
+        if (Check(TokenKind.Identifier) && Peek().Text == "infer")
+        {
+            var inferTok = Advance();
+            var name = ExpectIdentifier();
+            return new InferTypeSyntax(name, new SourceRange(inferTok.Location, Peek(-1).Location));
+        }
+
         if (Check(TokenKind.OpenBrace))
         {
             return ParseMapType();
@@ -705,7 +792,8 @@ public sealed class Parser
             Check(TokenKind.IntegerLiteral) ||
             Check(TokenKind.FloatLiteral) ||
             Check(TokenKind.TrueLiteral) ||
-            Check(TokenKind.FalseLiteral))
+            Check(TokenKind.FalseLiteral) ||
+            Check(TokenKind.TemplateLiteral))
         {
             var literal = Advance();
             return new LiteralTypeSyntax(literal, new SourceRange(literal.Location, literal.Location));
@@ -826,6 +914,21 @@ public sealed class Parser
         // `{K: V}` (legacy map shorthand, single type-keyword key) or an
         // anonymous object type `{ a: T; b?: U }`.
         var open = Expect(TokenKind.OpenBrace);
+
+        if (Check(TokenKind.OpenBracket))
+        {
+            Advance();
+            var typeParameterName = ExpectMemberName();
+            Expect(TokenKind.InKeyword);
+            var sourceType = ParseType();
+            Expect(TokenKind.CloseBracket);
+            Expect(TokenKind.Colon);
+            var valueType = ParseType();
+            if (Check(TokenKind.Semicolon) || Check(TokenKind.Comma)) Advance();
+            Expect(TokenKind.CloseBrace);
+            return new MappedTypeSyntax(typeParameterName, sourceType, valueType,
+                new SourceRange(open.Location, Peek(-1).Location));
+        }
 
         if (IsTypeKeyword(Peek().Kind) && Peek(1).Kind == TokenKind.Colon)
         {
@@ -1639,6 +1742,13 @@ public sealed class Parser
                 Advance();
                 var castType = ParseType();
                 expr = new AsExpressionSyntax(expr, castType,
+                    new SourceRange(expr.Range.Start, Peek(-1).Location));
+            }
+            else if (Check(TokenKind.Identifier) && Peek().Text == "satisfies")
+            {
+                Advance();
+                var targetType = ParseType();
+                expr = new SatisfiesExpressionSyntax(expr, targetType,
                     new SourceRange(expr.Range.Start, Peek(-1).Location));
             }
             else if (Check(TokenKind.Bang))

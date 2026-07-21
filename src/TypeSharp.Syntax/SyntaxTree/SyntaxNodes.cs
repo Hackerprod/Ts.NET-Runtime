@@ -26,6 +26,7 @@ public enum SyntaxNodeType
     ObjectLiteralExpression,
     ArrayLiteralExpression,
     AsExpression,
+    SatisfiesExpression,
     ForOfStatement,
     ForInStatement,
     LabelledStatement,
@@ -443,6 +444,21 @@ public sealed class AsExpressionSyntax : ExpressionSyntax
     public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Expression, TargetType };
 }
 
+public sealed class SatisfiesExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+    public TypeSyntax TargetType { get; }
+
+    public SatisfiesExpressionSyntax(ExpressionSyntax expression, TypeSyntax targetType, SourceRange range)
+        : base(SyntaxNodeType.SatisfiesExpression, range)
+    {
+        Expression = expression;
+        TargetType = targetType;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Expression, TargetType };
+}
+
 public sealed class AwaitExpressionSyntax : ExpressionSyntax
 {
     public ExpressionSyntax Expression { get; }
@@ -798,9 +814,10 @@ public sealed class FunctionDeclarationSyntax : DeclarationSyntax
     public SyntaxNode Body { get; }
     public bool IsAsync { get; }
     public bool IsGenerator { get; }
+    public bool IsOverloadSignature { get; }
     public List<GenericParameterSyntax> GenericParameters { get; } = new();
 
-    public FunctionDeclarationSyntax(string name, List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode body, bool isAsync, SourceRange range, bool isGenerator = false)
+    public FunctionDeclarationSyntax(string name, List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode body, bool isAsync, SourceRange range, bool isGenerator = false, bool isOverloadSignature = false)
         : base(SyntaxNodeType.FunctionDeclaration, range)
     {
         Name = name;
@@ -809,6 +826,7 @@ public sealed class FunctionDeclarationSyntax : DeclarationSyntax
         Body = body;
         IsAsync = isAsync;
         IsGenerator = isGenerator;
+        IsOverloadSignature = isOverloadSignature;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -1159,6 +1177,7 @@ public sealed class GenericParameterSyntax : SyntaxNode
 {
     public string Name { get; }
     public List<TypeSyntax> Constraints { get; } = new();
+    public TypeSyntax? DefaultType { get; set; }
 
     public GenericParameterSyntax(string name, SourceRange range)
         : base(SyntaxNodeType.GenericParameter, range)
@@ -1166,7 +1185,11 @@ public sealed class GenericParameterSyntax : SyntaxNode
         Name = name;
     }
 
-    public override IEnumerable<SyntaxNode> GetChildren() => Constraints;
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        foreach (var constraint in Constraints) yield return constraint;
+        if (DefaultType != null) yield return DefaultType;
+    }
 }
 
 // Type nodes
@@ -1252,6 +1275,27 @@ public sealed class ObjectTypeSyntax : TypeSyntax
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => Members.Select(m => (SyntaxNode)m.Type);
+}
+
+public sealed class MappedTypeSyntax : TypeSyntax
+{
+    public string TypeParameterName { get; }
+    public TypeSyntax SourceType { get; }
+    public TypeSyntax ValueType { get; }
+
+    public MappedTypeSyntax(string typeParameterName, TypeSyntax sourceType, TypeSyntax valueType, SourceRange range)
+        : base(SyntaxNodeType.TypeAnnotation, range)
+    {
+        TypeParameterName = typeParameterName;
+        SourceType = sourceType;
+        ValueType = valueType;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        yield return SourceType;
+        yield return ValueType;
+    }
 }
 
 public sealed class FunctionTypeSyntax : TypeSyntax
@@ -1497,6 +1541,78 @@ public sealed class IndexedAccessTypeSyntax : TypeSyntax
     public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { ObjectType, IndexType };
 }
 
+public sealed class KeyofTypeSyntax : TypeSyntax
+{
+    public TypeSyntax Operand { get; }
+
+    public KeyofTypeSyntax(TypeSyntax operand, SourceRange range)
+        : base(SyntaxNodeType.TypeAnnotation, range)
+    {
+        Operand = operand;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Operand };
+}
+
+public sealed class TypeofTypeSyntax : TypeSyntax
+{
+    public ExpressionSyntax Operand { get; }
+
+    public TypeofTypeSyntax(ExpressionSyntax operand, SourceRange range)
+        : base(SyntaxNodeType.TypeAnnotation, range)
+    {
+        Operand = operand;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Operand };
+}
+
+public sealed class TypePredicateSyntax : TypeSyntax
+{
+    public string ParameterName { get; }
+    public TypeSyntax TargetType { get; }
+
+    public TypePredicateSyntax(string parameterName, TypeSyntax targetType, SourceRange range)
+        : base(SyntaxNodeType.TypeAnnotation, range)
+    {
+        ParameterName = parameterName;
+        TargetType = targetType;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { TargetType };
+}
+
+public sealed class InferTypeSyntax : TypeSyntax
+{
+    public string Name { get; }
+
+    public InferTypeSyntax(string name, SourceRange range)
+        : base(SyntaxNodeType.TypeAnnotation, range)
+    {
+        Name = name;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => Enumerable.Empty<SyntaxNode>();
+}
+
+public sealed class AssertionTypeSyntax : TypeSyntax
+{
+    public string ParameterName { get; }
+    public TypeSyntax? TargetType { get; }
+
+    public AssertionTypeSyntax(string parameterName, TypeSyntax? targetType, SourceRange range)
+        : base(SyntaxNodeType.TypeAnnotation, range)
+    {
+        ParameterName = parameterName;
+        TargetType = targetType;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        if (TargetType != null) yield return TargetType;
+    }
+}
+
 public sealed class MapTypeSyntax : TypeSyntax
 {
     public TypeSyntax KeyType { get; }
@@ -1549,6 +1665,44 @@ public sealed class UnionTypeSyntax : TypeSyntax
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => Types;
+}
+
+public sealed class IntersectionTypeSyntax : TypeSyntax
+{
+    public List<TypeSyntax> Types { get; }
+
+    public IntersectionTypeSyntax(List<TypeSyntax> types, SourceRange range)
+        : base(SyntaxNodeType.IntersectionType, range)
+    {
+        Types = types;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => Types;
+}
+
+public sealed class ConditionalTypeSyntax : TypeSyntax
+{
+    public TypeSyntax CheckType { get; }
+    public TypeSyntax ExtendsType { get; }
+    public TypeSyntax TrueType { get; }
+    public TypeSyntax FalseType { get; }
+
+    public ConditionalTypeSyntax(TypeSyntax checkType, TypeSyntax extendsType, TypeSyntax trueType, TypeSyntax falseType, SourceRange range)
+        : base(SyntaxNodeType.TypeAnnotation, range)
+    {
+        CheckType = checkType;
+        ExtendsType = extendsType;
+        TrueType = trueType;
+        FalseType = falseType;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        yield return CheckType;
+        yield return ExtendsType;
+        yield return TrueType;
+        yield return FalseType;
+    }
 }
 
 public sealed class NamedImportSyntax : SyntaxNode

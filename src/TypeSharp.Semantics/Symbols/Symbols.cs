@@ -134,6 +134,11 @@ public sealed class FunctionSymbol : Symbol
     public bool IsGenerator { get; set; }
     public bool IsExported { get; set; }
     public bool HasDynamicSignature { get; set; }
+    public string? TypePredicateParameterName { get; set; }
+    public TypeSystem.TsType? TypePredicateTargetType { get; set; }
+    public string? AssertionParameterName { get; set; }
+    public TypeSystem.TsType? AssertionTargetType { get; set; }
+    public List<TypeSystem.TsFunctionType> Overloads { get; } = new();
 
     // Set on import aliases: the exported function name to call at runtime.
     public string? TargetName { get; set; }

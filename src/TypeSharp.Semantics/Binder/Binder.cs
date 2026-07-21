@@ -17,6 +17,8 @@ public sealed class Binder
     private readonly Dictionary<string, TsInterfaceType> _interfaceTypes = new();
     private readonly Dictionary<string, TsEnumType> _enumTypes = new();
     private readonly Dictionary<string, TsType> _typeAliases = new();
+    private readonly Dictionary<string, TypeAliasDeclarationSyntax> _typeAliasDeclarations = new();
+    private readonly HashSet<string> _resolvingTypeAliases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, Symbol>> _importedSymbols = new();
     private TsClassType? _currentClassType;
     private ParameterSymbol? _currentThisSymbol;
@@ -33,6 +35,7 @@ public sealed class Binder
 
     // Generic type parameters in scope, innermost last.
     private readonly List<Dictionary<string, TsTypeParameter>> _typeParameterScopes = new();
+    private readonly List<Dictionary<string, TsType>> _typeValueScopes = new();
 
     // Closure support: every LocalSymbol/ParameterSymbol records the function
     // nesting depth where it was declared; identifiers resolved from a deeper
@@ -328,7 +331,9 @@ public sealed class Binder
                 }
                 else
                 {
-                    _typeAliases[alias.Name] = ResolveType(alias.Type);
+                    _typeAliasDeclarations[alias.Name] = alias;
+                    if (alias.GenericParameters.Count == 0)
+                        _typeAliases[alias.Name] = ResolveType(alias.Type);
                 }
                 PopTypeParameters();
                 break;
@@ -466,6 +471,7 @@ public sealed class Binder
     {
         return node switch
         {
+            FunctionDeclarationSyntax { IsOverloadSignature: true } => null,
             FunctionDeclarationSyntax func => BindFunction(func),
             ClassDeclarationSyntax cls => BindClass(cls),
             InterfaceDeclarationSyntax iface => BindInterface(iface),
@@ -547,6 +553,8 @@ public sealed class Binder
                     : TsType.Any;
             sym.Parameters.Add(CreateParameterSymbol(parameter, parameterType));
         }
+        ApplyTypePredicateSignature(sym, lambda.ReturnType);
+        ApplyAssertionSignature(sym, lambda.ReturnType);
         PopTypeParameters();
         _symbolTable.Define(sym);
         return sym;
@@ -605,18 +613,85 @@ public sealed class Binder
         var returnType = func.IsGenerator
             ? TsType.Any
             : NormalizeFunctionReturnType(declaredReturnType, func.IsAsync);
+
+        if (func.IsOverloadSignature)
+        {
+            var overload = new TsFunctionType(
+                func.Parameters.Select(CreateTypeParameter).ToList(),
+                returnType);
+            if (_symbolTable.Lookup(func.Name) is FunctionSymbol overloadedFunction)
+            {
+                overloadedFunction.Overloads.Add(overload);
+                PopTypeParameters();
+                return overloadedFunction;
+            }
+
+            var overloadOnly = new FunctionSymbol(func.Name, returnType, func.Range)
+            {
+                IsAsync = func.IsAsync,
+                IsGenerator = func.IsGenerator,
+                IsExported = func.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword)
+            };
+            overloadOnly.Overloads.Add(overload);
+            _symbolTable.Define(overloadOnly);
+            PopTypeParameters();
+            return overloadOnly;
+        }
+
         var sym = new FunctionSymbol(func.Name, returnType, func.Range)
         {
             IsAsync = func.IsAsync,
             IsGenerator = func.IsGenerator,
             IsExported = func.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword)
         };
+        if (_symbolTable.Lookup(func.Name) is FunctionSymbol priorOverloads)
+            sym.Overloads.AddRange(priorOverloads.Overloads);
         sym.TypeParameters.AddRange(func.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
         foreach (var parameter in func.Parameters)
             sym.Parameters.Add(CreateParameterSymbol(parameter));
+        ApplyTypePredicateSignature(sym, func.ReturnType);
+        ApplyAssertionSignature(sym, func.ReturnType);
         PopTypeParameters();
         _symbolTable.Define(sym);
         return sym;
+    }
+
+    private void ApplyTypePredicateSignature(FunctionSymbol symbol, TypeSyntax? returnType)
+    {
+        if (returnType is not TypePredicateSyntax predicate)
+            return;
+
+        if (symbol.Parameters.All(parameter => parameter.Name != predicate.ParameterName))
+        {
+            _diagnostics.Error(
+                $"Type predicate parameter '{predicate.ParameterName}' must be declared in function parameters",
+                predicate.Range.Start);
+            return;
+        }
+
+        symbol.Type = TsType.Bool;
+        symbol.TypePredicateParameterName = predicate.ParameterName;
+        symbol.TypePredicateTargetType = ResolveType(predicate.TargetType);
+    }
+
+    private void ApplyAssertionSignature(FunctionSymbol symbol, TypeSyntax? returnType)
+    {
+        if (returnType is not AssertionTypeSyntax assertion)
+            return;
+
+        if (symbol.Parameters.All(parameter => parameter.Name != assertion.ParameterName))
+        {
+            _diagnostics.Error(
+                $"Assertion parameter '{assertion.ParameterName}' must be declared in function parameters",
+                assertion.Range.Start);
+            return;
+        }
+
+        symbol.Type = TsType.Void;
+        symbol.AssertionParameterName = assertion.ParameterName;
+        symbol.AssertionTargetType = assertion.TargetType != null
+            ? ResolveType(assertion.TargetType)
+            : null;
     }
 
     private ParameterSymbol CreateParameterSymbol(ParameterSyntax parameter, TsType? contextualType = null)
@@ -1315,8 +1390,13 @@ public sealed class Binder
             IsAsync = source.IsAsync,
             IsGenerator = source.IsGenerator,
             IsExported = source.IsExported,
-            TargetName = source.TargetName ?? source.Name
+            TargetName = source.TargetName ?? source.Name,
+            TypePredicateParameterName = source.TypePredicateParameterName,
+            TypePredicateTargetType = source.TypePredicateTargetType,
+            AssertionParameterName = source.AssertionParameterName,
+            AssertionTargetType = source.AssertionTargetType
         };
+        copy.Overloads.AddRange(source.Overloads);
         foreach (var parameter in source.Parameters)
         {
             copy.Parameters.Add(new ParameterSymbol(parameter.Name, parameter.Type, parameter.Location)
@@ -1380,6 +1460,7 @@ public sealed class Binder
                 var bound = BindStatement(stmt);
                 statements.Add(bound);
                 ApplyGuardNarrowingForFollowingStatements(stmt, bound, originalNarrowedTypes);
+                ApplyAssertionNarrowingForFollowingStatements(stmt, originalNarrowedTypes);
             }
             return new BoundBlockStatement(statements);
         }
@@ -1424,6 +1505,55 @@ public sealed class Binder
 
             narrowing.Symbol.Type = narrowing.FalseType;
         }
+    }
+
+    private void ApplyAssertionNarrowingForFollowingStatements(
+        SyntaxNode statement,
+        Dictionary<Symbol, TsType> originalTypes)
+    {
+        if (statement is not ExpressionStatementSyntax { Expression: CallExpressionSyntax call } ||
+            TryGetAssertionNarrowing(call) is not { } narrowing ||
+            narrowing.Symbol == null ||
+            narrowing.TrueType.Equals(narrowing.Symbol.Type))
+        {
+            return;
+        }
+
+        if (!originalTypes.ContainsKey(narrowing.Symbol))
+        {
+            originalTypes[narrowing.Symbol] = narrowing.Symbol.Type;
+        }
+
+        narrowing.Symbol.Type = narrowing.TrueType;
+    }
+
+    private NullCheckNarrowing? TryGetAssertionNarrowing(CallExpressionSyntax call)
+    {
+        if (call.Callee is not IdentifierExpressionSyntax callee ||
+            _symbolTable.Lookup(callee.Name) is not FunctionSymbol function ||
+            function.AssertionParameterName == null ||
+            function.AssertionTargetType == null)
+        {
+            return null;
+        }
+
+        var parameterIndex = function.Parameters.FindIndex(parameter => parameter.Name == function.AssertionParameterName);
+        if (parameterIndex < 0 || parameterIndex >= call.Arguments.Count ||
+            call.Arguments[parameterIndex] is not IdentifierExpressionSyntax identifier)
+        {
+            return null;
+        }
+
+        var symbol = _symbolTable.Lookup(identifier.Name);
+        if (symbol is not (LocalSymbol or ParameterSymbol))
+            return null;
+
+        return new NullCheckNarrowing(
+            symbol,
+            null,
+            symbol.Type,
+            function.AssertionTargetType,
+            symbol.Type);
     }
 
     private static bool DefinitelyExits(BoundNode statement) =>
@@ -2004,7 +2134,7 @@ public sealed class Binder
     {
         if (condition is not BinaryExpressionSyntax binary)
         {
-            var single = TryGetNullCheckNarrowing(condition);
+            var single = TryGetConditionNarrowing(condition);
             return single == null ? new List<NullCheckNarrowing>() : new List<NullCheckNarrowing> { single };
         }
 
@@ -2015,7 +2145,7 @@ public sealed class Binder
             return result;
         }
 
-        var narrowing = TryGetNullCheckNarrowing(condition);
+        var narrowing = TryGetConditionNarrowing(condition);
         return narrowing == null ? new List<NullCheckNarrowing>() : new List<NullCheckNarrowing> { narrowing };
     }
 
@@ -2023,7 +2153,7 @@ public sealed class Binder
     {
         if (condition is not BinaryExpressionSyntax binary)
         {
-            var single = TryGetNullCheckNarrowing(condition);
+            var single = TryGetConditionNarrowing(condition);
             return single == null ? new List<NullCheckNarrowing>() : new List<NullCheckNarrowing> { single };
         }
 
@@ -2034,8 +2164,140 @@ public sealed class Binder
             return result;
         }
 
-        var narrowing = TryGetNullCheckNarrowing(condition);
+        var narrowing = TryGetConditionNarrowing(condition);
         return narrowing == null ? new List<NullCheckNarrowing>() : new List<NullCheckNarrowing> { narrowing };
+    }
+
+    private NullCheckNarrowing? TryGetConditionNarrowing(ExpressionSyntax condition)
+    {
+        return TryGetTypePredicateNarrowing(condition) ??
+               TryGetDiscriminatedUnionNarrowing(condition) ??
+               TryGetNullCheckNarrowing(condition);
+    }
+
+    private NullCheckNarrowing? TryGetDiscriminatedUnionNarrowing(ExpressionSyntax condition)
+    {
+        if (condition is not BinaryExpressionSyntax binary)
+            return null;
+
+        var comparesEqual = binary.OperatorToken.Kind is TokenKind.DoubleEquals or TokenKind.TripleEquals;
+        var comparesNotEqual = binary.OperatorToken.Kind is TokenKind.NotEquals or TokenKind.StrictNotEquals;
+        if (!comparesEqual && !comparesNotEqual)
+            return null;
+
+        MemberAccessExpressionSyntax? memberAccess = null;
+        TsLiteralType? literalType = null;
+        if (binary.Left is MemberAccessExpressionSyntax leftAccess &&
+            TryGetExpressionLiteralType(binary.Right, out var rightLiteral))
+        {
+            memberAccess = leftAccess;
+            literalType = rightLiteral;
+        }
+        else if (binary.Right is MemberAccessExpressionSyntax rightAccess &&
+                 TryGetExpressionLiteralType(binary.Left, out var leftLiteral))
+        {
+            memberAccess = rightAccess;
+            literalType = leftLiteral;
+        }
+
+        if (memberAccess?.Object is not IdentifierExpressionSyntax receiver ||
+            literalType == null ||
+            _symbolTable.Lookup(receiver.Name) is not { } symbol ||
+            symbol is not (LocalSymbol or ParameterSymbol) ||
+            symbol.Type is not TsUnionType union)
+        {
+            return null;
+        }
+
+        var matching = union.Types
+            .Where(candidate => TryGetReadableMemberType(candidate, memberAccess.MemberName, out var memberType) &&
+                                TsType.IsCompatibleWith(literalType, memberType) &&
+                                TsType.IsCompatibleWith(memberType, literalType))
+            .ToList();
+
+        if (matching.Count == 0 || matching.Count == union.Types.Count)
+            return null;
+
+        var nonMatching = union.Types
+            .Where(candidate => !matching.Contains(candidate))
+            .ToList();
+
+        var narrowed = matching.Count == 1
+            ? matching[0]
+            : new TsUnionType(DistinctTypes(matching));
+        var excluded = nonMatching.Count switch
+        {
+            0 => TsType.Never,
+            1 => nonMatching[0],
+            _ => new TsUnionType(DistinctTypes(nonMatching))
+        };
+
+        return comparesEqual
+            ? new NullCheckNarrowing(symbol, null, symbol.Type, narrowed, excluded)
+            : new NullCheckNarrowing(symbol, null, symbol.Type, excluded, narrowed);
+    }
+
+    private static bool TryGetExpressionLiteralType(ExpressionSyntax expression, out TsLiteralType literalType)
+    {
+        if (expression is LiteralExpressionSyntax literal)
+        {
+            var resolved = ResolveLiteralType(new LiteralTypeSyntax(literal.Token, literal.Range));
+            if (resolved is TsLiteralType typedLiteral)
+            {
+                literalType = typedLiteral;
+                return true;
+            }
+        }
+
+        literalType = null!;
+        return false;
+    }
+
+    private NullCheckNarrowing? TryGetTypePredicateNarrowing(ExpressionSyntax condition)
+    {
+        if (condition is not CallExpressionSyntax call ||
+            call.Callee is not IdentifierExpressionSyntax callee ||
+            _symbolTable.Lookup(callee.Name) is not FunctionSymbol function ||
+            function.TypePredicateParameterName == null ||
+            function.TypePredicateTargetType == null)
+        {
+            return null;
+        }
+
+        var parameterIndex = function.Parameters.FindIndex(parameter => parameter.Name == function.TypePredicateParameterName);
+        if (parameterIndex < 0 || parameterIndex >= call.Arguments.Count)
+        {
+            return null;
+        }
+
+        var argument = call.Arguments[parameterIndex];
+        if (argument is IdentifierExpressionSyntax identifier)
+        {
+            var symbol = _symbolTable.Lookup(identifier.Name);
+            if (symbol is not (LocalSymbol or ParameterSymbol))
+                return null;
+
+            return new NullCheckNarrowing(
+                symbol,
+                null,
+                symbol.Type,
+                function.TypePredicateTargetType,
+                symbol.Type);
+        }
+
+        if (argument is MemberAccessExpressionSyntax member &&
+            GetMemberAccessPath(member) is { } accessPath)
+        {
+            var bound = BindExpression(member);
+            return new NullCheckNarrowing(
+                null,
+                accessPath,
+                bound.Type,
+                function.TypePredicateTargetType,
+                bound.Type);
+        }
+
+        return null;
     }
 
     private static bool TryGetIdentifierNullComparison(
@@ -2366,6 +2628,7 @@ public sealed class Binder
             LambdaExpressionSyntax lambda => BindInlineLambda(lambda),
             ClassExpressionSyntax classExpression => BindClassExpression(classExpression),
             AsExpressionSyntax asExpr => BindAsExpression(asExpr),
+            SatisfiesExpressionSyntax satisfiesExpr => BindSatisfiesExpression(satisfiesExpr),
             TypeofExpressionSyntax typeofExpr => BindTypeof(typeofExpr),
             VoidExpressionSyntax voidExpr => BindVoid(voidExpr),
             DeleteExpressionSyntax deleteExpr => BindDelete(deleteExpr),
@@ -2598,6 +2861,7 @@ public sealed class Binder
         TsType returnType = TsType.Void;
         List<CallParameter>? expectedParams = null;
         IReadOnlyList<TsTypeParameter> genericParameters = Array.Empty<TsTypeParameter>();
+        IReadOnlyList<TsFunctionType> overloads = Array.Empty<TsFunctionType>();
 
         if (callee is BoundVariableExpression { Symbol: ClassSymbol { Name: "Array" } })
         {
@@ -2609,7 +2873,8 @@ public sealed class Binder
         {
             returnType = funcSym.Type;
             genericParameters = funcSym.TypeParameters;
-            expectedParams = funcSym.HasDynamicSignature
+            overloads = funcSym.Overloads;
+            expectedParams = funcSym.HasDynamicSignature || overloads.Count > 0
                 ? null
                 : funcSym.Parameters.Select(ToCallParameter).ToList();
         }
@@ -2637,7 +2902,20 @@ public sealed class Binder
         var genericArguments = new Dictionary<string, TsType>(StringComparer.Ordinal);
         ApplyExplicitGenericArguments(call, genericParameters, genericArguments);
         var boundArgs = BindCallArguments(call.Arguments, expectedParams, genericArguments);
-        if (expectedParams != null && !boundArgs.Any(arg => arg is BoundSpreadExpression))
+        if (overloads.Count > 0 && !boundArgs.Any(arg => arg is BoundSpreadExpression))
+        {
+            if (TrySelectOverload(boundArgs, overloads, out var selectedOverload))
+            {
+                returnType = selectedOverload.ReturnType;
+            }
+            else
+            {
+                _diagnostics.Error(
+                    $"No overload matches call with argument types ({string.Join(", ", boundArgs.Select(arg => arg.Type.Name))})",
+                    call.Range.Start);
+            }
+        }
+        else if (expectedParams != null && !boundArgs.Any(arg => arg is BoundSpreadExpression))
         {
             var substitutedParams = expectedParams
                 .Select(p => p with { Type = TsType.Substitute(p.Type, genericArguments) })
@@ -2649,6 +2927,51 @@ public sealed class Binder
         if (call.IsNullConditional && boundReturnType is not TsNullableType)
             boundReturnType = new TsNullableType(boundReturnType);
         return new BoundCallExpression(callee, boundArgs, boundReturnType, call.IsNullConditional);
+    }
+
+    private static bool TrySelectOverload(
+        IReadOnlyList<BoundNode> args,
+        IReadOnlyList<TsFunctionType> overloads,
+        out TsFunctionType selected)
+    {
+        foreach (var overload in overloads)
+        {
+            var parameters = overload.Parameters.Select(ToCallParameter).ToList();
+            if (IsCallCompatibleWithParameters(args, parameters))
+            {
+                selected = overload;
+                return true;
+            }
+        }
+
+        selected = null!;
+        return false;
+    }
+
+    private static bool IsCallCompatibleWithParameters(
+        IReadOnlyList<BoundNode> args,
+        IReadOnlyList<CallParameter> expectedParams)
+    {
+        int restIndex = expectedParams.ToList().FindIndex(p => p.IsRest);
+        int fixedCount = restIndex >= 0 ? restIndex : expectedParams.Count;
+        var requiredCount = fixedCount;
+        while (requiredCount > 0 && expectedParams[requiredCount - 1].IsOptional)
+            requiredCount--;
+
+        if (args.Count < requiredCount || restIndex < 0 && args.Count > expectedParams.Count)
+            return false;
+
+        for (int i = 0; i < args.Count; i++)
+        {
+            var parameter = i < expectedParams.Count
+                ? expectedParams[i]
+                : expectedParams[restIndex];
+            parameter = parameter with { Type = GetCallArgumentExpectedType(parameter) };
+            if (!IsArgumentAssignableToParameter(args[i].Type, parameter))
+                return false;
+        }
+
+        return true;
     }
 
     private void ApplyExplicitGenericArguments(
@@ -2882,6 +3205,38 @@ public sealed class Binder
                         RuntimeName = prop.IsStatic ? $"$static:{current.Name}:{prop.Name}" : prop.RuntimeName,
                         DeclaringClassName = prop.DeclaringClassName ?? current.Name
                     };
+                }
+            }
+        }
+        else if (objType is TsUnionType unionType)
+        {
+            var memberTypes = new List<TsType>();
+            foreach (var candidate in unionType.Types)
+            {
+                if (!TryGetReadableMemberType(candidate, member.MemberName, out var candidateMemberType))
+                {
+                    memberTypes.Clear();
+                    break;
+                }
+                memberTypes.Add(candidateMemberType);
+            }
+
+            if (memberTypes.Count > 0)
+            {
+                var resultMemberType = memberTypes.Count == 1
+                    ? memberTypes[0]
+                    : new TsUnionType(DistinctTypes(memberTypes));
+                memberSym = new PropertySymbol(member.MemberName, resultMemberType, member.Range);
+            }
+        }
+        else if (objType is TsIntersectionType intersectionType)
+        {
+            foreach (var candidate in intersectionType.Types)
+            {
+                if (TryGetReadableMemberType(candidate, member.MemberName, out var candidateMemberType))
+                {
+                    memberSym = new PropertySymbol(member.MemberName, candidateMemberType, member.Range);
+                    break;
                 }
             }
         }
@@ -3660,6 +4015,22 @@ public sealed class Binder
             : new BoundCastExpression(operand, targetType);
     }
 
+    private BoundNode BindSatisfiesExpression(SatisfiesExpressionSyntax satisfiesExpr)
+    {
+        var operand = BindExpression(satisfiesExpr.Expression);
+        var targetType = ResolveType(satisfiesExpr.TargetType);
+        if (!TsType.IsCompatibleWith(operand.Type, targetType))
+        {
+            _diagnostics.Error(
+                $"Type '{operand.Type}' does not satisfy '{targetType}'",
+                satisfiesExpr.Range.Start);
+        }
+
+        // `satisfies` is a static check only: unlike `as`, it preserves the
+        // original expression type and emits no runtime conversion.
+        return operand;
+    }
+
     private BoundNode BindForOf(ForOfStatementSyntax forOf)
     {
         // Desugars to an index-based loop over a VM-materialized iterable.
@@ -3873,6 +4244,8 @@ public sealed class Binder
     {
         if (actual is TsAnyType || expected is TsAnyType)
             return true;
+        if (actual is TsLiteralType literal)
+            actual = literal.BaseType;
         if (expected == TsType.String && actual == TsType.String)
             return true;
         if (expected == TsType.Number && actual is TsPrimitiveType { IsNumericType: true })
@@ -3888,26 +4261,243 @@ public sealed class Binder
         return typeSyntax switch
         {
             PrimitiveTypeSyntax prim => TsType.FromToken(prim.TypeKeyword.Kind),
-            LiteralTypeSyntax => TsType.Any,
+            LiteralTypeSyntax literal => ResolveLiteralType(literal),
             NamedTypeSyntax named => ResolveNamedType(named),
             ArrayTypeSyntax arr => new TsArrayType(ResolveType(arr.ElementType), arr.IsReadonly),
-            IndexedAccessTypeSyntax => TsType.Any,
+            IndexedAccessTypeSyntax indexed => ResolveIndexedAccessType(indexed),
             MapTypeSyntax map => new TsMapType(ResolveType(map.KeyType), ResolveType(map.ValueType)),
             PromiseTypeSyntax promise => new TsPromiseType(ResolveType(promise.ElementType)),
             NullableTypeSyntax nullable => new TsNullableType(ResolveType(nullable.ElementType)),
             UnionTypeSyntax union => ResolveUnionType(union),
+            IntersectionTypeSyntax intersection => ResolveIntersectionType(intersection),
+            ConditionalTypeSyntax conditional => ResolveConditionalType(conditional),
+            KeyofTypeSyntax keyof => ResolveKeyofType(keyof),
+            TypeofTypeSyntax typeQuery => ResolveTypeofType(typeQuery),
+            TypePredicateSyntax => TsType.Bool,
+            InferTypeSyntax infer => ResolveInferType(infer),
+            AssertionTypeSyntax => TsType.Void,
             FunctionTypeSyntax fn => new TsFunctionType(
                 fn.Parameters.Select(CreateTypeParameter).ToList(),
                 ResolveType(fn.ReturnType)),
             ObjectTypeSyntax anon => ResolveObjectType(anon),
+            MappedTypeSyntax mapped => ResolveMappedType(mapped),
             TupleTypeSyntax tuple => new TsTupleType(tuple.ElementTypes.Select(ResolveType).ToList()),
             _ => TsType.Void
         };
     }
 
+    private static TsType ResolveLiteralType(LiteralTypeSyntax literal)
+    {
+        var token = literal.LiteralToken;
+        return token.Kind switch
+        {
+            TokenKind.StringLiteral => new TsLiteralType(token.Value?.ToString() ?? token.Text, TsType.String),
+            TokenKind.IntegerLiteral => new TsLiteralType(token.Value, TsType.Int64),
+            TokenKind.FloatLiteral => new TsLiteralType(token.Value, TsType.Number),
+            TokenKind.TrueLiteral => new TsLiteralType(true, TsType.Bool),
+            TokenKind.FalseLiteral => new TsLiteralType(false, TsType.Bool),
+            TokenKind.TemplateLiteral => (token.Value?.ToString() ?? token.Text).Contains("${", StringComparison.Ordinal)
+                ? TsType.String
+                : new TsLiteralType(token.Value?.ToString() ?? token.Text, TsType.String),
+            TokenKind.NullLiteral => TsType.Null,
+            _ => TsType.Any
+        };
+    }
+
+    private TsType ResolveConditionalType(ConditionalTypeSyntax conditional)
+    {
+        var checkType = ResolveType(conditional.CheckType);
+        var inferredTypes = new Dictionary<string, TsType>(StringComparer.Ordinal);
+        if (TryInferConditionalTypes(checkType, conditional.ExtendsType, inferredTypes))
+        {
+            _typeValueScopes.Add(inferredTypes);
+            try
+            {
+                return ResolveType(conditional.TrueType);
+            }
+            finally
+            {
+                _typeValueScopes.RemoveAt(_typeValueScopes.Count - 1);
+            }
+        }
+
+        var extendsType = ResolveType(conditional.ExtendsType);
+
+        if (checkType is TsAnyType or TsUnknownType || extendsType is TsAnyType or TsUnknownType)
+            return new TsUnionType(DistinctTypes(new[] { ResolveType(conditional.TrueType), ResolveType(conditional.FalseType) }));
+
+        return TsType.IsCompatibleWith(checkType, extendsType)
+            ? ResolveType(conditional.TrueType)
+            : ResolveType(conditional.FalseType);
+    }
+
+    private TsType ResolveInferType(InferTypeSyntax infer)
+    {
+        _diagnostics.Error($"'infer {infer.Name}' can only be used in the extends clause of a conditional type", infer.Range.Start);
+        return TsType.Any;
+    }
+
+    private bool TryInferConditionalTypes(TsType actualType, TypeSyntax pattern, Dictionary<string, TsType> inferredTypes)
+    {
+        switch (pattern)
+        {
+            case InferTypeSyntax infer:
+                inferredTypes[infer.Name] = actualType;
+                return true;
+            case ArrayTypeSyntax arrayPattern when actualType is TsArrayType actualArray:
+                return TryInferConditionalTypes(actualArray.ElementType, arrayPattern.ElementType, inferredTypes);
+            case PromiseTypeSyntax promisePattern when actualType is TsPromiseType actualPromise:
+                return TryInferConditionalTypes(actualPromise.ElementType, promisePattern.ElementType, inferredTypes);
+            case NamedTypeSyntax { Name: "Array", TypeArguments.Count: > 0 } namedArray when actualType is TsArrayType actualNamedArray:
+                return TryInferConditionalTypes(actualNamedArray.ElementType, namedArray.TypeArguments[0], inferredTypes);
+            case NamedTypeSyntax { Name: "Promise", TypeArguments.Count: > 0 } namedPromise when actualType is TsPromiseType actualNamedPromise:
+                return TryInferConditionalTypes(actualNamedPromise.ElementType, namedPromise.TypeArguments[0], inferredTypes);
+            case NamedTypeSyntax { Name: "Set", TypeArguments.Count: > 0 } namedSet when actualType is TsSetType actualSet:
+                return TryInferConditionalTypes(actualSet.ElementType, namedSet.TypeArguments[0], inferredTypes);
+            case NamedTypeSyntax { Name: "Map", TypeArguments.Count: > 1 } namedMap when actualType is TsMapType actualMap:
+                return TryInferConditionalTypes(actualMap.KeyType, namedMap.TypeArguments[0], inferredTypes) &&
+                       TryInferConditionalTypes(actualMap.ValueType, namedMap.TypeArguments[1], inferredTypes);
+            default:
+                if (ContainsInferType(pattern))
+                    return false;
+                return TsType.IsCompatibleWith(actualType, ResolveType(pattern));
+        }
+    }
+
+    private static bool ContainsInferType(TypeSyntax type)
+    {
+        if (type is InferTypeSyntax)
+            return true;
+        return type.GetChildren().OfType<TypeSyntax>().Any(ContainsInferType);
+    }
+
+    private TsType ResolveIntersectionType(IntersectionTypeSyntax intersection)
+    {
+        var members = new List<TsType>();
+        foreach (var member in intersection.Types.Select(ResolveType))
+        {
+            if (member is TsNeverType)
+                return TsType.Never;
+            if (member is TsIntersectionType nested)
+                members.AddRange(nested.Types);
+            else if (member is not TsAnyType)
+                members.Add(member);
+        }
+
+        if (members.Count == 0)
+            return TsType.Any;
+        if (members.Count == 1)
+            return members[0];
+        return new TsIntersectionType(DistinctTypes(members));
+    }
+
+    private TsType ResolveKeyofType(KeyofTypeSyntax keyof)
+    {
+        var keys = GetPropertyKeys(ResolveType(keyof.Operand));
+        return keys.Count switch
+        {
+            0 => TsType.Never,
+            1 => keys[0],
+            _ => new TsUnionType(DistinctTypes(keys))
+        };
+    }
+
+    private TsType ResolveTypeofType(TypeofTypeSyntax typeQuery)
+    {
+        var operand = BindExpression(typeQuery.Operand);
+        return operand.Type;
+    }
+
+    private TsType ResolveIndexedAccessType(IndexedAccessTypeSyntax indexed)
+    {
+        var objectType = ResolveType(indexed.ObjectType);
+        var indexType = ResolveType(indexed.IndexType);
+        return ResolveIndexedAccessType(objectType, indexType, indexed.Range.Start);
+    }
+
+    private TsType ResolveIndexedAccessType(TsType objectType, TsType indexType, SourceLocation location)
+    {
+        objectType = objectType is TsGenericType genericObject ? genericObject.Definition : objectType;
+
+        if (indexType is TsUnionType unionIndex)
+        {
+            var resolved = unionIndex.Types
+                .Select(index => ResolveIndexedAccessType(objectType, index, location))
+                .Where(type => type is not TsNeverType)
+                .ToList();
+            return resolved.Count switch
+            {
+                0 => TsType.Never,
+                1 => resolved[0],
+                _ => new TsUnionType(DistinctTypes(resolved))
+            };
+        }
+
+        if (objectType is TsUnionType unionObject)
+        {
+            var resolved = unionObject.Types
+                .Select(type => ResolveIndexedAccessType(type, indexType, location))
+                .Where(type => type is not TsNeverType)
+                .ToList();
+            return resolved.Count switch
+            {
+                0 => TsType.Never,
+                1 => resolved[0],
+                _ => new TsUnionType(DistinctTypes(resolved))
+            };
+        }
+
+        if (objectType is TsIntersectionType intersectionObject)
+        {
+            var resolved = intersectionObject.Types
+                .Select(type => ResolveIndexedAccessType(type, indexType, location))
+                .Where(type => type is not TsNeverType)
+                .ToList();
+            return resolved.Count switch
+            {
+                0 => TsType.Never,
+                1 => resolved[0],
+                _ => new TsUnionType(DistinctTypes(resolved))
+            };
+        }
+
+        if (TryGetLiteralKey(indexType, out var key))
+        {
+            if (TryGetReadableMemberType(objectType, key, out var memberType))
+                return memberType;
+
+            if (int.TryParse(key, out var ordinal) && objectType is TsTupleType tuple &&
+                ordinal >= 0 && ordinal < tuple.ElementTypes.Count)
+                return tuple.ElementTypes[ordinal];
+        }
+
+        if (objectType is TsArrayType array && IsNumericIndexType(indexType))
+            return array.ElementType;
+        if (objectType is TsTupleType tupleType && IsNumericIndexType(indexType))
+            return tupleType.UnifiedElementType();
+        if (objectType is TsMapType map && TsType.IsCompatibleWith(indexType, map.KeyType))
+            return map.ValueType;
+        if (TryGetIndexSignatureType(objectType, indexType, out var indexSignatureType))
+            return indexSignatureType;
+
+        _diagnostics.Error($"Type '{objectType}' has no index signature for '{indexType}'", location);
+        return TsType.Any;
+    }
+
     private TsType ResolveUnionType(UnionTypeSyntax union)
     {
-        var members = union.Types.Select(ResolveType).ToList();
+        var members = union.Types
+            .Select(ResolveType)
+            .Where(type => type is not TsNeverType)
+            .ToList();
+        if (members.Any(type => type is TsUnknownType))
+            return TsType.Unknown;
+        members = DistinctTypes(members);
+        if (members.Count == 0)
+            return TsType.Never;
+        if (members.Count == 1)
+            return members[0];
+
         // `T | null` / `T | undefined` normalizes to nullable T so member
         // access and null-flow analysis see one canonical shape.
         var nonNull = members.Where(m => m is not TsNullType).ToList();
@@ -3936,12 +4526,236 @@ public sealed class Binder
         return iface;
     }
 
+    private TsInterfaceType ResolveMappedType(MappedTypeSyntax mappedType)
+    {
+        var iface = new TsInterfaceType($"$mapped_{mappedType.Range.Start.Line}_{mappedType.Range.Start.Column}");
+        var keys = GetMappedKeys(ResolveType(mappedType.SourceType));
+        foreach (var key in keys)
+        {
+            if (!TryGetLiteralKey(key, out var propertyName) || string.IsNullOrEmpty(propertyName))
+                continue;
+
+            _typeValueScopes.Add(new Dictionary<string, TsType>(StringComparer.Ordinal)
+            {
+                [mappedType.TypeParameterName] = key
+            });
+            try
+            {
+                iface.Properties[propertyName] = new TsProperty(propertyName, ResolveType(mappedType.ValueType));
+            }
+            finally
+            {
+                _typeValueScopes.RemoveAt(_typeValueScopes.Count - 1);
+            }
+        }
+
+        return iface;
+    }
+
+    private static List<TsType> GetMappedKeys(TsType sourceType)
+    {
+        if (sourceType is TsLiteralType)
+            return new List<TsType> { sourceType };
+        if (sourceType is TsUnionType union && union.Types.All(type => type is TsLiteralType))
+            return DistinctTypes(union.Types);
+        return GetPropertyKeys(sourceType);
+    }
+
+    private static List<TsType> DistinctTypes(IEnumerable<TsType> types)
+    {
+        var result = new List<TsType>();
+        foreach (var type in types)
+        {
+            if (result.All(existing => !existing.Equals(type)))
+                result.Add(type);
+        }
+        return result;
+    }
+
+    private static bool TryGetLiteralKey(TsType type, out string key)
+    {
+        if (type is TsLiteralType literal)
+        {
+            key = literal.Value?.ToString() ?? "";
+            return literal.BaseType == TsType.String ||
+                   literal.BaseType == TsType.Int64 ||
+                   literal.BaseType == TsType.Int32 ||
+                   literal.BaseType == TsType.Number;
+        }
+
+        key = "";
+        return false;
+    }
+
+    private static bool IsNumericIndexType(TsType type) =>
+        type == TsType.Number ||
+        type == TsType.Int8 ||
+        type == TsType.UInt8 ||
+        type == TsType.Int16 ||
+        type == TsType.UInt16 ||
+        type == TsType.Int32 ||
+        type == TsType.UInt32 ||
+        type == TsType.Int64 ||
+        type == TsType.UInt64 ||
+        type is TsLiteralType { BaseType: TsPrimitiveType { IsNumericType: true } };
+
+    private static bool TryGetIndexSignatureType(TsType objectType, TsType indexType, out TsType resultType)
+    {
+        objectType = objectType is TsGenericType generic ? generic.Definition : objectType;
+        if (objectType is TsClassType cls)
+        {
+            var match = cls.IndexSignatures.FirstOrDefault(sig => IsIndexKeyCompatible(indexType, sig.KeyType));
+            if (match != null)
+            {
+                resultType = match.ValueType;
+                return true;
+            }
+        }
+
+        resultType = TsType.Void;
+        return false;
+    }
+
+    private static bool TryGetReadableMemberType(TsType source, string name, out TsType type)
+    {
+        source = source is TsGenericType generic ? generic.Definition : source;
+
+        switch (source)
+        {
+            case TsClassType cls:
+                for (var current = cls; current != null; current = current.BaseType)
+                {
+                    if (current.Fields.TryGetValue(name, out var field) && !field.IsPrivateName)
+                    {
+                        type = field.Type;
+                        return true;
+                    }
+                    if (current.Properties.TryGetValue(name, out var property) && !property.IsPrivateName)
+                    {
+                        type = property.Type;
+                        return true;
+                    }
+                    if (current.Methods.TryGetValue(name, out var method) && !method.IsPrivateName)
+                    {
+                        type = new TsFunctionType(method.Parameters, method.ReturnType);
+                        return true;
+                    }
+                }
+                break;
+            case TsInterfaceType iface:
+                if (iface.Properties.TryGetValue(name, out var ifaceProperty))
+                {
+                    type = ifaceProperty.Type;
+                    return true;
+                }
+                if (iface.Methods.TryGetValue(name, out var ifaceMethod))
+                {
+                    type = new TsFunctionType(ifaceMethod.Parameters, ifaceMethod.ReturnType);
+                    return true;
+                }
+                foreach (var extended in iface.ExtendedInterfaces)
+                {
+                    if (TryGetReadableMemberType(extended, name, out type))
+                        return true;
+                }
+                break;
+            case TsArrayType array:
+                if (name == "length")
+                {
+                    type = TsType.Int32;
+                    return true;
+                }
+                if (int.TryParse(name, out _))
+                {
+                    type = array.ElementType;
+                    return true;
+                }
+                break;
+            case TsTupleType tuple:
+                if (int.TryParse(name, out var index) && index >= 0 && index < tuple.ElementTypes.Count)
+                {
+                    type = tuple.ElementTypes[index];
+                    return true;
+                }
+                if (name == "length")
+                {
+                    type = TsType.Int32;
+                    return true;
+                }
+                break;
+        }
+
+        type = TsType.Void;
+        return false;
+    }
+
+    private static List<TsType> GetPropertyKeys(TsType type)
+    {
+        type = type is TsGenericType generic ? generic.Definition : type;
+        var keys = new List<TsType>();
+        void AddName(string name) => keys.Add(new TsLiteralType(name, TsType.String));
+
+        switch (type)
+        {
+            case TsClassType cls:
+                for (var current = cls; current != null; current = current.BaseType)
+                {
+                    foreach (var field in current.Fields.Values.Where(f => !f.IsPrivateName))
+                        AddName(field.Name);
+                    foreach (var property in current.Properties.Values.Where(p => !p.IsPrivateName))
+                        AddName(property.Name);
+                    foreach (var method in current.Methods.Values.Where(m => !m.IsPrivateName))
+                        AddName(method.Name);
+                    foreach (var signature in current.IndexSignatures)
+                        keys.Add(signature.KeyType);
+                }
+                break;
+            case TsInterfaceType iface:
+                foreach (var property in iface.Properties.Values)
+                    AddName(property.Name);
+                foreach (var method in iface.Methods.Values)
+                    AddName(method.Name);
+                foreach (var extended in iface.ExtendedInterfaces)
+                    keys.AddRange(GetPropertyKeys(extended));
+                break;
+            case TsArrayType:
+                keys.Add(TsType.Number);
+                AddName("length");
+                break;
+            case TsTupleType tuple:
+                for (int i = 0; i < tuple.ElementTypes.Count; i++)
+                    AddName(i.ToString());
+                AddName("length");
+                break;
+            case TsUnionType union:
+                foreach (var member in union.Types)
+                    keys.AddRange(GetPropertyKeys(member));
+                break;
+            case TsIntersectionType intersection:
+                foreach (var member in intersection.Types)
+                    keys.AddRange(GetPropertyKeys(member));
+                break;
+        }
+
+        return DistinctTypes(keys);
+    }
+
     private void PushTypeParameters(IEnumerable<GenericParameterSyntax> parameters)
     {
+        var parameterList = parameters.ToList();
         var scope = new Dictionary<string, TsTypeParameter>(StringComparer.Ordinal);
-        foreach (var p in parameters)
+        foreach (var p in parameterList)
             scope[p.Name] = new TsTypeParameter(p.Name);
         _typeParameterScopes.Add(scope);
+
+        foreach (var p in parameterList)
+        {
+            var parameter = scope[p.Name];
+            if (p.Constraints.Count > 0)
+                parameter.Constraint = ResolveType(p.Constraints[0]);
+            if (p.DefaultType != null)
+                parameter.DefaultType = ResolveType(p.DefaultType);
+        }
     }
 
     private void PopTypeParameters()
@@ -4041,6 +4855,18 @@ public sealed class Binder
     {
         if (named.Name is "null" or "undefined")
             return TsType.Null;
+        if (named.Name == "unknown")
+            return TsType.Unknown;
+        if (named.Name == "never")
+            return TsType.Never;
+        if (named.Name == "symbol")
+            return TsType.Symbol;
+
+        for (int i = _typeValueScopes.Count - 1; i >= 0; i--)
+        {
+            if (_typeValueScopes[i].TryGetValue(named.Name, out var typeValue))
+                return typeValue;
+        }
 
         if (LookupTypeParameter(named.Name) is TsTypeParameter typeParam)
             return typeParam;
@@ -4089,6 +4915,11 @@ public sealed class Binder
                 ? bufferType
                 : new TsClassType("ArrayBuffer");
 
+        if (_typeAliasDeclarations.TryGetValue(named.Name, out var aliasDeclaration))
+        {
+            return ResolveTypeAliasReference(named, aliasDeclaration);
+        }
+
         if (_typeAliases.TryGetValue(named.Name, out var aliased))
             return aliased;
 
@@ -4134,6 +4965,112 @@ public sealed class Binder
             return new TsClassType("Error");
 
         return new TsClassType(named.Name);
+    }
+
+    private TsType ResolveTypeAliasReference(NamedTypeSyntax named, TypeAliasDeclarationSyntax alias)
+    {
+        if (alias.GenericParameters.Count > 0 && named.TypeArguments.Count > alias.GenericParameters.Count)
+        {
+            _diagnostics.Error(
+                $"Type alias '{alias.Name}' expected {alias.GenericParameters.Count} type argument(s), got {named.TypeArguments.Count}",
+                named.Range.Start);
+            return TsType.Any;
+        }
+
+        if (alias.GenericParameters.Count == 0)
+        {
+            if (_typeAliases.TryGetValue(alias.Name, out var cached))
+                return cached;
+
+            if (!_resolvingTypeAliases.Add(alias.Name))
+            {
+                _diagnostics.Error($"Recursive type alias '{alias.Name}' cannot be resolved", named.Range.Start);
+                return TsType.Any;
+            }
+
+            try
+            {
+                var resolved = ResolveType(alias.Type);
+                _typeAliases[alias.Name] = resolved;
+                return resolved;
+            }
+            finally
+            {
+                _resolvingTypeAliases.Remove(alias.Name);
+            }
+        }
+
+        var mappedArguments = ResolveGenericTypeArguments(alias.Name, alias.GenericParameters, named.TypeArguments, named.Range.Start);
+
+        _typeValueScopes.Add(mappedArguments);
+        try
+        {
+            return ResolveType(alias.Type);
+        }
+        finally
+        {
+            _typeValueScopes.RemoveAt(_typeValueScopes.Count - 1);
+        }
+    }
+
+    private Dictionary<string, TsType> ResolveGenericTypeArguments(
+        string ownerName,
+        IReadOnlyList<GenericParameterSyntax> parameters,
+        IReadOnlyList<TypeSyntax> providedArguments,
+        SourceLocation location)
+    {
+        var result = new Dictionary<string, TsType>(StringComparer.Ordinal);
+        for (int i = 0; i < parameters.Count; i++)
+        {
+            var parameter = parameters[i];
+            TsType argumentType;
+            if (i < providedArguments.Count)
+            {
+                argumentType = ResolveType(providedArguments[i]);
+            }
+            else if (parameter.DefaultType != null)
+            {
+                _typeValueScopes.Add(new Dictionary<string, TsType>(result, StringComparer.Ordinal));
+                try
+                {
+                    argumentType = ResolveType(parameter.DefaultType);
+                }
+                finally
+                {
+                    _typeValueScopes.RemoveAt(_typeValueScopes.Count - 1);
+                }
+            }
+            else
+            {
+                _diagnostics.Error(
+                    $"Type alias '{ownerName}' expected {parameters.Count} type argument(s), got {providedArguments.Count}",
+                    location);
+                argumentType = TsType.Any;
+            }
+
+            if (parameter.Constraints.Count > 0)
+            {
+                _typeValueScopes.Add(new Dictionary<string, TsType>(result, StringComparer.Ordinal));
+                try
+                {
+                    var constraint = ResolveType(parameter.Constraints[0]);
+                    if (!TsType.IsCompatibleWith(argumentType, constraint))
+                    {
+                        _diagnostics.Error(
+                            $"Type argument '{argumentType}' does not satisfy constraint '{constraint}' for '{parameter.Name}'",
+                            location);
+                    }
+                }
+                finally
+                {
+                    _typeValueScopes.RemoveAt(_typeValueScopes.Count - 1);
+                }
+            }
+
+            result[parameter.Name] = argumentType;
+        }
+
+        return result;
     }
 
     // Type inference helpers

@@ -19,6 +19,25 @@ public abstract class TsType : IEquatable<TsType>
     {
         if (source is TsAnyType || target is TsAnyType)
             return true;
+        if (source is TsNeverType)
+            return true;
+        if (target is TsUnknownType)
+            return true;
+        if (source is TsUnknownType)
+            return target is TsUnknownType;
+        if (target is TsNeverType)
+            return source is TsNeverType;
+        if (target is TsIntersectionType targetIntersection)
+            return targetIntersection.Types.All(t => IsCompatibleWith(source, t));
+        if (source is TsIntersectionType sourceIntersection)
+            return sourceIntersection.Types.Any(t => IsCompatibleWith(t, target));
+        if (source is TsUnionType sourceUnionForTarget && target is TsUnionType targetUnionForSource)
+            return sourceUnionForTarget.Types.All(sourceMember =>
+                targetUnionForSource.Types.Any(targetMember => IsCompatibleWith(sourceMember, targetMember)));
+        if (target is TsUnionType targetUnion)
+            return targetUnion.Types.Any(t => IsCompatibleWith(source, t));
+        if (source is TsUnionType sourceUnion)
+            return sourceUnion.Types.All(t => IsCompatibleWith(t, target));
         // Erased generics: an unconstrained type parameter accepts and
         // provides any value at the boundary.
         if (source is TsTypeParameter || target is TsTypeParameter)
@@ -91,6 +110,7 @@ public abstract class TsType : IEquatable<TsType>
             TsNullableType nullable => new TsNullableType(Substitute(nullable.ElementType, genericArguments)),
             TsPromiseType promise => new TsPromiseType(Substitute(promise.ElementType, genericArguments)),
             TsUnionType union => new TsUnionType(union.Types.Select(t => Substitute(t, genericArguments)).ToList()),
+            TsIntersectionType intersection => new TsIntersectionType(intersection.Types.Select(t => Substitute(t, genericArguments)).ToList()),
             TsFunctionType function => new TsFunctionType(
                 function.Parameters.Select(p => new TsParameter(p.Name, Substitute(p.Type, genericArguments))
                 {
@@ -287,6 +307,9 @@ public abstract class TsType : IEquatable<TsType>
     public static readonly TsPrimitiveType Guid = new("guid", false);
     public static readonly TsPrimitiveType Number = new("number", true); // alias for float64
     public static readonly TsAnyType Any = new();
+    public static readonly TsUnknownType Unknown = new();
+    public static readonly TsNeverType Never = new();
+    public static readonly TsSymbolType Symbol = new();
 
     public static TsType FromToken(TokenKind kind) => kind switch
     {
@@ -322,6 +345,60 @@ public sealed class TsAnyType : TsType
     public override bool IsValueType => false;
     public override bool IsReferenceType => true;
     public override bool IsAssignableTo(TsType other) => true;
+}
+
+public sealed class TsUnknownType : TsType
+{
+    public override string Name => "unknown";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+}
+
+public sealed class TsNeverType : TsType
+{
+    public override string Name => "never";
+    public override bool IsValueType => true;
+    public override bool IsReferenceType => false;
+    public override bool IsAssignableTo(TsType other) => true;
+}
+
+public sealed class TsSymbolType : TsType
+{
+    public override string Name => "symbol";
+    public override bool IsValueType => true;
+    public override bool IsReferenceType => false;
+}
+
+public sealed class TsLiteralType : TsType
+{
+    public object? Value { get; }
+    public TsType BaseType { get; }
+    public override string Name => Value switch
+    {
+        string text => $"'{text}'",
+        bool flag => flag ? "true" : "false",
+        null => "null",
+        _ => Value?.ToString() ?? "undefined"
+    };
+    public override bool IsValueType => BaseType.IsValueType;
+    public override bool IsReferenceType => BaseType.IsReferenceType;
+
+    public TsLiteralType(object? value, TsType baseType)
+    {
+        Value = value;
+        BaseType = baseType;
+    }
+
+    public override bool Equals(TsType? other)
+    {
+        return other is TsLiteralType literal &&
+               Equals(Value, literal.Value) &&
+               BaseType.Equals(literal.BaseType);
+    }
+
+    public override int GetHashCode() => HashCode.Combine(Value, BaseType);
+    public override bool IsAssignableTo(TsType other) =>
+        Equals(other) || BaseType.Equals(other) || BaseType.IsAssignableTo(other);
 }
 
 public sealed class TsPrimitiveType : TsType
@@ -604,6 +681,24 @@ public sealed class TsUnionType : TsType
 
     public override bool IsAssignableTo(TsType other)
     {
+        return Types.All(t => t.IsAssignableTo(other));
+    }
+}
+
+public sealed class TsIntersectionType : TsType
+{
+    public List<TsType> Types { get; }
+    public override string Name => string.Join(" & ", Types.Select(t => t.Name));
+    public override bool IsValueType => Types.All(t => t.IsValueType);
+    public override bool IsReferenceType => Types.Any(t => t.IsReferenceType);
+
+    public TsIntersectionType(List<TsType> types)
+    {
+        Types = types;
+    }
+
+    public override bool IsAssignableTo(TsType other)
+    {
         return Types.Any(t => t.IsAssignableTo(other));
     }
 }
@@ -615,6 +710,7 @@ public sealed class TsTypeParameter : TsType
     public override bool IsValueType => false;
     public override bool IsReferenceType => true;
     public TsType? Constraint { get; set; }
+    public TsType? DefaultType { get; set; }
 
     public TsTypeParameter(string parameterName)
     {

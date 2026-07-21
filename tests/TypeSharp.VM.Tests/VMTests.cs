@@ -232,6 +232,276 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void IndexedAccessTypeResolvesObjectPropertyType()
+    {
+        var result = Run("type User = { id: int32; name: string; }; type UserId = User['id']; function main(): int32 { let id: UserId = 42; return id; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void IndexedAccessTypeRejectsMissingProperty()
+    {
+        const string source = "type User = { id: int32; }; type Missing = User['name']; function main(): void { }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("has no index signature for ''name''", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void KeyofTypeAcceptsDeclaredKeysOnly()
+    {
+        const string source = "type User = { id: int32; name: string; }; function main(): void { let ok: keyof User = 'id' as 'id'; let bad: keyof User = 'missing' as 'missing'; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("cannot assign 'missing' to 'id' | 'name'", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void TypeofTypeQueryUsesValueType()
+    {
+        var result = Run("function main(): int32 { let sample = { count: 4 }; let copy: typeof sample = { count: 5 }; return copy.count; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void IntersectionTypeRequiresAllConstituentMembers()
+    {
+        var result = Run("type HasA = { a: int32; }; type HasB = { b: string; }; type Both = HasA & HasB; function main(): int32 { let both: Both = { a: 3, b: 'xy' }; let left: HasA = both; return both.a + both.b.length + left.a; }");
+        Assert.Equal(8, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void UnknownIsAssignableFromAnythingButNotToSpecificTypes()
+    {
+        const string source = "function main(): void { let value: unknown = 'x'; let text: string = value; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("cannot assign unknown to string", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void SatisfiesExpressionChecksTargetButPreservesExpressionType()
+    {
+        var result = Run("type HasId = { id: int32; }; function main(): int32 { let value = { id: 7, name: 'ok' } satisfies HasId; return value.name == 'ok' ? value.id : 0; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void SatisfiesExpressionReportsStructuralMismatch()
+    {
+        const string source = "type HasId = { id: int32; }; function main(): void { let value = { name: 'missing' } satisfies HasId; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("does not satisfy", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void TypePredicateNarrowsArgumentInTrueBranch()
+    {
+        const string source = "function isString(value: unknown): value is string { return typeof value == 'string'; } function main(): int32 { let value: unknown = 'hello'; if (isString(value)) { let text: string = value; return text.length; } return 0; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void TypePredicateRequiresDeclaredParameter()
+    {
+        const string source = "function isString(value: unknown): missing is string { return true; } function main(): void { }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("must be declared in function parameters", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void AssertionSignatureNarrowsFollowingStatements()
+    {
+        const string source = "function assertString(value: unknown): asserts value is string { if (typeof value != 'string') { throw 'not string'; } } function main(): int32 { let value: unknown = 'hello'; assertString(value); let text: string = value; return text.length; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ConditionalTypeResolvesConcreteBranch()
+    {
+        var result = Run("type Result = string extends string ? int32 : bool; function main(): int32 { let value: Result = 9; return value; }");
+        Assert.Equal(9, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void TemplateLiteralTypePreservesStaticLiteral()
+    {
+        const string source = "type EventName = `click`; function main(): void { let ok: EventName = 'click' as `click`; let bad: EventName = 'hover' as `hover`; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("cannot assign 'hover' to 'click'", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void FunctionOverloadsSelectCompatibleSignatureReturnType()
+    {
+        var result = Run("function pick(value: string): string; function pick(value: int32): int32; function pick(value: any): any { return value; } function main(): int32 { let number: int32 = pick(4); let text: string = pick('abc'); return number + text.length; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void FunctionOverloadsRejectCallsOutsideDeclaredSignatures()
+    {
+        const string source = "function pick(value: string): string; function pick(value: int32): int32; function pick(value: any): any { return value; } function main(): void { pick(true); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("No overload matches call", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void DiscriminatedUnionNarrowsByLiteralMemberComparison()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function main(): int32 { let shape: Shape = { kind: 'circle', radius: 4 } as Shape; if (shape.kind == 'circle') { return shape.radius; } return 0; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(4, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DiscriminatedUnionNarrowsByNegativeLiteralComparison()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function main(): int32 { let shape: Shape = { kind: 'square', size: 5 } as Shape; if (shape.kind != 'circle') { return shape.size; } return 0; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void UnionRejectsMemberThatIsNotCommonBeforeNarrowing()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function main(): void { let shape: Shape = { kind: 'circle', radius: 4 } as Shape; shape.radius; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("No member 'radius'", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void MappedTypeResolvesKeyofIndexedAccessProperties()
+    {
+        var result = Run("type User = { id: int32; name: string; }; type Copy = { [K in keyof User]: User[K]; }; function main(): int32 { let copy: Copy = { id: 6, name: 'abc' }; return copy.id + copy.name.length; }");
+        Assert.Equal(9, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ConditionalTypeInferExtractsArrayElementType()
+    {
+        var result = Run("type Element = int32[] extends Array<infer T> ? T : never; function main(): int32 { let value: Element = 11; return value; }");
+        Assert.Equal(11, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ConditionalTypeInferUsesFalseBranchWhenPatternDoesNotMatch()
+    {
+        var result = Run("type Element = string extends Array<infer T> ? T : int32; function main(): int32 { let value: Element = 12; return value; }");
+        Assert.Equal(12, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void GenericTypeAliasInstantiatesConditionalInferType()
+    {
+        var result = Run("type Element<T> = T extends Array<infer U> ? U : never; function main(): int32 { let value: Element<int32[]> = 13; return value; }");
+        Assert.Equal(13, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void GenericMappedTypeAliasInstantiatesPerTypeArgument()
+    {
+        var result = Run("type Copy<T> = { [K in keyof T]: T[K]; }; type User = { id: int32; name: string; }; function main(): int32 { let copy: Copy<User> = { id: 5, name: 'abcd' }; return copy.id + copy.name.length; }");
+        Assert.Equal(9, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void GenericTypeAliasReportsWrongTypeArgumentCount()
+    {
+        const string source = "type Box<T> = T[]; type Bad = Box; function main(): void { }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("Type alias 'Box' expected 1 type argument", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void GenericTypeAliasUsesDefaultTypeArgument()
+    {
+        var result = Run("type Value<T = string> = T; function main(): int32 { let value: Value = 'abcd'; return value.length; }");
+        Assert.Equal(4, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void GenericTypeAliasValidatesConstraint()
+    {
+        const string source = "type IdOf<T extends { id: int32 }> = T['id']; type Bad = IdOf<{ name: string }>; function main(): void { }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("does not satisfy constraint", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void ComputedObjectProperty_EvaluatesKeyBeforeValueAndStoresByRuntimeKey()
     {
         var result = Run("function main(): string { let order: string = ''; function key(): string { order = order + 'k'; return 'answer'; } function value(): int32 { order = order + 'v'; return 42; } let obj = { [key()]: value() }; return order + obj['answer']; }");
