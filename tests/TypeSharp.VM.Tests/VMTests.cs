@@ -136,6 +136,62 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void ArraySplice_RemovesAndInsertsElements()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const values = [10, 20, 30, 40];
+                const removed = values.splice(1, 2, 70, 80, 90);
+                return values.length * 10000 +
+                    values[0] * 1000 +
+                    values[1] * 100 +
+                    values[2] * 10 +
+                    removed.length;
+            }
+        ");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(67802, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
+    public void ArrayMap_WorksThroughObjectFieldReceiver()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const channel = { members: [{ id: 2 }, { id: 4 }] };
+                const mapped = channel.members.map((member) => ({ id: member.id + 1 }));
+                return mapped.length * 100 + mapped[0].id * 10 + mapped[1].id;
+            }
+        ");
+
+        Assert.NotNull(result);
+        var value = result switch
+        {
+            TsInt32Value intValue => intValue.Value,
+            TsInt64Value longValue => (int)longValue.Value,
+            _ => throw new Xunit.Sdk.XunitException($"Expected a numeric result, got {result.GetType().Name}.")
+        };
+        Assert.Equal(235, value);
+    }
+
+    [Fact]
+    public void MapGet_ReturnsUndefinedForMissingKey()
+    {
+        var result = Run(@"
+            function main(): int32 {
+                const values = new Map<string, int32>();
+                return values.get(""missing"") === undefined ? 1 : 0;
+            }
+        ");
+
+        Assert.NotNull(result);
+        Assert.IsType<TsInt32Value>(result);
+        Assert.Equal(1, ((TsInt32Value)result).Value);
+    }
+
+    [Fact]
     public void ConstObjectLiteral_PreservesIdentityAndMutation()
     {
         var result = Run(@"

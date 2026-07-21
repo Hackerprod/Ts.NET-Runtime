@@ -1903,7 +1903,10 @@ public sealed class Interpreter
         }
 
         if (args.Length == 0 || args[0] is not TsArrayValue receiver)
-            throw new InvalidOperationException($"'{name}' requires an array receiver");
+        {
+            var actual = args.Length == 0 ? "<missing>" : DescribeValue(args[0]);
+            throw new InvalidOperationException($"'{name}' requires an array receiver, got {actual}");
+        }
         var arr = receiver.Value;
         var callback = args.Length > 1 ? args[1] : null;
 
@@ -2242,7 +2245,12 @@ public sealed class Interpreter
         if (args.Length == 0)
             return "<none>";
 
-        return args[0] switch
+        return DescribeValue(args[0]);
+    }
+
+    private static string DescribeValue(TsValue value)
+    {
+        return value switch
         {
             TsObjectValue obj => $"object:{obj.Value.TypeName}",
             TsArrayValue => "Array",
@@ -2258,7 +2266,7 @@ public sealed class Interpreter
             TsBigIntValue => "bigint",
             TsNull => "null",
             TsVoid => "void",
-            _ => args[0].GetType().Name
+            _ => value.GetType().Name
         };
     }
 

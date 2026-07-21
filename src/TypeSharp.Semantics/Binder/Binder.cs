@@ -2461,6 +2461,7 @@ public sealed class Binder
                 return BuiltinMethod(name, arrayType.ElementType, "Array", range);
             case "reverse":
             case "fill":
+            case "splice":
                 if (arrayType.IsReadonly)
                     return null;
                 return BuiltinMethod(name, arrayType, "Array", range);

@@ -424,7 +424,7 @@ public sealed class TsMap
     public IEnumerable<KeyValuePair<TsValue, TsValue>> Entries => _entries;
 
     public TsValue Get(TsValue key) =>
-        _entries.TryGetValue(key, out var val) ? val : TsValue.Null;
+        _entries.TryGetValue(key, out var val) ? val : TsValue.Void;
 
     public void Set(TsValue key, TsValue value) =>
         _entries[key] = value;

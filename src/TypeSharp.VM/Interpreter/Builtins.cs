@@ -258,6 +258,25 @@ public static class Builtins
                 for (int i = args.Length - 1; i >= 1; i--) arr.Insert(0, args[i]);
                 return TsValue.FromInt32(arr.Count);
             },
+            ["Array::splice"] = args =>
+            {
+                var arr = Arr(args[0]);
+                int start = args.Length > 1 ? Normalize(I(args[1]), arr.Count) : 0;
+                int deleteCount = args.Length > 2
+                    ? Math.Clamp(I(args[2]), 0, arr.Count - start)
+                    : arr.Count - start;
+                var removed = new TsArray(deleteCount);
+                for (int i = 0; i < deleteCount; i++)
+                {
+                    removed.Add(arr.Get(start));
+                    arr.RemoveAt(start);
+                }
+
+                for (int i = args.Length - 1; i >= 3; i--)
+                    arr.Insert(start, args[i]);
+
+                return new TsArrayValue(removed);
+            },
             ["Array::reverse"] = args => { Arr(args[0]).Reverse(); return args[0]; },
             ["Array::includes"] = args => Bool(IndexOf(Arr(args[0]), args[1]) >= 0),
             ["Array::indexOf"] = args => TsValue.FromInt32(IndexOf(Arr(args[0]), args[1])),
@@ -412,7 +431,7 @@ public static class Builtins
 
     private static TsArray Arr(TsValue v) => v is TsArrayValue a
         ? a.Value
-        : throw new InvalidOperationException("Receiver is not an array");
+        : throw new InvalidOperationException($"Receiver is not an array, got {DescribeValue(v)}");
 
     private static TsUint8ArrayValue Bytes(TsValue v) => v is TsUint8ArrayValue b
         ? b
@@ -463,5 +482,24 @@ public static class Builtins
         TsDecimalValue v => unchecked((byte)v.Value),
         TsBoolValue v => v.Value ? (byte)1 : (byte)0,
         _ => 0
+    };
+
+    private static string DescribeValue(TsValue value) => value switch
+    {
+        TsObjectValue obj => $"object:{obj.Value.TypeName}",
+        TsArrayValue => "Array",
+        TsMapValue => "Map",
+        TsSetValue => "Set",
+        TsUint8ArrayValue => "Uint8Array",
+        TsFunctionValue fn => $"function:{fn.FunctionName}",
+        TsStringValue => "string",
+        TsBoolValue => "boolean",
+        TsInt32Value => "number:int32",
+        TsInt64Value => "bigint:int64",
+        TsUInt64Value => "bigint:uint64",
+        TsBigIntValue => "bigint",
+        TsNull => "null",
+        TsVoid => "void",
+        _ => value.GetType().Name
     };
 }
