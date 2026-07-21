@@ -749,6 +749,7 @@ public sealed class VariableDeclarationSyntax : StatementSyntax
     public ExpressionSyntax? Initializer { get; }
     public bool IsConst { get; }
     public bool IsExported { get; set; }
+    public string? ExportName { get; set; }
 
     public VariableDeclarationSyntax(string name, TypeSyntax? typeAnnotation, ExpressionSyntax? initializer, bool isConst, SourceRange range)
         : base(SyntaxNodeType.VariableDeclaration, range)
@@ -916,6 +917,9 @@ public sealed class ImportDeclarationSyntax : DeclarationSyntax
 {
     public List<NamedImportSyntax> NamedImports { get; set; } = new();
     public bool IsWildcard { get; set; }
+    public bool IsTypeOnly { get; set; }
+    public string? DefaultImport { get; set; }
+    public Dictionary<string, string> Attributes { get; } = new(StringComparer.Ordinal);
     public string ModulePath { get; }
 
     public ImportDeclarationSyntax(string modulePath, SourceRange range)
@@ -925,6 +929,36 @@ public sealed class ImportDeclarationSyntax : DeclarationSyntax
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => NamedImports;
+}
+
+public enum ExportDeclarationKind
+{
+    Named,
+    Star,
+}
+
+public sealed class ExportDeclarationSyntax : DeclarationSyntax
+{
+    public ExportDeclarationKind ExportKind { get; }
+    public List<NamedImportSyntax> Specifiers { get; } = new();
+    public string? ModulePath { get; }
+    public bool IsTypeOnly { get; }
+
+    public ExportDeclarationSyntax(
+        ExportDeclarationKind exportKind,
+        IEnumerable<NamedImportSyntax> specifiers,
+        string? modulePath,
+        bool isTypeOnly,
+        SourceRange range)
+        : base(SyntaxNodeType.ExportDeclaration, range)
+    {
+        ExportKind = exportKind;
+        Specifiers.AddRange(specifiers);
+        ModulePath = modulePath;
+        IsTypeOnly = isTypeOnly;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => Specifiers;
 }
 
 // Members

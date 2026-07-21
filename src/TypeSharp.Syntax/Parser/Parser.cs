@@ -40,22 +40,38 @@ public sealed class Parser
     {
         if (Check(TokenKind.ExportKeyword))
         {
-            Advance();
+            var exportKw = Advance();
+            if (Check(TokenKind.OpenBrace) || Check(TokenKind.Star) ||
+                Check(TokenKind.TypeKeyword) && (Peek(1).Kind == TokenKind.OpenBrace || Peek(1).Kind == TokenKind.Star))
+            {
+                return ParseExportDeclaration(exportKw);
+            }
+
+            bool isDefault = false;
             if (Check(TokenKind.DefaultKeyword))
+            {
                 Advance();
+                isDefault = true;
+            }
             var decl = ParseDeclaration();
             if (decl is DeclarationSyntax declSyntax)
             {
                 declSyntax.Modifiers.Add(new SyntaxToken(new Token(TokenKind.ExportKeyword, "export", Peek().Location)));
+                if (isDefault)
+                    declSyntax.Modifiers.Add(new SyntaxToken(new Token(TokenKind.DefaultKeyword, "default", Peek().Location)));
             }
             else if (decl is VariableDeclarationSyntax varDecl)
             {
                 varDecl.IsExported = true;
+                varDecl.ExportName = isDefault ? "default" : null;
             }
             else if (decl is VariableDeclarationListSyntax varList)
             {
                 foreach (var d in varList.Declarations)
+                {
                     d.IsExported = true;
+                    d.ExportName = isDefault ? "default" : null;
+                }
             }
             return decl;
         }
@@ -273,8 +289,23 @@ public sealed class Parser
     {
         var importKw = Advance();
 
+        var isTypeOnly = false;
+        if (Check(TokenKind.TypeKeyword))
+        {
+            Advance();
+            isTypeOnly = true;
+        }
+
         bool isWildcard = false;
+        string? defaultImport = null;
         var imports = new List<NamedImportSyntax>();
+
+        if (IsMemberNameToken(Peek().Kind) && Peek(1).Kind is TokenKind.FromKeyword or TokenKind.Comma)
+        {
+            defaultImport = ExpectIdentifier();
+            if (Check(TokenKind.Comma))
+                Advance();
+        }
 
         if (Check(TokenKind.Star))
         {
@@ -284,18 +315,18 @@ public sealed class Parser
             imports.Add(new NamedImportSyntax("*", alias, new SourceRange(Peek(-1).Location, Peek(-1).Location)));
             isWildcard = true;
         }
-        else
+        else if (Check(TokenKind.OpenBrace))
         {
             Expect(TokenKind.OpenBrace);
             while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
             {
                 int loopStart = _position;
-                var impName = ExpectIdentifier();
+                var impName = ExpectImportExportName();
                 string? alias = null;
                 if (Check(TokenKind.AsKeyword))
                 {
                     Advance();
-                    alias = ExpectIdentifier();
+                    alias = ExpectImportExportName();
                 }
                 imports.Add(new NamedImportSyntax(impName, alias,
                     new SourceRange(Peek(-1).Location, Peek().Location)));
@@ -307,13 +338,90 @@ public sealed class Parser
 
         Expect(TokenKind.FromKeyword);
         var modulePath = ExpectStringLiteral();
-
-        return new ImportDeclarationSyntax(modulePath,
+        var importDecl = new ImportDeclarationSyntax(modulePath,
             new SourceRange(importKw.Location, Peek(-1).Location))
         {
             NamedImports = imports,
             IsWildcard = isWildcard,
+            IsTypeOnly = isTypeOnly,
+            DefaultImport = defaultImport,
         };
+
+        if (Check(TokenKind.Identifier) && Peek().Text == "with")
+        {
+            Advance();
+            Expect(TokenKind.OpenBrace);
+            while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
+            {
+                var key = ExpectIdentifier();
+                Expect(TokenKind.Colon);
+                var value = ExpectStringLiteral();
+                importDecl.Attributes[key] = value;
+                if (Check(TokenKind.Comma))
+                    Advance();
+            }
+            Expect(TokenKind.CloseBrace);
+        }
+
+        return importDecl;
+    }
+
+    private ExportDeclarationSyntax ParseExportDeclaration(Token exportKw)
+    {
+        var isTypeOnly = false;
+        if (Check(TokenKind.TypeKeyword))
+        {
+            Advance();
+            isTypeOnly = true;
+        }
+
+        if (Check(TokenKind.Star))
+        {
+            Advance();
+            Expect(TokenKind.FromKeyword);
+            var starPath = ExpectStringLiteral();
+            return new ExportDeclarationSyntax(
+                ExportDeclarationKind.Star,
+                Array.Empty<NamedImportSyntax>(),
+                starPath,
+                isTypeOnly,
+                new SourceRange(exportKw.Location, Peek(-1).Location));
+        }
+
+        var exports = new List<NamedImportSyntax>();
+        Expect(TokenKind.OpenBrace);
+        while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
+        {
+            int loopStart = _position;
+            var exportedName = ExpectImportExportName();
+            string? alias = null;
+            if (Check(TokenKind.AsKeyword))
+            {
+                Advance();
+                alias = ExpectImportExportName();
+            }
+            exports.Add(new NamedImportSyntax(exportedName, alias,
+                new SourceRange(Peek(-1).Location, Peek().Location)));
+            if (Check(TokenKind.Comma))
+                Advance();
+            if (_position == loopStart)
+                Advance();
+        }
+        Expect(TokenKind.CloseBrace);
+
+        string? modulePath = null;
+        if (Check(TokenKind.FromKeyword))
+        {
+            Advance();
+            modulePath = ExpectStringLiteral();
+        }
+
+        return new ExportDeclarationSyntax(
+            ExportDeclarationKind.Named,
+            exports,
+            modulePath,
+            isTypeOnly,
+            new SourceRange(exportKw.Location, Peek(-1).Location));
     }
 
     private List<SyntaxNode> ParseClassBody()
@@ -2353,6 +2461,19 @@ public sealed class Parser
             Diagnostics.Add(new Diagnostic(
                 DiagnosticSeverity.Error,
                 $"Expected identifier, got {Peek().Kind}",
+                Peek().Location));
+            return Peek().Text;
+        }
+        return Advance().Text;
+    }
+
+    private string ExpectImportExportName()
+    {
+        if (!IsMemberNameToken(Peek().Kind) && Peek().Kind != TokenKind.DefaultKeyword)
+        {
+            Diagnostics.Add(new Diagnostic(
+                DiagnosticSeverity.Error,
+                $"Expected import/export name, got {Peek().Kind}",
                 Peek().Location));
             return Peek().Text;
         }

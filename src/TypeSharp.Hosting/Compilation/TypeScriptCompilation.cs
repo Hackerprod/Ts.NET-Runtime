@@ -35,6 +35,7 @@ public sealed class CompilationUnit
     public List<string> Imports { get; } = new();
     public List<string> Exports { get; } = new();
     public Dictionary<string, string> ImportMap { get; } = new();
+    public List<ExportDeclarationSyntax> ExportDeclarations { get; } = new();
     public SourceLocation GetLocation() => new(FilePath, 1, 1, 0);
 
     public CompilationUnit(string filePath, string moduleId, SourceFileSyntax syntaxTree)
@@ -146,30 +147,95 @@ public sealed class TypeScriptCompilation
         {
             if (member is ImportDeclarationSyntax import)
             {
-                string importPath = ResolveImportPath(unit.FilePath, import.ModulePath);
+                if (!ValidateImportAttributes(unit, import))
+                    continue;
+
+                string importPath = ResolveImportPath(unit.FilePath, import.ModulePath, import.Range.Start);
+                if (string.IsNullOrEmpty(importPath))
+                    continue;
                 string importModuleId = ComputeModuleId(importPath, _sourceRoot);
                 unit.Imports.Add(importModuleId);
                 unit.ImportMap[import.ModulePath] = importModuleId;
             }
 
+            if (member is ExportDeclarationSyntax export)
+            {
+                unit.ExportDeclarations.Add(export);
+                if (export.ModulePath != null)
+                {
+                    string exportPath = ResolveImportPath(unit.FilePath, export.ModulePath, export.Range.Start);
+                    if (string.IsNullOrEmpty(exportPath))
+                        continue;
+                    string exportModuleId = ComputeModuleId(exportPath, _sourceRoot);
+                    unit.Imports.Add(exportModuleId);
+                    unit.ImportMap[export.ModulePath] = exportModuleId;
+                }
+            }
+
             if (member is DeclarationSyntax decl && decl.Modifiers.Any(m => m.Token.Kind == Syntax.TokenKind.ExportKeyword))
             {
-                string name = GetDeclarationName(decl);
+                string? name = GetDeclarationName(decl);
                 if (name != null)
-                    unit.Exports.Add(name);
+                    unit.Exports.Add(decl.Modifiers.Any(m => m.Token.Kind == Syntax.TokenKind.DefaultKeyword) ? "default" : name);
+            }
+
+            if (member is VariableDeclarationSyntax { IsExported: true } variable)
+            {
+                unit.Exports.Add(variable.ExportName ?? variable.Name);
+            }
+
+            if (member is VariableDeclarationListSyntax list)
+            {
+                foreach (var declaration in list.Declarations.Where(d => d.IsExported))
+                    unit.Exports.Add(declaration.ExportName ?? declaration.Name);
             }
         }
     }
 
-    private static string ResolveImportPath(string fromFile, string importPath)
+    private bool ValidateImportAttributes(CompilationUnit unit, ImportDeclarationSyntax import)
     {
+        foreach (var attribute in import.Attributes)
+        {
+            _diagnostics.Error(
+                $"Unsupported import attribute '{attribute.Key}: {attribute.Value}' in '{unit.ModuleId}'",
+                import.Range.Start,
+                DiagnosticCode.TS3002);
+            return false;
+        }
+
+        return true;
+    }
+
+    private string ResolveImportPath(string fromFile, string importPath, SourceLocation location)
+    {
+        if (!importPath.StartsWith("./", StringComparison.Ordinal) &&
+            !importPath.StartsWith("../", StringComparison.Ordinal))
+        {
+            _diagnostics.Error(
+                $"Only relative ESM imports are supported: '{importPath}'",
+                location,
+                DiagnosticCode.TS3002);
+            return string.Empty;
+        }
+
         var dir = Path.GetDirectoryName(fromFile) ?? "";
         var resolved = Path.GetFullPath(Path.Combine(dir, importPath));
 
         if (!resolved.EndsWith(".ts"))
             resolved += ".ts";
 
-        return resolved;
+        var root = Path.GetFullPath(_sourceRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var fullResolved = Path.GetFullPath(resolved);
+        if (!fullResolved.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            _diagnostics.Error(
+                $"Import '{importPath}' from '{ComputeModuleId(fromFile, _sourceRoot)}' escapes the source root",
+                location,
+                DiagnosticCode.TS3002);
+            return string.Empty;
+        }
+
+        return fullResolved;
     }
 
     private static string? GetDeclarationName(DeclarationSyntax decl)
@@ -189,12 +255,12 @@ public sealed class TypeScriptCompilation
     {
         foreach (var unit in _units.Values)
         {
-            var missing = unit.Imports.Where(i => !_units.ContainsKey(i)).ToList();
+            var missing = unit.Imports.Distinct(StringComparer.Ordinal).Where(i => !_units.ContainsKey(i)).ToList();
             foreach (var m in missing)
             {
                 var loc = unit.GetLocation();
-                _diagnostics.Warning(
-                    $"Module '{m}' not found (imported by '{unit.ModuleId}'). Cross-module imports not yet fully supported.",
+                _diagnostics.Error(
+                    $"Module '{m}' not found (imported by '{unit.ModuleId}')",
                     loc, DiagnosticCode.TS3002);
             }
 
@@ -211,24 +277,33 @@ public sealed class TypeScriptCompilation
 
     private string? DetectCycles(CompilationUnit unit)
     {
-        var visited = new HashSet<string>();
-        return DfsCycle(unit.ModuleId, visited);
+        var visiting = new HashSet<string>(StringComparer.Ordinal);
+        var path = new List<string>();
+        return DfsCycle(unit.ModuleId, visiting, path);
     }
 
-    private string? DfsCycle(string moduleId, HashSet<string> visited)
+    private string? DfsCycle(string moduleId, HashSet<string> visiting, List<string> path)
     {
-        if (!visited.Add(moduleId))
-            return moduleId;
+        if (visiting.Contains(moduleId))
+        {
+            var start = path.IndexOf(moduleId);
+            var cycle = start >= 0 ? path.Skip(start).Concat(new[] { moduleId }) : path.Append(moduleId);
+            return string.Join(" -> ", cycle);
+        }
+
         if (!_units.TryGetValue(moduleId, out var unit))
             return null;
 
+        visiting.Add(moduleId);
+        path.Add(moduleId);
         foreach (var imp in unit.Imports)
         {
-            var cycle = DfsCycle(imp, visited);
+            var cycle = DfsCycle(imp, visiting, path);
             if (cycle != null) return cycle;
         }
 
-        visited.Remove(moduleId);
+        path.RemoveAt(path.Count - 1);
+        visiting.Remove(moduleId);
         return null;
     }
 
@@ -279,7 +354,9 @@ public sealed class TypeScriptCompilation
                     _diagnostics.Add(diag);
                 }
 
-                moduleExports[moduleId] = ExtractExports(boundTree);
+                var exportsForModule = new Dictionary<string, Symbol>(binder.Exports, StringComparer.Ordinal);
+                ApplyExportDeclarations(unit, binder.ModuleSymbols, moduleExports, exportsForModule);
+                moduleExports[moduleId] = exportsForModule;
                 boundFiles[moduleId] = boundTree;
             }
             catch (Exception ex)
@@ -290,6 +367,64 @@ public sealed class TypeScriptCompilation
         }
 
         return boundFiles;
+    }
+
+    private void ApplyExportDeclarations(
+        CompilationUnit unit,
+        IReadOnlyDictionary<string, Symbol> localSymbols,
+        IReadOnlyDictionary<string, Dictionary<string, Symbol>> moduleExports,
+        Dictionary<string, Symbol> exports)
+    {
+        foreach (var declaration in unit.ExportDeclarations)
+        {
+            if (declaration.ExportKind == ExportDeclarationKind.Star)
+            {
+                if (declaration.ModulePath == null ||
+                    !unit.ImportMap.TryGetValue(declaration.ModulePath, out var starModuleId) ||
+                    !moduleExports.TryGetValue(starModuleId, out var starExports))
+                    continue;
+
+                foreach (var (name, symbol) in starExports)
+                {
+                    if (name == "default")
+                        continue;
+                    if (exports.TryGetValue(name, out var existing) && !ReferenceEquals(existing, symbol))
+                    {
+                        _diagnostics.Error(
+                            $"Ambiguous star re-export '{name}' in module '{unit.ModuleId}'",
+                            declaration.Range.Start,
+                            DiagnosticCode.TS3002);
+                        continue;
+                    }
+                    exports[name] = symbol;
+                }
+                continue;
+            }
+
+            var sourceExports = localSymbols;
+            if (declaration.ModulePath != null)
+            {
+                if (!unit.ImportMap.TryGetValue(declaration.ModulePath, out var sourceModuleId) ||
+                    !moduleExports.TryGetValue(sourceModuleId, out var importedExports))
+                    continue;
+                sourceExports = importedExports;
+            }
+
+            foreach (var specifier in declaration.Specifiers)
+            {
+                var exportedName = specifier.Alias ?? specifier.Name;
+                if (!sourceExports.TryGetValue(specifier.Name, out var symbol))
+                {
+                    _diagnostics.Error(
+                        $"Cannot export '{specifier.Name}' from module '{unit.ModuleId}' because it is not defined",
+                        specifier.Range.Start,
+                        DiagnosticCode.TS3002);
+                    continue;
+                }
+
+                exports[exportedName] = symbol;
+            }
+        }
     }
 
     private List<string> TopologicalSort()

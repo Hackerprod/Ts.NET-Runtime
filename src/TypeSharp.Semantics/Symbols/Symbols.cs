@@ -187,6 +187,16 @@ public sealed class TypeParameterSymbol : Symbol
         : base(name, new TypeSystem.TsTypeParameter(name), location) { }
 }
 
+public sealed class TypeAliasSymbol : Symbol
+{
+    public override SymbolKind Kind => SymbolKind.TypeAlias;
+    public TypeSystem.TsType AliasedType => Type;
+    public bool IsExported { get; set; }
+
+    public TypeAliasSymbol(string name, TypeSystem.TsType type, SourceRange location)
+        : base(name, type, location) { }
+}
+
 public sealed class ModuleSymbol : Symbol
 {
     public override SymbolKind Kind => SymbolKind.Module;

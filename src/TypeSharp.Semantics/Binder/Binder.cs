@@ -20,6 +20,8 @@ public sealed class Binder
     private readonly Dictionary<string, TypeAliasDeclarationSyntax> _typeAliasDeclarations = new();
     private readonly HashSet<string> _resolvingTypeAliases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, Symbol>> _importedSymbols = new();
+    private readonly Dictionary<string, Symbol> _exports = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Symbol> _moduleSymbols = new(StringComparer.Ordinal);
     private TsClassType? _currentClassType;
     private ParameterSymbol? _currentThisSymbol;
     private TsType? _currentFunctionReturnType;
@@ -108,6 +110,8 @@ public sealed class Binder
     };
 
     public DiagnosticBag Diagnostics => _diagnostics;
+    public IReadOnlyDictionary<string, Symbol> Exports => _exports;
+    public IReadOnlyDictionary<string, Symbol> ModuleSymbols => _moduleSymbols;
 
     public Binder()
     {
@@ -256,6 +260,8 @@ public sealed class Binder
             PreDeclareTypeShell(member);
         foreach (var member in sourceFile.Members)
             PreDeclareTypeMembers(member);
+        foreach (var alias in sourceFile.Members.OfType<TypeAliasDeclarationSyntax>())
+            RegisterTypeAliasExport(alias);
 
         // Pass 2: function signatures are hoisted so forward references and
         // mutual recursion resolve against complete signatures before bodies bind.
@@ -269,7 +275,7 @@ public sealed class Binder
 
         foreach (var member in sourceFile.Members)
         {
-            if (member is ImportDeclarationSyntax)
+            if (member is ImportDeclarationSyntax or ExportDeclarationSyntax)
                 continue;
 
             var bound = BindNode(member);
@@ -277,7 +283,50 @@ public sealed class Binder
                 members.Add(bound);
         }
 
+        RegisterTopLevelSymbols(sourceFile);
         return new BoundSourceFile(sourceFile.FileName, members);
+    }
+
+    private void RegisterTopLevelSymbols(SourceFileSyntax sourceFile)
+    {
+        foreach (var member in sourceFile.Members)
+        {
+            switch (member)
+            {
+                case FunctionDeclarationSyntax function:
+                    RegisterTopLevelSymbol(function.Name);
+                    break;
+                case ClassDeclarationSyntax cls:
+                    RegisterTopLevelSymbol(cls.Name);
+                    break;
+                case InterfaceDeclarationSyntax iface:
+                    RegisterTopLevelSymbol(iface.Name);
+                    break;
+                case EnumDeclarationSyntax en:
+                    RegisterTopLevelSymbol(en.Name);
+                    break;
+                case TypeAliasDeclarationSyntax alias:
+                    var resolved = ResolveNamedType(new NamedTypeSyntax(alias.Name, alias.Range));
+                    _moduleSymbols[alias.Name] = new TypeAliasSymbol(alias.Name, resolved, alias.Range)
+                    {
+                        IsExported = IsExported(alias)
+                    };
+                    break;
+                case VariableDeclarationSyntax variable:
+                    RegisterTopLevelSymbol(variable.Name);
+                    break;
+                case VariableDeclarationListSyntax list:
+                    foreach (var declaration in list.Declarations)
+                        RegisterTopLevelSymbol(declaration.Name);
+                    break;
+            }
+        }
+    }
+
+    private void RegisterTopLevelSymbol(string name)
+    {
+        if (_symbolTable.Lookup(name) is { } symbol)
+            _moduleSymbols[name] = symbol;
     }
 
     private void PreDeclareTypeShell(SyntaxNode member)
@@ -478,6 +527,7 @@ public sealed class Binder
             EnumDeclarationSyntax en => BindEnum(en),
             ImportDeclarationSyntax import => BindImport(import),
             TypeAliasDeclarationSyntax => null,
+            ExportDeclarationSyntax => null,
             StatementSyntax stmt => BindStatement(stmt),
             _ => null
         };
@@ -557,6 +607,8 @@ public sealed class Binder
         ApplyAssertionSignature(sym, lambda.ReturnType);
         PopTypeParameters();
         _symbolTable.Define(sym);
+        if (sym.IsExported)
+            _exports[name] = sym;
         return sym;
     }
 
@@ -653,6 +705,8 @@ public sealed class Binder
         ApplyAssertionSignature(sym, func.ReturnType);
         PopTypeParameters();
         _symbolTable.Define(sym);
+        if (sym.IsExported)
+            _exports[GetExportName(func, func.Name)] = sym;
         return sym;
     }
 
@@ -824,8 +878,9 @@ public sealed class Binder
 
     private BoundClassDeclaration BindClass(ClassDeclarationSyntax cls)
         => BindClassCore(cls.Name, cls.GenericParameters, cls.BaseType, cls.Members, cls.Range, defineSymbol: true,
-            isExported: cls.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword), cls.IsAbstract,
-            cls.Decorators);
+            isExported: IsExported(cls), isAbstract: cls.IsAbstract,
+            exportName: GetExportName(cls, cls.Name),
+            decorators: cls.Decorators);
 
     private BoundClassExpression BindClassExpression(ClassExpressionSyntax cls)
     {
@@ -844,6 +899,7 @@ public sealed class Binder
         bool defineSymbol,
         bool isExported,
         bool isAbstract = false,
+        string? exportName = null,
         IReadOnlyList<DecoratorSyntax>? decorators = null)
     {
         if (!_classTypes.TryGetValue(name, out var classType))
@@ -894,6 +950,8 @@ public sealed class Binder
         if (decorators != null)
             declaration.Decorators.AddRange(decorators.Select(decorator => BindExpression(decorator.Expression)));
         ValidateAbstractImplementation(classType, range.Start);
+        if (defineSymbol && sym.IsExported)
+            _exports[exportName ?? name] = sym;
         return declaration;
     }
 
@@ -1179,6 +1237,18 @@ public sealed class Binder
         }
     }
 
+    private void RegisterTypeAliasExport(TypeAliasDeclarationSyntax alias)
+    {
+        if (!IsExported(alias))
+            return;
+
+        var resolved = ResolveNamedType(new NamedTypeSyntax(alias.Name, alias.Range));
+        _exports[GetExportName(alias, alias.Name)] = new TypeAliasSymbol(alias.Name, resolved, alias.Range)
+        {
+            IsExported = true
+        };
+    }
+
     private void ValidateAbstractImplementation(TsClassType classType, SourceLocation location)
     {
         if (classType.IsAbstract || classType.BaseType == null)
@@ -1275,6 +1345,8 @@ public sealed class Binder
         }
 
         PopTypeParameters();
+        if (sym.IsExported)
+            _exports[GetExportName(iface, iface.Name)] = sym;
         return new BoundInterfaceDeclaration(sym);
     }
 
@@ -1299,6 +1371,8 @@ public sealed class Binder
         };
 
         _symbolTable.Define(sym);
+        if (sym.IsExported)
+            _exports[GetExportName(en, en.Name)] = sym;
         return new BoundEnumDeclaration(sym);
     }
 
@@ -1320,32 +1394,44 @@ public sealed class Binder
                 foreach (var (name, symbol) in symbols)
                 {
                     var alias = CreateImportAlias(symbol, $"{wildcardName}.{name}", import.Range);
-                    _symbolTable.Define(alias);
+                    RegisterImportedType(alias);
+                    if (!import.IsTypeOnly)
+                        _symbolTable.Define(alias);
                 }
             }
             return new BoundImportDeclaration(import.ModulePath, import.NamedImports.Select(n => n.Name).ToList());
         }
 
+        if (import.DefaultImport != null)
+        {
+            ImportOneSymbol(import, "default", import.DefaultImport, import.Range);
+        }
+
         foreach (var namedImport in import.NamedImports)
         {
-            var importedName = namedImport.Alias ?? namedImport.Name;
-            if (symbols.TryGetValue(namedImport.Name, out var importedSymbol))
-            {
-                var sym = importedName == importedSymbol.Name
-                    ? importedSymbol
-                    : CreateImportAlias(importedSymbol, importedName, namedImport.Range);
-                _symbolTable.Define(sym);
-                RegisterImportedType(sym);
-            }
-            else
-            {
-                _diagnostics.Error(
-                    $"'{namedImport.Name}' is not exported from module '{import.ModulePath}'",
-                    namedImport.Range.Start, DiagnosticCode.TS2012);
-            }
+            ImportOneSymbol(import, namedImport.Name, namedImport.Alias ?? namedImport.Name, namedImport.Range);
         }
 
         return new BoundImportDeclaration(import.ModulePath, import.NamedImports.Select(n => n.Name).ToList());
+    }
+
+    private void ImportOneSymbol(ImportDeclarationSyntax import, string exportedName, string localName, SourceRange range)
+    {
+        if (!_importedSymbols.TryGetValue(import.ModulePath, out var symbols) ||
+            !symbols.TryGetValue(exportedName, out var importedSymbol))
+        {
+            _diagnostics.Error(
+                $"'{exportedName}' is not exported from module '{import.ModulePath}'",
+                range.Start, DiagnosticCode.TS2012);
+            return;
+        }
+
+        var sym = localName == importedSymbol.Name
+            ? importedSymbol
+            : CreateImportAlias(importedSymbol, localName, range);
+        RegisterImportedType(sym);
+        if (!import.IsTypeOnly)
+            _symbolTable.Define(sym);
     }
 
     private void RegisterImportedType(Symbol symbol)
@@ -1361,8 +1447,20 @@ public sealed class Binder
             case EnumSymbol en:
                 _enumTypes[en.Name] = en.EnumType;
                 break;
+            case TypeAliasSymbol alias:
+                _typeAliases[alias.Name] = alias.AliasedType;
+                break;
         }
     }
+
+    private static bool IsExported(DeclarationSyntax declaration) =>
+        declaration.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword);
+
+    private static bool IsDefaultExport(DeclarationSyntax declaration) =>
+        declaration.Modifiers.Any(m => m.Token.Kind == TokenKind.DefaultKeyword);
+
+    private static string GetExportName(DeclarationSyntax declaration, string fallback) =>
+        IsDefaultExport(declaration) ? "default" : fallback;
 
     private static Symbol CreateImportAlias(Symbol symbol, string alias, SourceRange location)
     {
@@ -1372,6 +1470,7 @@ public sealed class Binder
             ClassSymbol cls => new ClassSymbol(alias, cls.ClassType, location) { IsExported = cls.IsExported },
             InterfaceSymbol iface => new InterfaceSymbol(alias, iface.InterfaceType, location) { IsExported = iface.IsExported },
             EnumSymbol en => new EnumSymbol(alias, en.EnumType, location) { IsExported = en.IsExported },
+            TypeAliasSymbol typeAlias => new TypeAliasSymbol(alias, typeAlias.AliasedType, location) { IsExported = typeAlias.IsExported },
             LocalSymbol local => new LocalSymbol(alias, local.Type, location, local.IsConst)
             {
                 IsExported = local.IsExported,
@@ -1634,6 +1733,8 @@ public sealed class Binder
             (IsCompileTimeConstant(initializer) || IsModuleConstantExpression(initializer)))
             symbol.ConstantInitializer = initializer;
         DefineWithDepth(symbol);
+        if (symbol.IsExported)
+            _exports[varDecl.ExportName ?? symbol.Name] = symbol;
 
         return new BoundVariableDeclaration(symbol, initializer);
     }

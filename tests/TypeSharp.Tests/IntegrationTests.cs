@@ -1261,6 +1261,246 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task EsModules_SupportNamedAliasesDefaultAndReexports()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_esm_exports_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "numbers.ts"), """
+                const internalValue = 40;
+                export { internalValue as base };
+
+                export default function addTwo(value: number): number {
+                    return value + 2;
+                }
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "barrel.ts"), """
+                export { base as renamedBase } from "./numbers";
+                export * from "./numbers";
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "main.ts"), """
+                import addTwo from "./numbers";
+                import { renamedBase, base } from "./barrel";
+
+                export function main(): number {
+                    return addTwo(renamedBase) + base;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>(Path.GetFileName(dir), "main");
+            Assert.Equal(82, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task EsModules_ImportTypeDoesNotCreateRuntimeBinding()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_esm_type_only_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "types.ts"), """
+                export type Shape = { value: int32 };
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "main.ts"), """
+                import type { Shape } from "./types";
+
+                export function main(): int32 {
+                    const shape: Shape = { value: 7 };
+                    return shape.value;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>(Path.GetFileName(dir), "main");
+            Assert.Equal(7, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task EsModules_RejectStarReexportCollision()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_esm_collision_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "a.ts"), "export const value = 1;");
+            File.WriteAllText(Path.Combine(dir, "b.ts"), "export const value = 2;");
+            File.WriteAllText(Path.Combine(dir, "barrel.ts"), """
+                export * from "./a";
+                export * from "./b";
+                """);
+            File.WriteAllText(Path.Combine(dir, "main.ts"), """
+                import { value } from "./barrel";
+                export function main(): int32 { return value; }
+                """);
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                new TypeSharpRuntimeBuilder().AddSourceDirectory(dir).BuildAsync());
+            Assert.Contains("Ambiguous star re-export 'value'", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task EsModules_RejectPathTraversalOutsideSourceRoot()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "typesharp_esm_traversal_" + Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(parent, "root");
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllText(Path.Combine(parent, "outside.ts"), "export const value = 1;");
+            File.WriteAllText(Path.Combine(root, "main.ts"), """
+                import { value } from "../outside";
+                export function main(): int32 { return value; }
+                """);
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                new TypeSharpRuntimeBuilder().AddSourceDirectory(root).BuildAsync());
+            Assert.Contains("escapes the source root", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(parent, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task EsModules_ReportCircularDependencyChain()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_esm_cycle_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "a.ts"), "import { b } from './b'; export const a = b;");
+            File.WriteAllText(Path.Combine(dir, "b.ts"), "import { a } from './a'; export const b = a;");
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                new TypeSharpRuntimeBuilder().AddSourceDirectory(dir).BuildAsync());
+            Assert.Contains("Circular dependency detected", error.Message);
+            Assert.Contains("a -> b -> a", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task EsModules_DynamicRuntimeImportUsesRegistryCache()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_esm_dynamic_import_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "plugin.ts"), "export function value(): int32 { return 9; }");
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var imports = await Task.WhenAll(runtime.ImportAsync("plugin"), runtime.ImportAsync("plugin"));
+            Assert.Same(imports[0], imports[1]);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task EsModules_HotReloadKeepsImportedModuleBindings()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_esm_hot_reload_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var dep = Path.Combine(dir, "dep.ts");
+            File.WriteAllText(dep, "export function value(): int32 { return 1; }");
+            File.WriteAllText(Path.Combine(dir, "main.ts"), """
+                import { value } from "./dep";
+                export function main(): int32 { return value(); }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .EnableHotReload()
+                .BuildAsync();
+
+            Assert.Equal(1, await runtime.InvokeAsync<double>(Path.GetFileName(dir), "main"));
+
+            File.WriteAllText(dep, "export function value(): int32 { return 5; }");
+            Assert.True(await runtime.ReloadAsync(dep));
+            Assert.Equal(5, await runtime.InvokeAsync<double>(Path.GetFileName(dir), "main"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task EsModules_HotReloadRejectsInitializationFailureAndKeepsPreviousGeneration()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_esm_reload_failure_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var dep = Path.Combine(dir, "dep.ts");
+            File.WriteAllText(dep, """
+                export function value(): int32 { return 2; }
+                function test(): bool { return true; }
+                """);
+            File.WriteAllText(Path.Combine(dir, "main.ts"), """
+                import { value } from "./dep";
+                export function main(): int32 { return value(); }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .EnableHotReload()
+                .BuildAsync();
+
+            Assert.Equal(2, await runtime.InvokeAsync<double>(Path.GetFileName(dir), "main"));
+
+            File.WriteAllText(dep, """
+                export function value(): int32 { return 99; }
+                function test(): bool { throw 'candidate failed'; }
+                """);
+
+            Assert.False(await runtime.ReloadAsync(dep));
+            Assert.Equal(2, await runtime.InvokeAsync<double>(Path.GetFileName(dir), "main"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ReadonlyObjectTypeMembers_AreAcceptedAndRejectedOnAssignment()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_readonly_object_" + Guid.NewGuid().ToString("N"));
