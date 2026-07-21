@@ -43,11 +43,14 @@ public abstract class TsType : IEquatable<TsType>
         if (source is TsTypeParameter || target is TsTypeParameter)
             return true;
         if (source is TsNullType)
-            return target is TsNullableType || target is TsUnionType;
-        if (source.Equals(Void))
-            return target is TsNullableType || target is TsUnionType;
+            return target is TsNullType || target is TsNullableType || target is TsUnionType;
+        if (source is TsUndefinedType)
+            return target is TsUndefinedType || target.Equals(Void) || target is TsNullableType || target is TsUnionType;
 
         if (source.Equals(target)) return true;
+
+        if (source is TsLiteralType sourceLiteral && target is not TsLiteralType)
+            return IsCompatibleWith(sourceLiteral.BaseType, target);
 
         if (IsImplicitNumericWidening(source, target)) return true;
 
@@ -288,6 +291,7 @@ public abstract class TsType : IEquatable<TsType>
     // Primitive type singletons
     public static readonly TsPrimitiveType Void = new("void", true);
     public static readonly TsNullType Null = new();
+    public static readonly TsUndefinedType Undefined = new();
     public static readonly TsPrimitiveType Bool = new("bool", true);
     public static readonly TsPrimitiveType Int8 = new("int8", true);
     public static readonly TsPrimitiveType UInt8 = new("uint8", true);
@@ -336,7 +340,8 @@ public abstract class TsType : IEquatable<TsType>
         _ => throw new ArgumentException($"Token kind {kind} is not a primitive type")
     };
 
-    public bool IsNumeric => this is TsPrimitiveType p && p.IsNumericType;
+    public bool IsNumeric => this is TsPrimitiveType p && p.IsNumericType ||
+                             this is TsLiteralType literal && literal.BaseType.IsNumeric;
 }
 
 public sealed class TsAnyType : TsType
@@ -682,6 +687,21 @@ public sealed class TsUnionType : TsType
     public override bool IsAssignableTo(TsType other)
     {
         return Types.All(t => t.IsAssignableTo(other));
+    }
+}
+
+public sealed class TsUndefinedType : TsType
+{
+    public override string Name => "undefined";
+    public override bool IsValueType => false;
+    public override bool IsReferenceType => true;
+
+    public override bool IsAssignableTo(TsType other)
+    {
+        return other is TsUndefinedType ||
+               other.Equals(TsType.Void) ||
+               other is TsNullableType ||
+               other is TsUnionType;
     }
 }
 

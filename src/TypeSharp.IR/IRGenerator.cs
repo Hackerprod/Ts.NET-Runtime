@@ -1472,30 +1472,31 @@ public sealed class IRGenerator
 
     private void GenerateLiteral(BoundLiteralExpression lit)
     {
-        switch (lit.Type)
+        var type = GetRuntimeType(lit.Type);
+        switch (type)
         {
             case TsPrimitiveType { IsNumericType: true } p:
-                if (lit.Type == TsType.Int32 || lit.Type == TsType.Int16 || lit.Type == TsType.Int8)
+                if (type == TsType.Int32 || type == TsType.Int16 || type == TsType.Int8)
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_I32, Convert.ToInt32(lit.Value)));
                 }
-                else if (lit.Type == TsType.Int64)
+                else if (type == TsType.Int64)
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_I64, 0, 0, Convert.ToInt64(lit.Value)));
                 }
-                else if (lit.Type == TsType.UInt64)
+                else if (type == TsType.UInt64)
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_U64, 0, 0, Convert.ToUInt64(lit.Value)));
                 }
-                else if (lit.Type == TsType.BigInt)
+                else if (type == TsType.BigInt)
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_BigInt, 0, 0, lit.Value?.ToString() ?? "0"));
                 }
-                else if (lit.Type == TsType.Float32)
+                else if (type == TsType.Float32)
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_F32, 0, 0, Convert.ToSingle(lit.Value)));
                 }
-                else if (lit.Type == TsType.Decimal)
+                else if (type == TsType.Decimal)
                 {
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Decimal, 0, 0, Convert.ToDecimal(lit.Value)));
                 }
@@ -1511,6 +1512,9 @@ public sealed class IRGenerator
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Bool, Convert.ToBoolean(lit.Value) ? 1 : 0));
                 break;
             case TsPrimitiveType { Name: "void" }:
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+                break;
+            case TsUndefinedType:
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
                 break;
             default:
@@ -1583,6 +1587,12 @@ public sealed class IRGenerator
             return;
         }
 
+        if (bin.Operator == TokenKind.InKeyword)
+        {
+            GenerateInOperator(bin);
+            return;
+        }
+
         // `&&` and `||` must short-circuit: the right operand may have host
         // side effects that TypeScript semantics require skipping.
         if (bin.Operator is TokenKind.AmpersandAmpersand or TokenKind.PipePipe)
@@ -1615,28 +1625,30 @@ public sealed class IRGenerator
         GenerateExpression(bin.Left);
         GenerateExpression(bin.Right);
 
-        var operandType = bin.Left.Type is TsAnyType ? bin.Right.Type : bin.Left.Type;
-        if (bin.Operator == TokenKind.Plus && (bin.Left.Type == TsType.String || bin.Right.Type == TsType.String))
+        var leftType = GetRuntimeType(bin.Left.Type);
+        var rightType = GetRuntimeType(bin.Right.Type);
+        var operandType = leftType is TsAnyType ? rightType : leftType;
+        if (bin.Operator == TokenKind.Plus && (leftType == TsType.String || rightType == TsType.String))
         {
             operandType = TsType.String;
         }
         else if (bin.Operator is TokenKind.TripleEquals or TokenKind.StrictNotEquals &&
-            (bin.Left.Type is TsAnyType || bin.Right.Type is TsAnyType))
+            (leftType is TsAnyType || rightType is TsAnyType))
         {
             operandType = TsType.Any;
         }
         // Dynamic (host) operands carry their width at runtime; compute in the
         // widest integer form so an int64 payload never truncates through i32 ops.
-        else if ((bin.Left.Type is TsAnyType || bin.Right.Type is TsAnyType) &&
+        else if ((leftType is TsAnyType || rightType is TsAnyType) &&
             (operandType == TsType.Int32 || operandType is TsAnyType))
         {
             operandType = TsType.Int64;
         }
-        else if (bin.Left.Type.IsNumeric && bin.Right.Type.IsNumeric)
+        else if (leftType.IsNumeric && rightType.IsNumeric)
         {
             // Mixed widths compute in the wider representation (int literal
             // against a `number` variable must not truncate to i32 ops).
-            operandType = Binder.WiderNumeric(bin.Left.Type, bin.Right.Type);
+            operandType = Binder.WiderNumeric(leftType, rightType);
         }
         var opcode = InferBinaryOpcode(operandType, bin.Operator);
         if (opcode == Opcode.Nop)
@@ -1644,6 +1656,20 @@ public sealed class IRGenerator
                 $"Unsupported binary operator '{bin.Operator}' for operand type '{operandType}'");
         _currentBlock!.Instructions.Add(new Instruction(opcode));
     }
+
+    private void GenerateInOperator(BoundBinaryExpression bin)
+    {
+        if (bin.Left is not BoundLiteralExpression { Value: string propertyName })
+            throw new InvalidOperationException("The 'in' operator currently requires a string literal property name");
+
+        GenerateExpression(bin.Right);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, propertyName));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.CmpStrictNe_Any));
+    }
+
+    private static TsType GetRuntimeType(TsType type) =>
+        type is TsLiteralType literal ? literal.BaseType : type;
 
     private void GenerateNullishCoalescing(BoundBinaryExpression bin)
     {

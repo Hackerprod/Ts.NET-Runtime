@@ -780,6 +780,7 @@ public sealed class Binder
             .Select(InferParameterTypeFromDefault)
             .Where(type => type != null)
             .Cast<TsType>()
+            .Select(WidenLiteralType)
             .ToList();
 
         if (elementTypes.Count != array.Elements.Count)
@@ -1587,13 +1588,17 @@ public sealed class Binder
             {
                 initializer = BindExpression(varDecl.Initializer);
             }
-            type = initializer.Type;
+            type = varDecl.TypeAnnotation == null && !varDecl.IsConst
+                ? WidenLiteralType(initializer.Type)
+                : initializer.Type;
 
-            // TypeScript semantics: an unannotated numeric literal infers as
-            // `number`, so later reassignments with number-typed expressions
-            // stay valid. Annotated declarations keep their strict type.
+            // Runtime numeric literals default to `number` in unannotated
+            // declarations, preserving existing JS-style module constants and
+            // mutable reassignment behavior. Annotated declarations keep their
+            // requested numeric width.
             if (varDecl.TypeAnnotation == null &&
-                initializer is BoundLiteralExpression { Type.Name: "int32" } intLiteral)
+                initializer is BoundLiteralExpression { Type: TsLiteralType { BaseType: { } literalBase } } intLiteral &&
+                literalBase.Equals(TsType.Int32))
             {
                 type = TsType.Number;
                 initializer = new BoundLiteralExpression(
@@ -1934,13 +1939,16 @@ public sealed class Binder
             }
 
             var clauses = new List<BoundSwitchClause>();
+            var hasDefault = false;
             foreach (var clause in switchStmt.Clauses)
             {
                 var test = clause.Test != null ? BindExpression(clause.Test) : null;
+                hasDefault |= clause.Test == null;
                 var statements = clause.Statements.Select(BindStatement).ToList();
                 clauses.Add(new BoundSwitchClause(test, statements));
             }
 
+            ValidateSwitchExhaustiveness(switchStmt, expression.Type, hasDefault);
             return new BoundSwitchStatement(expression, clauses);
         }
         finally
@@ -1949,6 +1957,85 @@ public sealed class Binder
             _symbolTable.PopScope();
         }
     }
+
+    private void ValidateSwitchExhaustiveness(SwitchStatementSyntax switchStmt, TsType switchedType, bool hasDefault)
+    {
+        if (hasDefault)
+            return;
+
+        var expectedCases = GetSwitchExhaustiveCases(switchStmt.Expression, switchedType);
+        if (expectedCases.Count == 0)
+            return;
+
+        var seenCases = new HashSet<TsType>();
+        foreach (var clause in switchStmt.Clauses)
+        {
+            if (clause.Test == null)
+                continue;
+
+            if (TryGetExpressionLiteralType(clause.Test, out var literal))
+                seenCases.Add(literal);
+            else if (clause.Test is IdentifierExpressionSyntax { Name: "undefined" })
+                seenCases.Add(TsType.Undefined);
+            else if (clause.Test is LiteralExpressionSyntax { Token.Kind: TokenKind.NullLiteral })
+                seenCases.Add(TsType.Null);
+        }
+
+        var missing = expectedCases
+            .Where(expected => seenCases.All(seen => !seen.Equals(expected)))
+            .ToList();
+        if (missing.Count == 0)
+            return;
+
+        _diagnostics.Error(
+            $"Switch is not exhaustive; missing case(s): {string.Join(", ", missing.Select(type => type.Name))}",
+            switchStmt.Range.Start,
+            DiagnosticCode.TS2016);
+    }
+
+    private List<TsType> GetSwitchExhaustiveCases(ExpressionSyntax expression, TsType switchedType)
+    {
+        if (switchedType is TsUnionType literalUnion && literalUnion.Types.All(IsSwitchLiteralCaseType))
+            return DistinctTypes(literalUnion.Types);
+
+        if (expression is not MemberAccessExpressionSyntax { Object: IdentifierExpressionSyntax receiver } memberAccess ||
+            _symbolTable.Lookup(receiver.Name) is not { } symbol ||
+            symbol is not (LocalSymbol or ParameterSymbol))
+        {
+            return new List<TsType>();
+        }
+
+        var candidates = symbol.Type is TsUnionType union
+            ? union.Types
+            : new List<TsType> { symbol.Type };
+
+        var cases = new List<TsType>();
+        foreach (var candidate in candidates)
+        {
+            if (!TryGetReadableMemberType(candidate, memberAccess.MemberName, out var memberType))
+                return new List<TsType>();
+
+            if (memberType is TsUnionType memberUnion)
+            {
+                if (!memberUnion.Types.All(IsSwitchLiteralCaseType))
+                    return new List<TsType>();
+                cases.AddRange(memberUnion.Types);
+            }
+            else if (IsSwitchLiteralCaseType(memberType))
+            {
+                cases.Add(memberType);
+            }
+            else
+            {
+                return new List<TsType>();
+            }
+        }
+
+        return DistinctTypes(cases);
+    }
+
+    private static bool IsSwitchLiteralCaseType(TsType type) =>
+        type is TsLiteralType or TsNullType or TsUndefinedType;
 
     private BoundNode BindStatementWithTemporaryType(SyntaxNode statement, Symbol symbol, TsType type)
     {
@@ -2171,8 +2258,43 @@ public sealed class Binder
     private NullCheckNarrowing? TryGetConditionNarrowing(ExpressionSyntax condition)
     {
         return TryGetTypePredicateNarrowing(condition) ??
+               TryGetInOperatorNarrowing(condition) ??
                TryGetDiscriminatedUnionNarrowing(condition) ??
                TryGetNullCheckNarrowing(condition);
+    }
+
+    private NullCheckNarrowing? TryGetInOperatorNarrowing(ExpressionSyntax condition)
+    {
+        if (condition is not BinaryExpressionSyntax { OperatorToken.Kind: TokenKind.InKeyword } binary ||
+            !TryGetPropertyNameLiteral(binary.Left, out var propertyName) ||
+            binary.Right is not IdentifierExpressionSyntax receiver ||
+            _symbolTable.Lookup(receiver.Name) is not { } symbol ||
+            symbol is not (LocalSymbol or ParameterSymbol))
+        {
+            return null;
+        }
+
+        var sourceType = symbol.Type;
+        var candidates = sourceType is TsUnionType union
+            ? union.Types
+            : new List<TsType> { sourceType };
+
+        var matching = candidates
+            .Where(candidate => TryGetReadableMemberType(candidate, propertyName, out _))
+            .ToList();
+        if (matching.Count == 0 || matching.Count == candidates.Count)
+            return null;
+
+        var nonMatching = candidates
+            .Where(candidate => !matching.Contains(candidate))
+            .ToList();
+
+        return new NullCheckNarrowing(
+            symbol,
+            null,
+            sourceType,
+            NormalizeUnion(matching),
+            NormalizeUnion(nonMatching));
     }
 
     private NullCheckNarrowing? TryGetDiscriminatedUnionNarrowing(ExpressionSyntax condition)
@@ -2204,37 +2326,37 @@ public sealed class Binder
             literalType == null ||
             _symbolTable.Lookup(receiver.Name) is not { } symbol ||
             symbol is not (LocalSymbol or ParameterSymbol) ||
-            symbol.Type is not TsUnionType union)
+            symbol.Type is not { } sourceType)
         {
             return null;
         }
 
-        var matching = union.Types
+        var candidates = sourceType is TsUnionType union
+            ? union.Types
+            : new List<TsType> { sourceType };
+
+        var matching = candidates
             .Where(candidate => TryGetReadableMemberType(candidate, memberAccess.MemberName, out var memberType) &&
                                 TsType.IsCompatibleWith(literalType, memberType) &&
                                 TsType.IsCompatibleWith(memberType, literalType))
             .ToList();
 
-        if (matching.Count == 0 || matching.Count == union.Types.Count)
+        if (matching.Count == 0)
             return null;
 
-        var nonMatching = union.Types
+        var nonMatching = candidates
             .Where(candidate => !matching.Contains(candidate))
             .ToList();
 
-        var narrowed = matching.Count == 1
-            ? matching[0]
-            : new TsUnionType(DistinctTypes(matching));
-        var excluded = nonMatching.Count switch
-        {
-            0 => TsType.Never,
-            1 => nonMatching[0],
-            _ => new TsUnionType(DistinctTypes(nonMatching))
-        };
+        if (matching.Count == candidates.Count && nonMatching.Count == 0 && candidates.Count > 1)
+            return null;
+
+        var narrowed = NormalizeUnion(matching);
+        var excluded = NormalizeUnion(nonMatching);
 
         return comparesEqual
-            ? new NullCheckNarrowing(symbol, null, symbol.Type, narrowed, excluded)
-            : new NullCheckNarrowing(symbol, null, symbol.Type, excluded, narrowed);
+            ? new NullCheckNarrowing(symbol, null, sourceType, narrowed, excluded)
+            : new NullCheckNarrowing(symbol, null, sourceType, excluded, narrowed);
     }
 
     private static bool TryGetExpressionLiteralType(ExpressionSyntax expression, out TsLiteralType literalType)
@@ -2250,6 +2372,18 @@ public sealed class Binder
         }
 
         literalType = null!;
+        return false;
+    }
+
+    private static bool TryGetPropertyNameLiteral(ExpressionSyntax expression, out string propertyName)
+    {
+        if (expression is LiteralExpressionSyntax { Token.Kind: TokenKind.StringLiteral } literal)
+        {
+            propertyName = literal.Token.Value?.ToString() ?? literal.Token.Text;
+            return !string.IsNullOrEmpty(propertyName);
+        }
+
+        propertyName = string.Empty;
         return false;
     }
 
@@ -2395,7 +2529,7 @@ public sealed class Binder
                 var changed = false;
                 foreach (var candidate in union.Types)
                 {
-                    if (candidate is TsNullType || candidate.Equals(TsType.Void))
+                    if (candidate is TsNullType or TsUndefinedType)
                     {
                         changed = true;
                         continue;
@@ -2417,12 +2551,7 @@ public sealed class Binder
                     return false;
                 }
 
-                nonNullType = narrowed.Count switch
-                {
-                    0 => TsType.Void,
-                    1 => narrowed[0],
-                    _ => new TsUnionType(narrowed)
-                };
+                nonNullType = NormalizeUnion(narrowed);
                 return true;
             default:
                 nonNullType = type;
@@ -2474,9 +2603,9 @@ public sealed class Binder
         // JS-mode types (number, string, any, nullable, null) are truthy in
         // conditions the way TypeScript allows; TypeSharp's strict primitives
         // (int32, float64, …) still require an explicit bool.
-        var type = condition.Type;
+        var type = WidenLiteralType(condition.Type);
         bool allowed = type == TsType.Bool || type == TsType.Void ||
-                       type is TsAnyType or TsNullableType or TsNullType or TsUnionType ||
+                       type is TsAnyType or TsNullableType or TsNullType or TsUndefinedType or TsUnionType ||
                        type == TsType.Number || type == TsType.String ||
                        type is TsArrayType or TsClassType or TsInterfaceType or TsFunctionType;
         if (!allowed)
@@ -2651,27 +2780,27 @@ public sealed class Binder
             case TokenKind.IntegerLiteral:
                 if (lit.Token.Value is BigInteger bi)
                 {
-                    type = TsType.BigInt;
                     value = bi;
+                    type = new TsLiteralType(value, TsType.BigInt);
                 }
                 else if (lit.Token.Value is ulong ul)
                 {
-                    type = lit.Token.Text.EndsWith("n", StringComparison.Ordinal)
-                        ? TsType.BigInt
-                        : TsType.UInt64;
                     value = ul;
+                    type = new TsLiteralType(
+                        value,
+                        lit.Token.Text.EndsWith("n", StringComparison.Ordinal) ? TsType.BigInt : TsType.UInt64);
                 }
                 else if (lit.Token.Value is long l)
                 {
                     if (l >= int.MinValue && l <= int.MaxValue)
                     {
-                        type = TsType.Int32;
                         value = (int)l;
+                        type = new TsLiteralType(value, TsType.Int32);
                     }
                     else
                     {
-                        type = TsType.Int64;
                         value = l;
+                        type = new TsLiteralType(value, TsType.Int64);
                     }
                 }
                 else if (lit.Token.Value is double d)
@@ -2679,46 +2808,46 @@ public sealed class Binder
                     var l2 = (long)d;
                     if (l2 >= int.MinValue && l2 <= int.MaxValue)
                     {
-                        type = TsType.Int32;
                         value = (int)l2;
+                        type = new TsLiteralType(value, TsType.Int32);
                     }
                     else
                     {
-                        type = TsType.Int64;
                         value = l2;
+                        type = new TsLiteralType(value, TsType.Int64);
                     }
                 }
                 else if (lit.Token.Value is int i)
                 {
-                    type = TsType.Int32;
                     value = i;
+                    type = new TsLiteralType(value, TsType.Int32);
                 }
                 else
                 {
-                    type = TsType.Int32;
                     value = 0;
+                    type = new TsLiteralType(value, TsType.Int32);
                 }
                 break;
             case TokenKind.FloatLiteral:
                 if (lit.Token.Value is decimal decVal)
                 {
-                    type = TsType.Decimal;
                     value = decVal;
+                    type = new TsLiteralType(value, TsType.Decimal);
                 }
                 else
                 {
-                    type = TsType.Float64;
                     value = lit.Token.Value ?? 0.0;
+                    type = new TsLiteralType(value, TsType.Number);
                 }
                 break;
             case TokenKind.StringLiteral:
-                type = TsType.String;
                 value = lit.Token.Value ?? "";
+                type = new TsLiteralType(value, TsType.String);
                 break;
             case TokenKind.TrueLiteral:
             case TokenKind.FalseLiteral:
-                type = TsType.Bool;
                 value = lit.Token.Kind == TokenKind.TrueLiteral;
+                type = new TsLiteralType(value, TsType.Bool);
                 break;
             case TokenKind.NullLiteral:
                 type = TsType.Null;
@@ -2741,7 +2870,7 @@ public sealed class Binder
             switch (id.Name)
             {
                 case "undefined":
-                    return new BoundLiteralExpression(null, TsType.Void);
+                    return new BoundLiteralExpression(null, TsType.Undefined);
                 case "Infinity":
                     return new BoundLiteralExpression(double.PositiveInfinity, TsType.Number);
                 case "NaN":
@@ -3152,6 +3281,8 @@ public sealed class Binder
         var objType = obj.Type;
         if (objType is TsNullableType nullable)
             objType = nullable.ElementType;
+        else if (member.IsNullConditional && TryRemoveNullish(objType, out var nonNullReceiverType))
+            objType = nonNullReceiverType;
         IReadOnlyDictionary<string, TsType> genericMap = new Dictionary<string, TsType>();
         if (objType is TsGenericType generic)
         {
@@ -3223,9 +3354,7 @@ public sealed class Binder
 
             if (memberTypes.Count > 0)
             {
-                var resultMemberType = memberTypes.Count == 1
-                    ? memberTypes[0]
-                    : new TsUnionType(DistinctTypes(memberTypes));
+                var resultMemberType = NormalizeUnion(memberTypes);
                 memberSym = new PropertySymbol(member.MemberName, resultMemberType, member.Range);
             }
         }
@@ -3634,7 +3763,7 @@ public sealed class Binder
 
         var fallback = BindExpression(defaultValue);
         var isUndefined = new BoundBinaryExpression(value, TokenKind.TripleEquals,
-            new BoundLiteralExpression(null, TsType.Void), TsType.Bool);
+            new BoundLiteralExpression(null, TsType.Undefined), TsType.Bool);
         var isNull = new BoundBinaryExpression(value, TokenKind.TripleEquals,
             new BoundLiteralExpression(null, TsType.Any), TsType.Bool);
         var isMissing = new BoundBinaryExpression(isUndefined, TokenKind.PipePipe, isNull, TsType.Bool);
@@ -4179,17 +4308,18 @@ public sealed class Binder
         }
 
         var firstNormalElement = elements.FirstOrDefault(e => e is not BoundSpreadExpression);
-        var elementType = expectedElementType ?? firstNormalElement?.Type ?? TsType.Any;
+        var elementType = expectedElementType ?? WidenLiteralType(firstNormalElement?.Type ?? TsType.Any);
 
         for (int i = expectedElementType != null ? 0 : 1; i < elements.Count; i++)
         {
             if (elements[i] is BoundSpreadExpression)
                 continue;
 
-            if (!TsType.IsCompatibleWith(elements[i].Type, elementType))
+            var candidateType = expectedElementType != null ? elements[i].Type : WidenLiteralType(elements[i].Type);
+            if (!TsType.IsCompatibleWith(candidateType, elementType))
             {
                 _diagnostics.Error(
-                    $"Array element {i + 1} has type '{elements[i].Type}', expected '{elementType}'",
+                    $"Array element {i + 1} has type '{candidateType}', expected '{elementType}'",
                     arrLit.Elements[i].Range.Start);
             }
         }
@@ -4201,12 +4331,18 @@ public sealed class Binder
     {
         var obj = BindExpression(indexExpr.Object);
         var index = BindExpression(indexExpr.Index);
+        var indexType = WidenLiteralType(index.Type);
+        var objType = obj.Type;
+        if (objType is TsNullableType nullableObject)
+            objType = nullableObject.ElementType;
+        else if (indexExpr.IsNullConditional && TryRemoveNullish(objType, out var nonNullObjectType))
+            objType = nonNullObjectType;
 
-        var classIndexSignature = obj.Type is TsClassType cls
-            ? cls.IndexSignatures.FirstOrDefault(sig => IsIndexKeyCompatible(index.Type, sig.KeyType))
+        var classIndexSignature = objType is TsClassType cls
+            ? cls.IndexSignatures.FirstOrDefault(sig => IsIndexKeyCompatible(indexType, sig.KeyType))
             : null;
 
-        var resultType = obj.Type switch
+        var resultType = objType switch
         {
             TsArrayType arr => arr.ElementType,
             TsClassType { Name: "Uint8Array" } => TsType.Number,
@@ -4219,16 +4355,16 @@ public sealed class Binder
             _ => TsType.Any
         };
 
-        if ((obj.Type is TsArrayType || obj.Type is TsClassType { Name: "Uint8Array" }) &&
-            index.Type is not TsPrimitiveType { IsNumericType: true } &&
-            index.Type is not TsAnyType)
+        if ((objType is TsArrayType || objType is TsClassType { Name: "Uint8Array" }) &&
+            indexType is not TsPrimitiveType { IsNumericType: true } &&
+            indexType is not TsAnyType)
         {
-            _diagnostics.Error($"Index must be numeric, got '{index.Type}'",
+            _diagnostics.Error($"Index must be numeric, got '{indexType}'",
                 indexExpr.Index.Range.Start);
         }
-        else if (obj.Type is TsClassType { IndexSignatures.Count: > 0 } && classIndexSignature == null && index.Type is not TsAnyType)
+        else if (objType is TsClassType { IndexSignatures.Count: > 0 } && classIndexSignature == null && indexType is not TsAnyType)
         {
-            _diagnostics.Error($"Index type '{index.Type}' is not compatible with declared index signatures",
+            _diagnostics.Error($"Index type '{indexType}' is not compatible with declared index signatures",
                 indexExpr.Index.Range.Start);
         }
 
@@ -4292,8 +4428,8 @@ public sealed class Binder
         return token.Kind switch
         {
             TokenKind.StringLiteral => new TsLiteralType(token.Value?.ToString() ?? token.Text, TsType.String),
-            TokenKind.IntegerLiteral => new TsLiteralType(token.Value, TsType.Int64),
-            TokenKind.FloatLiteral => new TsLiteralType(token.Value, TsType.Number),
+            TokenKind.IntegerLiteral => ResolveIntegerLiteralType(token),
+            TokenKind.FloatLiteral => new TsLiteralType(token.Value ?? 0.0, token.Value is decimal ? TsType.Decimal : TsType.Number),
             TokenKind.TrueLiteral => new TsLiteralType(true, TsType.Bool),
             TokenKind.FalseLiteral => new TsLiteralType(false, TsType.Bool),
             TokenKind.TemplateLiteral => (token.Value?.ToString() ?? token.Text).Contains("${", StringComparison.Ordinal)
@@ -4302,6 +4438,26 @@ public sealed class Binder
             TokenKind.NullLiteral => TsType.Null,
             _ => TsType.Any
         };
+    }
+
+    private static TsType ResolveIntegerLiteralType(Token token)
+    {
+        if (token.Value is BigInteger bigInteger)
+            return new TsLiteralType(bigInteger, TsType.BigInt);
+        if (token.Value is ulong unsignedLong)
+            return new TsLiteralType(
+                unsignedLong,
+                token.Text.EndsWith("n", StringComparison.Ordinal) ? TsType.BigInt : TsType.UInt64);
+        if (token.Value is long longValue)
+        {
+            return longValue is >= int.MinValue and <= int.MaxValue
+                ? new TsLiteralType((int)longValue, TsType.Int32)
+                : new TsLiteralType(longValue, TsType.Int64);
+        }
+        if (token.Value is int intValue)
+            return new TsLiteralType(intValue, TsType.Int32);
+
+        return new TsLiteralType(0, TsType.Int32);
     }
 
     private TsType ResolveConditionalType(ConditionalTypeSyntax conditional)
@@ -4486,28 +4642,7 @@ public sealed class Binder
 
     private TsType ResolveUnionType(UnionTypeSyntax union)
     {
-        var members = union.Types
-            .Select(ResolveType)
-            .Where(type => type is not TsNeverType)
-            .ToList();
-        if (members.Any(type => type is TsUnknownType))
-            return TsType.Unknown;
-        members = DistinctTypes(members);
-        if (members.Count == 0)
-            return TsType.Never;
-        if (members.Count == 1)
-            return members[0];
-
-        // `T | null` / `T | undefined` normalizes to nullable T so member
-        // access and null-flow analysis see one canonical shape.
-        var nonNull = members.Where(m => m is not TsNullType).ToList();
-        if (nonNull.Count < members.Count)
-        {
-            return nonNull.Count == 1
-                ? new TsNullableType(nonNull[0])
-                : new TsNullableType(new TsUnionType(nonNull));
-        }
-        return new TsUnionType(members);
+        return NormalizeUnion(union.Types.Select(ResolveType));
     }
 
     private TsInterfaceType ResolveObjectType(ObjectTypeSyntax objType)
@@ -4570,6 +4705,50 @@ public sealed class Binder
                 result.Add(type);
         }
         return result;
+    }
+
+    private static TsType NormalizeUnion(IEnumerable<TsType> types)
+    {
+        var members = new List<TsType>();
+        foreach (var type in types)
+        {
+            switch (type)
+            {
+                case TsNeverType:
+                    continue;
+                case TsUnknownType:
+                    return TsType.Unknown;
+                case TsUnionType union:
+                    members.AddRange(union.Types);
+                    break;
+                case TsNullableType nullable:
+                    members.Add(nullable.ElementType);
+                    members.Add(TsType.Null);
+                    break;
+                default:
+                    members.Add(type);
+                    break;
+            }
+        }
+
+        members = DistinctTypes(members);
+        return members.Count switch
+        {
+            0 => TsType.Never,
+            1 => members[0],
+            _ => new TsUnionType(members)
+        };
+    }
+
+    private static TsType WidenLiteralType(TsType type)
+    {
+        return type switch
+        {
+            TsLiteralType literal => literal.BaseType,
+            TsUnionType union => NormalizeUnion(union.Types.Select(WidenLiteralType)),
+            TsNullableType nullable => new TsNullableType(WidenLiteralType(nullable.ElementType)),
+            _ => type
+        };
     }
 
     private static bool TryGetLiteralKey(TsType type, out string key)
@@ -4853,8 +5032,10 @@ public sealed class Binder
 
     private TsType ResolveNamedType(NamedTypeSyntax named)
     {
-        if (named.Name is "null" or "undefined")
+        if (named.Name == "null")
             return TsType.Null;
+        if (named.Name == "undefined")
+            return TsType.Undefined;
         if (named.Name == "unknown")
             return TsType.Unknown;
         if (named.Name == "never")
@@ -5076,32 +5257,38 @@ public sealed class Binder
     // Type inference helpers
     private static TsType InferBinaryResultType(TsType left, TsType right, TokenKind op)
     {
+        var widenedLeft = WidenLiteralType(left);
+        var widenedRight = WidenLiteralType(right);
+
         if (op == TokenKind.QuestionQuestion)
         {
             if (left is TsNullableType nullableLeft)
             {
-                if (right is TsNullType or TsPrimitiveType { Name: "void" })
+                if (right is TsNullType or TsUndefinedType)
                 {
                     return left;
                 }
 
-                if (nullableLeft.ElementType.IsNumeric && right.IsNumeric)
+                if (nullableLeft.ElementType.IsNumeric && widenedRight.IsNumeric)
                 {
-                    return WiderNumeric(nullableLeft.ElementType, right);
+                    return WiderNumeric(nullableLeft.ElementType, widenedRight);
                 }
 
-                return TsType.IsCompatibleWith(nullableLeft.ElementType, right)
+                return TsType.IsCompatibleWith(nullableLeft.ElementType, widenedRight)
                     ? nullableLeft.ElementType
-                    : new TsUnionType(new List<TsType> { nullableLeft.ElementType, right });
+                    : NormalizeUnion(new List<TsType> { nullableLeft.ElementType, right });
             }
 
-            if (left is TsNullType or TsAnyType)
+            if (left is TsNullType or TsUndefinedType or TsAnyType)
             {
                 return right;
             }
 
             return TsType.IsCompatibleWith(left, right) ? left : right;
         }
+
+        left = widenedLeft;
+        right = widenedRight;
 
         if (left is TsAnyType || right is TsAnyType)
         {
@@ -5112,7 +5299,7 @@ public sealed class Binder
                 TokenKind.DoubleEquals or TokenKind.TripleEquals or TokenKind.StrictNotEquals or
                 TokenKind.NotEquals or TokenKind.LessThan or TokenKind.GreaterThan or
                 TokenKind.LessOrEqual or TokenKind.GreaterOrEqual or
-                TokenKind.AmpersandAmpersand or TokenKind.PipePipe => TsType.Bool,
+                TokenKind.AmpersandAmpersand or TokenKind.PipePipe or TokenKind.InKeyword => TsType.Bool,
                 _ => TsType.Any
             };
         }
@@ -5137,7 +5324,7 @@ public sealed class Binder
             TokenKind.DoubleEquals or TokenKind.TripleEquals or TokenKind.StrictNotEquals or
             TokenKind.NotEquals or TokenKind.LessThan or TokenKind.GreaterThan or
             TokenKind.LessOrEqual or TokenKind.GreaterOrEqual or
-            TokenKind.AmpersandAmpersand or TokenKind.PipePipe => TsType.Bool,
+            TokenKind.AmpersandAmpersand or TokenKind.PipePipe or TokenKind.InKeyword => TsType.Bool,
 
             TokenKind.StarStar => TsType.Number,
             _ => left.IsNumeric && right.IsNumeric ? WiderNumeric(left, right) : TsType.Void

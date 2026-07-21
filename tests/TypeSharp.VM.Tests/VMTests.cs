@@ -434,6 +434,91 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void UnionPreservesLiteralTypesAndExplicitNullishMembers()
+    {
+        const string source = "type State = 'ready' | 'busy' | 1 | true | null | undefined | never | 'ready'; function main(): void { const okText: State = 'ready'; const okNumber: State = 1; const okBool: State = true; const okNull: State = null; const okUndefined: State = undefined; const bad: State = 'other'; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("cannot assign 'other'", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(errors, message => message.Contains("cannot assign 'ready'", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(errors, message => message.Contains("cannot assign 1", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(errors, message => message.Contains("cannot assign true", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(errors, message => message.Contains("cannot assign null", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(errors, message => message.Contains("cannot assign undefined", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void NullishUnionNarrowsNullAndUndefinedExplicitly()
+    {
+        var result = Run("type MaybeText = string | null | undefined; function main(): int32 { let value: MaybeText = 'hello' as MaybeText; if (value != null) { if (value != undefined) { return value.length; } } return 0; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DiscriminatedUnionAllowsAssertNeverAfterExhaustiveIfChain()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function assertNever(value: never): int32 { throw 'unexpected'; } function main(): int32 { let shape: Shape = { kind: 'circle', radius: 4 } as Shape; if (shape.kind == 'circle') { return shape.radius; } if (shape.kind == 'square') { return shape.size; } return assertNever(shape); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(4, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InOperatorNarrowsUnionByPropertyPresence()
+    {
+        var result = Run("type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function main(): int32 { let shape: Shape = { kind: 'square', size: 5 } as Shape; if ('size' in shape) { return shape.size; } return 0; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DiscriminantMutationIsRejectedAfterNarrowing()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function main(): void { let shape: Shape = { kind: 'circle', radius: 4 } as Shape; if (shape.kind == 'circle') { shape.kind = 'square'; } }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("Cannot assign ''square''", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void SwitchOverDiscriminantRequiresExhaustiveLiteralCases()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function main(): int32 { let shape: Shape = { kind: 'circle', radius: 4 } as Shape; switch (shape.kind) { case 'circle': return 1; } return 0; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("Switch is not exhaustive", StringComparison.OrdinalIgnoreCase) &&
+                                           message.Contains("'square'", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void SwitchOverDiscriminantAcceptsAllLiteralCases()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function main(): int32 { let shape: Shape = { kind: 'circle', radius: 4 } as Shape; switch (shape.kind) { case 'circle': return 1; case 'square': return 2; } return 0; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        Assert.Empty(binder.Diagnostics.GetErrors());
+    }
+
+    [Fact]
     public void MappedTypeResolvesKeyofIndexedAccessProperties()
     {
         var result = Run("type User = { id: int32; name: string; }; type Copy = { [K in keyof User]: User[K]; }; function main(): int32 { let copy: Copy = { id: 6, name: 'abc' }; return copy.id + copy.name.length; }");
