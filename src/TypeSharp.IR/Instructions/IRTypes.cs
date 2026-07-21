@@ -40,6 +40,7 @@ public enum Opcode
     LoadConst_F64,
     LoadConst_Decimal,
     LoadConst_String,
+    LoadConst_Regex,
     LoadConst_Bool,
     LoadConst_Null,
     LoadConst_Void,
@@ -63,6 +64,7 @@ public enum Opcode
     Call,
     CallVirt,
     CallDynamic,
+    CallDynamicArray,
     LoadFunc,
     MakeClosure,
     Return,
@@ -80,9 +82,16 @@ public enum Opcode
     NewObject,
     CopyObjectFields,
     NewArray,
+    ArrayAppend,
+    ArrayAppendSpread,
+    NewGenerator,
     NewMap,
     LoadElement,
     StoreElement,
+    EnumerateKeys,
+    ArraySliceFrom,
+    ObjectRest,
+    IterableValues,
 
     // Delete
     DeleteField,
@@ -114,6 +123,7 @@ public enum Opcode
     // Special
     Nop,
     Throw,
+    Yield,
     Pop,
     Dup,
 
@@ -189,6 +199,7 @@ public sealed class FunctionIR
     public List<BasicBlock> Blocks { get; } = new();
     public int LocalCount { get; set; }
     public bool IsAsync { get; set; }
+    public bool IsGenerator { get; set; }
 
     // Names of variables captured from enclosing functions; their boxes are
     // installed by the VM after the declared parameters.
@@ -213,11 +224,13 @@ public sealed class ParameterInfo
 {
     public string Name { get; }
     public TsType Type { get; }
+    public bool IsRest { get; }
 
-    public ParameterInfo(string name, TsType type)
+    public ParameterInfo(string name, TsType type, bool isRest = false)
     {
         Name = name;
         Type = type;
+        IsRest = isRest;
     }
 }
 

@@ -27,6 +27,7 @@ public enum BoundNodeKind
     CallExpression,
     MemberAccessExpression,
     AssignmentExpression,
+    DestructuringAssignmentExpression,
     ConditionalExpression,
     NewExpression,
     ThisExpression,
@@ -37,19 +38,28 @@ public enum BoundNodeKind
     IndexExpression,
     ObjectProperty,
     LambdaExpression,
+    ClassExpression,
     CastExpression,
     TypeofExpression,
     VoidExpression,
     DeleteFieldExpression,
     DeleteIndexExpression,
     DeleteNonReferenceExpression,
+    SpreadExpression,
+    RegexLiteralExpression,
+    EnumerateKeysExpression,
+    ArraySliceExpression,
+    ObjectRestExpression,
+    IterableValuesExpression,
 
     ExpressionStatement,
     ReturnStatement,
+    YieldStatement,
     IfStatement,
     SwitchStatement,
     WhileStatement,
     DoWhileStatement,
+    LabelledStatement,
     ForStatement,
     BreakStatement,
     ContinueStatement,
@@ -122,12 +132,38 @@ public sealed class BoundCallExpression : BoundNode
 {
     public BoundNode Callee { get; }
     public List<BoundNode> Arguments { get; }
+    public bool IsNullConditional { get; }
 
-    public BoundCallExpression(BoundNode callee, List<BoundNode> arguments, TsType returnType)
+    public BoundCallExpression(BoundNode callee, List<BoundNode> arguments, TsType returnType, bool isNullConditional = false)
         : base(BoundNodeKind.CallExpression, returnType)
     {
         Callee = callee;
         Arguments = arguments;
+        IsNullConditional = isNullConditional;
+    }
+}
+
+public sealed class BoundSpreadExpression : BoundNode
+{
+    public BoundNode Expression { get; }
+
+    public BoundSpreadExpression(BoundNode expression)
+        : base(BoundNodeKind.SpreadExpression, expression.Type)
+    {
+        Expression = expression;
+    }
+}
+
+public sealed class BoundRegexLiteralExpression : BoundNode
+{
+    public string Pattern { get; }
+    public string Flags { get; }
+
+    public BoundRegexLiteralExpression(string pattern, string flags)
+        : base(BoundNodeKind.RegexLiteralExpression, TsType.Any)
+    {
+        Pattern = pattern;
+        Flags = flags;
     }
 }
 
@@ -156,6 +192,17 @@ public sealed class BoundLambdaExpression : BoundNode
         : base(BoundNodeKind.LambdaExpression, type)
     {
         Function = function;
+    }
+}
+
+public sealed class BoundClassExpression : BoundNode
+{
+    public BoundClassDeclaration Declaration { get; }
+
+    public BoundClassExpression(BoundClassDeclaration declaration)
+        : base(BoundNodeKind.ClassExpression, declaration.Symbol.Type)
+    {
+        Declaration = declaration;
     }
 }
 
@@ -273,6 +320,24 @@ public sealed class BoundAssignmentExpression : BoundNode
     }
 }
 
+public sealed class BoundDestructuringAssignmentExpression : BoundNode
+{
+    public IReadOnlyList<BoundVariableDeclaration> Temporaries { get; }
+    public IReadOnlyList<BoundAssignmentExpression> Assignments { get; }
+    public BoundNode Result { get; }
+
+    public BoundDestructuringAssignmentExpression(
+        IReadOnlyList<BoundVariableDeclaration> temporaries,
+        IReadOnlyList<BoundAssignmentExpression> assignments,
+        BoundNode result)
+        : base(BoundNodeKind.DestructuringAssignmentExpression, result.Type)
+    {
+        Temporaries = temporaries;
+        Assignments = assignments;
+        Result = result;
+    }
+}
+
 public sealed class BoundConditionalExpression : BoundNode
 {
     public BoundNode Condition { get; }
@@ -333,13 +398,16 @@ public sealed class BoundObjectPropertyNode : BoundNode
     public string Key { get; }
     public BoundNode Value { get; }
     public bool IsSpread { get; }
+    public BoundNode? ComputedKey { get; }
+    public bool IsComputed => ComputedKey != null;
 
-    public BoundObjectPropertyNode(string key, BoundNode value, TsType type, bool isSpread = false)
+    public BoundObjectPropertyNode(string key, BoundNode value, TsType type, bool isSpread = false, BoundNode? computedKey = null)
         : base(BoundNodeKind.ObjectProperty, type)
     {
         Key = key;
         Value = value;
         IsSpread = isSpread;
+        ComputedKey = computedKey;
     }
 }
 
@@ -358,12 +426,14 @@ public sealed class BoundIndexExpression : BoundNode
 {
     public BoundNode Object { get; }
     public BoundNode Index { get; }
+    public bool IsNullConditional { get; }
 
-    public BoundIndexExpression(BoundNode obj, BoundNode index, TsType type)
+    public BoundIndexExpression(BoundNode obj, BoundNode index, TsType type, bool isNullConditional = false)
         : base(BoundNodeKind.IndexExpression, type)
     {
         Object = obj;
         Index = index;
+        IsNullConditional = isNullConditional;
     }
 }
 
@@ -383,6 +453,17 @@ public sealed class BoundReturnStatement : BoundNode
     public BoundNode? Value { get; }
     public BoundReturnStatement(BoundNode? value)
         : base(BoundNodeKind.ReturnStatement, TsType.Void)
+    {
+        Value = value;
+    }
+}
+
+public sealed class BoundYieldStatement : BoundNode
+{
+    public BoundNode? Value { get; }
+
+    public BoundYieldStatement(BoundNode? value)
+        : base(BoundNodeKind.YieldStatement, TsType.Void)
     {
         Value = value;
     }
@@ -472,19 +553,81 @@ public sealed class BoundForStatement : BoundNode
     }
 }
 
+public sealed class BoundEnumerateKeysExpression : BoundNode
+{
+    public BoundNode Operand { get; }
+
+    public BoundEnumerateKeysExpression(BoundNode operand)
+        : base(BoundNodeKind.EnumerateKeysExpression, new TsArrayType(TsType.String))
+    {
+        Operand = operand;
+    }
+}
+
+public sealed class BoundArraySliceExpression : BoundNode
+{
+    public BoundNode Source { get; }
+    public int Start { get; }
+    public BoundArraySliceExpression(BoundNode source, int start)
+        : base(BoundNodeKind.ArraySliceExpression, new TsArrayType(TsType.Any))
+    {
+        Source = source;
+        Start = start;
+    }
+}
+
+public sealed class BoundObjectRestExpression : BoundNode
+{
+    public BoundNode Source { get; }
+    public IReadOnlyList<string> ExcludedKeys { get; }
+    public BoundObjectRestExpression(BoundNode source, IReadOnlyList<string> excludedKeys)
+        : base(BoundNodeKind.ObjectRestExpression, TsType.Any)
+    { Source = source; ExcludedKeys = excludedKeys; }
+}
+
 public sealed class BoundBreakStatement : BoundNode
 {
-    public BoundBreakStatement()
+    public string? Label { get; }
+
+    public BoundBreakStatement(string? label = null)
         : base(BoundNodeKind.BreakStatement, TsType.Void)
     {
+        Label = label;
     }
 }
 
 public sealed class BoundContinueStatement : BoundNode
 {
-    public BoundContinueStatement()
+    public string? Label { get; }
+
+    public BoundContinueStatement(string? label = null)
         : base(BoundNodeKind.ContinueStatement, TsType.Void)
     {
+        Label = label;
+    }
+}
+
+public sealed class BoundIterableValuesExpression : BoundNode
+{
+    public BoundNode Source { get; }
+
+    public BoundIterableValuesExpression(BoundNode source)
+        : base(BoundNodeKind.IterableValuesExpression, new TsArrayType(TsType.Any))
+    {
+        Source = source;
+    }
+}
+
+public sealed class BoundLabelledStatement : BoundNode
+{
+    public string Label { get; }
+    public BoundNode Statement { get; }
+
+    public BoundLabelledStatement(string label, BoundNode statement)
+        : base(BoundNodeKind.LabelledStatement, TsType.Void)
+    {
+        Label = label;
+        Statement = statement;
     }
 }
 

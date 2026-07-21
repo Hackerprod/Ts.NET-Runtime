@@ -98,6 +98,16 @@ public sealed class ExecutionLease : IDisposable
 
 public delegate TsValue? HostFunctionDelegate(string name, TsValue[] args);
 
+internal sealed class TsGeneratorYieldException : Exception
+{
+    public TsValue Value { get; }
+
+    public TsGeneratorYieldException(TsValue value)
+    {
+        Value = value;
+    }
+}
+
 public sealed class Interpreter
 {
     private readonly TsHeap _heap;
@@ -148,13 +158,10 @@ public sealed class Interpreter
 
             var func = module.Functions[funcIdx];
             _profile.RecordCall(module.Name, func.Name);
-            var frame = new CallFrame(func);
+            var frame = CreateCallFrame(func, null, args ?? Array.Empty<TsValue>(), ctx);
 
-            if (args != null)
-            {
-                for (int i = 0; i < Math.Min(args.Length, func.ParameterCount); i++)
-                    frame.Locals[i] = args[i];
-            }
+            if (func.IsGenerator)
+                return new TsGeneratorValue(module, frame);
 
             ctx.CallStack.Push(frame);
             try
@@ -255,6 +262,17 @@ public sealed class Interpreter
                     frame.Push(TsValue.Void);
                     break;
 
+                case Opcodes.LoadConstRegex: // LOAD_CONST_REGEX
+                {
+                    int idx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var encoded = strings[idx];
+                    int separator = encoded.IndexOf('\0');
+                    var pattern = separator >= 0 ? encoded[..separator] : encoded;
+                    var flags = separator >= 0 ? encoded[(separator + 1)..] : "";
+                    frame.Push(CreateRegex(pattern, flags));
+                    break;
+                }
+
                 case Opcodes.LoadConstU64: // LOAD_CONST_U64
                     frame.Push(TsValue.FromUInt64(ReadUInt64(bytecode, ref frame.InstructionPointer)));
                     break;
@@ -343,6 +361,64 @@ public sealed class Interpreter
                         foreach (var field in sourceObject.Value.Fields)
                             targetObject.Value.SetField(field.Key, field.Value);
                     }
+                    break;
+                }
+
+                case Opcodes.EnumerateKeys:
+                {
+                    var source = frame.Pop();
+                    var keys = ctx.Heap.AllocateArray();
+                    switch (source)
+                    {
+                        case TsObjectValue objectValue:
+                            foreach (var key in objectValue.Value.Fields.Keys)
+                                keys.Add(TsValue.FromString(key));
+                            break;
+                        case TsArrayValue arrayValue:
+                            for (int i = 0; i < arrayValue.Value.Count; i++)
+                                if (!arrayValue.Value.IsHole(i))
+                                    keys.Add(TsValue.FromString(i.ToString(CultureInfo.InvariantCulture)));
+                            break;
+                        case TsStringValue stringValue:
+                            for (int i = 0; i < stringValue.Value.Length; i++)
+                                keys.Add(TsValue.FromString(i.ToString(CultureInfo.InvariantCulture)));
+                            break;
+                        case TsNull or TsVoid:
+                            throw new InvalidOperationException("Cannot enumerate keys of null or undefined");
+                    }
+                    frame.Push(new TsArrayValue(keys));
+                    break;
+                }
+
+                case Opcodes.ArraySliceFrom:
+                {
+                    int start = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var source = frame.Pop();
+                    if (source is not TsArrayValue arrayValue)
+                        throw new InvalidOperationException("Array rest binding requires an array value");
+                    // Allocate only the observable suffix; do not retain a backing
+                    // array or expose host collections through the rest binding.
+                    int first = Math.Clamp(start, 0, arrayValue.Value.Count);
+                    var suffix = ctx.Heap.AllocateArray(arrayValue.Value.Count - first);
+                    for (int i = first; i < arrayValue.Value.Count; i++)
+                        suffix.Add(arrayValue.Value.Get(i));
+                    frame.Push(new TsArrayValue(suffix));
+                    break;
+                }
+
+                case Opcodes.ObjectRest:
+                {
+                    int excludedCount = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var excluded = new HashSet<string>(StringComparer.Ordinal);
+                    for (int i = 0; i < excludedCount; i++)
+                        excluded.Add(ToPropertyKey(frame.Pop()));
+                    var source = frame.Pop();
+                    if (source is not TsObjectValue objectValue)
+                        throw new InvalidOperationException("Object rest binding requires an object value");
+                    var copy = ctx.Heap.AllocateObject("Object");
+                    foreach (var field in objectValue.Value.Fields)
+                        if (!excluded.Contains(field.Key)) copy.SetField(field.Key, field.Value);
+                    frame.Push(new TsObjectValue(copy));
                     break;
                 }
 
@@ -1177,10 +1253,16 @@ public sealed class Interpreter
                     {
                         var calleeFunc = module.Functions[calleeIdx];
                         _profile.RecordCall(module.Name, calleeFunc.Name);
-                        var newFrame = new CallFrame(calleeFunc, frame);
-
+                        var directArgs = new TsValue[argCount];
                         for (int i = argCount - 1; i >= 0; i--)
-                            newFrame.Locals[i] = frame.Pop();
+                            directArgs[i] = frame.Pop();
+                        var newFrame = CreateCallFrame(calleeFunc, frame, directArgs, ctx);
+
+                        if (calleeFunc.IsGenerator)
+                        {
+                            frame.Push(new TsGeneratorValue(module, newFrame));
+                            break;
+                        }
 
                         ctx.CallStack.Push(newFrame);
                         TsValue? result;
@@ -1232,6 +1314,14 @@ public sealed class Interpreter
                     break;
                 }
 
+                case Opcodes.CallDynamicArray:
+                {
+                    var argumentArray = frame.Pop();
+                    var calleeValue = frame.Pop();
+                    frame.Push(InvokeCallable(calleeValue, ToArgumentArray(argumentArray), module, ctx, frame));
+                    break;
+                }
+
                 case Opcodes.CallHost: // CALL_HOST
                 {
                     int funcIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -1261,6 +1351,11 @@ public sealed class Interpreter
                     return null;
                 }
 
+                case Opcodes.Yield:
+                {
+                    throw new TsGeneratorYieldException(frame.Pop());
+                }
+
                 case Opcodes.CallVirt: // CALL_VIRT
                 {
                     int funcIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -1275,14 +1370,22 @@ public sealed class Interpreter
                     {
                         frame.Push(InvokeCallable(fieldCallable, fieldArgs, module, ctx, frame));
                     }
+                    else if (TryInvokeGeneratorMethod(resolvedName, callArgs, module, ctx, frame, out var generatorResult)
+                        || (resolvedName == calleeName && TryInvokeGeneratorMethod(calleeName, callArgs, module, ctx, frame, out generatorResult)))
+                    {
+                        frame.Push(generatorResult);
+                    }
                     else if (TryResolveCachedCallee(frame.Function, instructionOffset, resolvedName, module, out int calleeIdx)
                         || (resolvedName == calleeName && TryResolveCachedCallee(frame.Function, instructionOffset, calleeName, module, out calleeIdx)))
                     {
                         var calleeFunc = module.Functions[calleeIdx];
                         _profile.RecordCall(module.Name, calleeFunc.Name);
-                        var newFrame = new CallFrame(calleeFunc, frame);
-                        for (int i = 0; i < argCount; i++)
-                            newFrame.Locals[i] = callArgs[i];
+                        var newFrame = CreateCallFrame(calleeFunc, frame, callArgs, ctx);
+                        if (calleeFunc.IsGenerator)
+                        {
+                            frame.Push(new TsGeneratorValue(module, newFrame));
+                            break;
+                        }
                         ctx.CallStack.Push(newFrame);
                         TsValue? result;
                         try
@@ -1391,11 +1494,11 @@ public sealed class Interpreter
                     if (module.FunctionIndex.TryGetValue(ctorName, out int ctorIdx))
                     {
                         var ctorFunc = module.Functions[ctorIdx];
-                        var ctorFrame = new CallFrame(ctorFunc, frame);
-
-                        ctorFrame.Locals[0] = TsValue.FromObject(obj);
+                        var ctorArgs = new TsValue[argCount + 1];
+                        ctorArgs[0] = TsValue.FromObject(obj);
                         for (int i = argCount; i >= 1; i--)
-                            ctorFrame.Locals[i] = frame.Pop();
+                            ctorArgs[i] = frame.Pop();
+                        var ctorFrame = CreateCallFrame(ctorFunc, frame, ctorArgs, ctx);
 
                         ctx.CallStack.Push(ctorFrame);
                         try
@@ -1426,6 +1529,44 @@ public sealed class Interpreter
                     break;
                 }
 
+                case Opcodes.ArrayAppend:
+                {
+                    var value = frame.Pop();
+                    var target = frame.Pop();
+                    if (target is not TsArrayValue arrayValue)
+                        throw new InvalidOperationException("Array append requires an array target");
+                    arrayValue.Value.Add(value);
+                    ctx.CheckMemory();
+                    break;
+                }
+
+                case Opcodes.ArrayAppendSpread:
+                {
+                    var source = frame.Pop();
+                    var target = frame.Pop();
+                    if (target is not TsArrayValue arrayValue)
+                        throw new InvalidOperationException("Array spread requires an array target");
+                    AppendSpread(arrayValue.Value, source);
+                    ctx.CheckMemory();
+                    break;
+                }
+
+                case Opcodes.IterableValues:
+                {
+                    var source = frame.Pop();
+                    frame.Push(new TsArrayValue(MaterializeIterableValues(source)));
+                    break;
+                }
+
+                case Opcodes.NewGenerator:
+                {
+                    var source = frame.Pop();
+                    if (source is not TsArrayValue arrayValue)
+                        throw new InvalidOperationException("Generator creation requires an array of yielded values");
+                    frame.Push(new TsGeneratorValue(arrayValue.Value));
+                    break;
+                }
+
                 case Opcodes.LoadElement: // LOAD_ELEMENT
                 {
                     var index = frame.Pop();
@@ -1446,6 +1587,8 @@ public sealed class Interpreter
                             ? TsValue.FromString(strTarget.Value[chIdx].ToString())
                             : TsValue.Null);
                     }
+                    else if (target is TsObjectValue objectTarget)
+                        frame.Push(objectTarget.Value.GetField(ToPropertyKey(index)));
                     else if (target is TsNull)
                         throw new InvalidOperationException("Cannot index a null value");
                     else
@@ -1462,6 +1605,8 @@ public sealed class Interpreter
                         arrVal.Value.Set(AsInt32(index), value);
                     else if (target is TsUint8ArrayValue bytesVal)
                         bytesVal.Set(AsInt32(index), value);
+                    else if (target is TsObjectValue objectTarget)
+                        objectTarget.Value.SetField(ToPropertyKey(index), value);
                     else if (target is TsNull)
                         throw new InvalidOperationException("Cannot index a null value");
                     break;
@@ -1867,27 +2012,14 @@ public sealed class Interpreter
             // `{ length: n }` shapes.
             var source = args.Length > 0 ? args[0] : TsValue.Null;
             var mapFn = args.Length > 1 ? args[1] : null;
+            var values = MaterializeIterableValues(source);
             var result = new TsArray();
             void AddMapped(TsValue value, int index)
             {
                 result.Add(mapFn != null ? Invoke(mapFn, value, TsValue.FromInt32(index)) : value);
             }
-            switch (source)
-            {
-                case TsArrayValue av:
-                    for (int i = 0; i < av.Value.Count; i++) AddMapped(av.Value.Get(i), i);
-                    break;
-                case TsUint8ArrayValue bv:
-                    for (int i = 0; i < bv.Length; i++) AddMapped(TsValue.FromFloat64(bv.Get(i)), i);
-                    break;
-                case TsStringValue sv:
-                    for (int i = 0; i < sv.Value.Length; i++) AddMapped(TsValue.FromString(sv.Value[i].ToString()), i);
-                    break;
-                case TsObjectValue ov when ov.Value.GetField("length") is not TsNull:
-                    int length = AsInt32(ov.Value.GetField("length"));
-                    for (int i = 0; i < length; i++) AddMapped(TsValue.Null, i);
-                    break;
-            }
+            for (int i = 0; i < values.Count; i++)
+                AddMapped(values.Get(i), i);
             return new TsArrayValue(result);
         }
 
@@ -2181,6 +2313,48 @@ public sealed class Interpreter
         _ => value.ToString() ?? ""
     };
 
+    private static CallFrame CreateCallFrame(BytecodeFunction function, CallFrame? caller,
+        IReadOnlyList<TsValue> args, ExecutionContext ctx, IReadOnlyList<TsValue>? captured = null)
+    {
+        var frame = new CallFrame(function, caller);
+        int restIndex = function.RestParameterIndex;
+
+        if (restIndex >= 0)
+        {
+            int fixedCount = Math.Min(restIndex, function.ParameterCount);
+            for (int i = 0; i < fixedCount && i < args.Count && i < frame.Locals.Length; i++)
+                frame.Locals[i] = args[i];
+
+            if (restIndex < frame.Locals.Length)
+            {
+                int restCount = Math.Max(0, args.Count - restIndex);
+                var rest = ctx.Heap.AllocateArray(restCount);
+                for (int i = restIndex; i < args.Count; i++)
+                    rest.Add(args[i]);
+                frame.Locals[restIndex] = new TsArrayValue(rest);
+            }
+        }
+        else
+        {
+            int count = Math.Min(args.Count, Math.Min(function.ParameterCount, frame.Locals.Length));
+            for (int i = 0; i < count; i++)
+                frame.Locals[i] = args[i];
+        }
+
+        if (captured != null)
+        {
+            // Closure environment boxes install right after the declared parameters.
+            for (int j = 0; j < captured.Count; j++)
+            {
+                int slot = function.ParameterCount + j;
+                if (slot < frame.Locals.Length)
+                    frame.Locals[slot] = captured[j];
+            }
+        }
+
+        return frame;
+    }
+
     // Invokes any callable value (module function, closure, builtin, host
     // function). Shared by CALL_DYNAMIC and the higher-order array intrinsics.
     internal TsValue InvokeCallable(TsValue calleeValue, TsValue[] args, BytecodeModule module,
@@ -2196,16 +2370,10 @@ public sealed class Interpreter
         {
             var calleeFunc = module.Functions[fnIdx];
             _profile.RecordCall(module.Name, calleeFunc.Name);
-            var newFrame = new CallFrame(calleeFunc, caller);
-            for (int i = 0; i < args.Length && i < newFrame.Locals.Length; i++)
-                newFrame.Locals[i] = args[i];
-            // Closure environment boxes install right after the parameters.
-            for (int j = 0; j < fnValue.Captured.Length; j++)
-            {
-                int slot = calleeFunc.ParameterCount + j;
-                if (slot < newFrame.Locals.Length)
-                    newFrame.Locals[slot] = fnValue.Captured[j];
-            }
+            var newFrame = CreateCallFrame(calleeFunc, caller, args, ctx, fnValue.Captured);
+            if (calleeFunc.IsGenerator)
+                return new TsGeneratorValue(module, newFrame);
+
             ctx.CallStack.Push(newFrame);
             try
             {
@@ -2223,6 +2391,101 @@ public sealed class Interpreter
         throw new InvalidOperationException($"Function '{fnValue.FunctionName}' not found");
     }
 
+    private bool TryInvokeGeneratorMethod(string resolvedName, TsValue[] args, BytecodeModule module,
+        ExecutionContext ctx, CallFrame caller, out TsValue result)
+    {
+        result = TsValue.Null;
+        if (!resolvedName.StartsWith("Generator::", StringComparison.Ordinal))
+            return false;
+        if (args.Length < 1 || args[0] is not TsGeneratorValue generator)
+            throw new InvalidOperationException($"{resolvedName} requires a generator receiver");
+
+        result = resolvedName switch
+        {
+            "Generator::next" => ResumeGenerator(generator, module, ctx, caller, null, isThrow: false),
+            "Generator::return" => CompleteGenerator(generator, args.Length > 1 ? args[1] : TsValue.Void),
+            "Generator::throw" => ResumeGenerator(generator, module, ctx, caller,
+                args.Length > 1 ? args[1] : TsValue.Void, isThrow: true),
+            _ => throw new InvalidOperationException($"Generator method '{resolvedName}' is not implemented")
+        };
+        return true;
+    }
+
+    private TsValue ResumeGenerator(TsGeneratorValue generator, BytecodeModule module, ExecutionContext ctx,
+        CallFrame caller, TsValue? abruptValue, bool isThrow)
+    {
+        if (generator.TryNextLegacy(out var legacyValue, out var legacyDone))
+            return CreateIteratorResult(legacyValue, legacyDone);
+        if (generator.Done)
+            return isThrow
+                ? throw new TsThrownException(abruptValue ?? TsValue.Void)
+                : CreateIteratorResult(TsValue.Void, done: true);
+        if (generator.Running)
+            throw new InvalidOperationException("Generator is already running");
+        if (generator.Frame == null || generator.Module == null)
+            throw new InvalidOperationException("Generator has no suspended frame");
+
+        var resumeModule = generator.Module;
+        var frame = generator.Frame;
+        frame.Caller = caller;
+
+        if (isThrow && !InjectGeneratorThrow(generator, abruptValue ?? TsValue.Void))
+            throw new TsThrownException(abruptValue ?? TsValue.Void);
+
+        generator.Running = true;
+        ctx.CallStack.Push(frame);
+        try
+        {
+            var returned = ExecuteFrame(frame, resumeModule, ctx);
+            generator.Done = true;
+            return CreateIteratorResult(FinishFunctionResult(frame.Function, returned), done: true);
+        }
+        catch (TsGeneratorYieldException yielded)
+        {
+            return CreateIteratorResult(yielded.Value, done: false);
+        }
+        catch (TsThrownException)
+        {
+            generator.Done = true;
+            throw;
+        }
+        finally
+        {
+            ctx.CallStack.Pop();
+            generator.Running = false;
+        }
+    }
+
+    private static bool InjectGeneratorThrow(TsGeneratorValue generator, TsValue value)
+    {
+        var frame = generator.Frame;
+        if (frame?.TryHandlers is not { Count: > 0 })
+        {
+            generator.Done = true;
+            return false;
+        }
+
+        var handler = frame.TryHandlers.Pop();
+        frame.StackPointer = handler.StackDepth;
+        frame.Push(value);
+        frame.InstructionPointer = handler.HandlerOffset;
+        return true;
+    }
+
+    private static TsValue CompleteGenerator(TsGeneratorValue generator, TsValue value)
+    {
+        generator.Done = true;
+        return CreateIteratorResult(value, done: true);
+    }
+
+    private static TsValue CreateIteratorResult(TsValue value, bool done)
+    {
+        var result = new TsObject("Object");
+        result.SetField("value", value);
+        result.SetField("done", new TsBoolValue(done));
+        return new TsObjectValue(result);
+    }
+
     private static string ResolveVirtualCalleeName(string calleeName, TsValue[] args)
     {
         if (calleeName.Contains("::", StringComparison.Ordinal) || args.Length == 0)
@@ -2235,6 +2498,8 @@ public sealed class Interpreter
             TsMapValue => $"Map::{calleeName}",
             TsSetValue => $"Set::{calleeName}",
             TsUint8ArrayValue => $"Uint8Array::{calleeName}",
+            TsRegexValue => $"RegExp::{calleeName}",
+            TsGeneratorValue => $"Generator::{calleeName}",
             TsStringValue => $"String::{calleeName}",
             _ => calleeName
         };
@@ -2248,6 +2513,20 @@ public sealed class Interpreter
         return DescribeValue(args[0]);
     }
 
+    private static string ToPropertyKey(TsValue value) => value switch
+    {
+        TsStringValue text => text.Value,
+        TsInt32Value number => number.Value.ToString(CultureInfo.InvariantCulture),
+        TsInt64Value number => number.Value.ToString(CultureInfo.InvariantCulture),
+        TsUInt64Value number => number.Value.ToString(CultureInfo.InvariantCulture),
+        TsFloat32Value number => number.Value.ToString(CultureInfo.InvariantCulture),
+        TsFloat64Value number => number.Value.ToString(CultureInfo.InvariantCulture),
+        TsBoolValue boolean => boolean.Value ? "true" : "false",
+        TsNull => "null",
+        TsVoid => "undefined",
+        _ => value.ToString() ?? string.Empty
+    };
+
     private static string DescribeValue(TsValue value)
     {
         return value switch
@@ -2258,6 +2537,8 @@ public sealed class Interpreter
             TsSetValue => "Set",
             TsUint8ArrayValue => "Uint8Array",
             TsFunctionValue fn => $"function:{fn.FunctionName}",
+            TsRegexValue => "RegExp",
+            TsGeneratorValue => "Generator",
             TsStringValue => "string",
             TsBoolValue => "boolean",
             TsInt32Value => "number:int32",
@@ -2268,6 +2549,96 @@ public sealed class Interpreter
             TsVoid => "void",
             _ => value.GetType().Name
         };
+    }
+
+    private static TsRegexValue CreateRegex(string pattern, string flags)
+    {
+        const int maxPatternLength = 1024;
+        const int maxFlagLength = 8;
+        if (pattern.Length > maxPatternLength)
+            throw new InvalidOperationException("Regular expression pattern exceeds the runtime limit");
+        if (flags.Length > maxFlagLength)
+            throw new InvalidOperationException("Regular expression flags exceed the runtime limit");
+
+        var seen = new HashSet<char>();
+        foreach (var flag in flags)
+        {
+            if (flag is not ('g' or 'i' or 'm' or 's' or 'u' or 'y'))
+                throw new InvalidOperationException($"Unsupported regular expression flag '{flag}'");
+            if (!seen.Add(flag))
+                throw new InvalidOperationException($"Duplicate regular expression flag '{flag}'");
+        }
+
+        try
+        {
+            return new TsRegexValue(pattern, flags);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidOperationException($"Invalid regular expression literal: {ex.Message}", ex);
+        }
+    }
+
+    private static void AppendSpread(TsArray target, TsValue source)
+    {
+        var values = MaterializeIterableValues(source);
+        for (int i = 0; i < values.Count; i++)
+            target.Add(values.Get(i));
+    }
+
+    private static TsArray MaterializeIterableValues(TsValue source)
+    {
+        var result = new TsArray();
+        switch (source)
+        {
+            case TsArrayValue arrayValue:
+                for (int i = 0; i < arrayValue.Value.Count; i++)
+                    result.Add(arrayValue.Value.Get(i));
+                return result;
+            case TsStringValue stringValue:
+                for (int i = 0; i < stringValue.Value.Length; i++)
+                    result.Add(TsValue.FromString(stringValue.Value[i].ToString()));
+                return result;
+            case TsUint8ArrayValue bytesValue:
+                for (int i = 0; i < bytesValue.Length; i++)
+                    result.Add(TsValue.FromInt32(bytesValue.Get(i)));
+                return result;
+            case TsSetValue setValue:
+                foreach (var value in setValue.Value.Entries)
+                    result.Add(value);
+                return result;
+            case TsMapValue mapValue:
+                foreach (var entry in mapValue.Value.Entries)
+                {
+                    var pair = new TsArray(2);
+                    pair.Add(entry.Key);
+                    pair.Add(entry.Value);
+                    result.Add(new TsArrayValue(pair));
+                }
+                return result;
+            case TsObjectValue objectValue when objectValue.Value.GetField("length") is not TsNull and not TsVoid:
+            {
+                int length = AsInt32(objectValue.Value.GetField("length"));
+                for (int i = 0; i < length; i++)
+                    result.Add(objectValue.Value.GetField(i.ToString(CultureInfo.InvariantCulture)));
+                return result;
+            }
+            case TsNull or TsVoid:
+                throw new InvalidOperationException("Cannot spread null or undefined");
+            default:
+                throw new InvalidOperationException($"Value '{DescribeValue(source)}' is not iterable");
+        }
+    }
+
+    private static TsValue[] ToArgumentArray(TsValue argumentArray)
+    {
+        if (argumentArray is not TsArrayValue arrayValue)
+            throw new InvalidOperationException("Spread call requires an argument array");
+
+        var args = new TsValue[arrayValue.Value.Count];
+        for (int i = 0; i < args.Length; i++)
+            args[i] = arrayValue.Value.Get(i);
+        return args;
     }
 
     private static bool TryGetVirtualFieldCallable(

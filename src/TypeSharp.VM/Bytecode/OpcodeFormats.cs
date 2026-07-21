@@ -55,6 +55,7 @@ public static class Opcodes
     public const byte LoadConstDecimal         = 0x09;
     public const byte LoadConstBigInt          = 0x0A;
     public const byte LoadConstVoid            = 0x0B;
+    public const byte LoadConstRegex           = 0x0C;
 
     public const byte LoadLocal                = 0x10;
     public const byte StoreLocal               = 0x11;
@@ -196,6 +197,15 @@ public static class Opcodes
     public const byte CmpStrictNeAny           = 0xA7;
     public const byte DeleteField              = 0xA8;
     public const byte DeleteIndex              = 0xA9;
+    public const byte EnumerateKeys            = 0xAA;
+    public const byte ArraySliceFrom           = 0xAB;
+    public const byte ObjectRest               = 0xAC;
+    public const byte ArrayAppend              = 0xAD;
+    public const byte ArrayAppendSpread        = 0xAE;
+    public const byte CallDynamicArray         = 0xAF;
+    public const byte NewGenerator             = 0xBC;
+    public const byte IterableValues           = 0xBD;
+    public const byte Yield                    = 0xBE;
 
     public const byte ConvI32I64               = 0x90;
     public const byte ConvI64I32               = 0x91;
@@ -260,6 +270,7 @@ public static class OpcodeFormats
         Reg(0x09, OperandKind.Int32);  // LOAD_CONST_DECIMAL (index)
         Reg(0x0A, OperandKind.Int32);  // LOAD_CONST_BIGINT (string index)
         Reg(0x0B);                     // LOAD_CONST_VOID / undefined
+        Reg(0x0C, OperandKind.Int32);  // LOAD_CONST_REGEX (encoded pattern/flags index)
 
         // ── Variables ──
         Reg(0x10, OperandKind.Int32);  // LOAD_LOCAL
@@ -368,6 +379,12 @@ public static class OpcodeFormats
         Reg(0xA7);                       // CMP_STRICT_NE_ANY
         Reg(0xA8, OperandKind.Int32);    // DELETE_FIELD (string index)
         Reg(0xA9);                       // DELETE_INDEX
+        Reg(0xAA);                       // ENUMERATE_KEYS
+        Reg(0xAB, OperandKind.Int32);    // ARRAY_SLICE_FROM
+        Reg(0xAC, OperandKind.Int32);    // OBJECT_REST
+        Reg(0xAD);                       // ARRAY_APPEND
+        Reg(0xAE);                       // ARRAY_APPEND_SPREAD
+        Reg(0xAF);                       // CALL_DYNAMIC_ARRAY
 
         // ── Convert ──
         Reg(0x90); Reg(0x91); Reg(0x92); Reg(0x93);
@@ -384,6 +401,9 @@ public static class OpcodeFormats
 
         // ── Decimal comparison ──
         Reg(0xB6); Reg(0xB7); Reg(0xB8); Reg(0xB9); Reg(0xBA); Reg(0xBB);
+        Reg(0xBC);                       // NEW_GENERATOR
+        Reg(0xBD);                       // ITERABLE_VALUES
+        Reg(0xBE);                       // YIELD
 
         return t;
     }

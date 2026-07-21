@@ -3,7 +3,7 @@ namespace TypeSharp.VM.Bytecode;
 public static class BytecodeSerializer
 {
     private const uint Magic = 0x43425354; // TSBC
-    private const int Version = 1;
+    private const int Version = 2;
     private const int MaxCollectionLength = 1_000_000;
 
     public static void Serialize(Stream destination, BytecodeModule module)
@@ -46,6 +46,8 @@ public static class BytecodeSerializer
         writer.Write(function.ParameterCount);
         writer.Write(function.LocalCount);
         writer.Write(function.IsAsync);
+        writer.Write(function.IsGenerator);
+        writer.Write(function.RestParameterIndex);
         WriteArray(writer, function.Instructions, writer.Write);
         WriteArray(writer, function.StringConstants, writer.Write);
         WriteArray(writer, function.IntegerConstants, writer.Write);
@@ -64,6 +66,8 @@ public static class BytecodeSerializer
         int parameterCount = reader.ReadInt32();
         int localCount = reader.ReadInt32();
         bool isAsync = reader.ReadBoolean();
+        bool isGenerator = reader.ReadBoolean();
+        int restParameterIndex = reader.ReadInt32();
         var instructions = ReadArray(reader, "instruction", reader.ReadByte);
         var strings = ReadArray(reader, "string", reader.ReadString);
         var integers = ReadArray(reader, "integer", reader.ReadInt64);
@@ -74,7 +78,7 @@ public static class BytecodeSerializer
             decimals[i] = new decimal(new[] { reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32() });
 
         return new BytecodeFunction(name, instructions, parameterCount, localCount, isAsync,
-            strings, integers, doubles, decimals, operandStackCapacity: 0);
+            strings, integers, doubles, decimals, operandStackCapacity: 0, isGenerator, restParameterIndex);
     }
 
     private static void WriteArray<T>(BinaryWriter writer, T[] values, Action<T> write)

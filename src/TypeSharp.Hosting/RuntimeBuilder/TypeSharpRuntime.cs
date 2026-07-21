@@ -434,7 +434,9 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             function.IntegerConstants,
             function.DoubleConstants,
             function.DecimalConstants,
-            function.OperandStackCapacity);
+            function.OperandStackCapacity,
+            function.IsGenerator,
+            function.RestParameterIndex);
     }
 
     private static string ToLinkSafeName(string value)

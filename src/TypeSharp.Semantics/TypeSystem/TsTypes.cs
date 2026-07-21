@@ -689,6 +689,7 @@ public sealed class TsParameter
     public TsType Type { get; }
     public bool HasDefault { get; set; }
     public object? DefaultValue { get; set; }
+    public bool IsRest { get; set; }
 
     public TsParameter(string name, TsType type)
     {

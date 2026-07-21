@@ -66,6 +66,7 @@ public sealed class ParameterSymbol : Symbol
     public BoundNode? DefaultExpression { get; set; }
     public bool IsTypeInferred { get; set; }
     public bool IsCaptured { get; set; }
+    public bool IsRest { get; set; }
 
     public ParameterSymbol(string name, TypeSystem.TsType type, SourceRange location)
         : base(name, type, location) { }
@@ -115,6 +116,7 @@ public sealed class FunctionSymbol : Symbol
     public List<TypeSystem.TsTypeParameter> TypeParameters { get; } = new();
     public List<ParameterSymbol> Parameters { get; } = new();
     public bool IsAsync { get; set; }
+    public bool IsGenerator { get; set; }
     public bool IsExported { get; set; }
     public bool HasDynamicSignature { get; set; }
 

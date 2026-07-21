@@ -98,6 +98,12 @@ public sealed class Parser
     {
         var funcKw = Advance();
         bool isAsync = modifiers.Any(m => m.Token.Kind == TokenKind.AsyncKeyword);
+        bool isGenerator = false;
+        if (Check(TokenKind.Star))
+        {
+            Advance();
+            isGenerator = true;
+        }
 
         var name = ExpectIdentifier();
         var genericParams = ParseGenericParameters();
@@ -118,7 +124,7 @@ public sealed class Parser
         }
 
         var funcDecl = new FunctionDeclarationSyntax(name, parameters, returnType, body, isAsync,
-            new SourceRange(funcKw.Location, body.Range.End));
+            new SourceRange(funcKw.Location, body.Range.End), isGenerator);
         funcDecl.GenericParameters.AddRange(genericParams);
         return funcDecl;
     }
@@ -383,10 +389,16 @@ public sealed class Parser
         {
             int loopStart = _position;
             bool isPropertyParameter = false;
+            bool isRest = false;
             while (Check(TokenKind.PrivateKeyword) || Check(TokenKind.PublicKeyword) ||
                    Check(TokenKind.ProtectedKeyword) || Check(TokenKind.ReadonlyKeyword))
             {
                 isPropertyParameter = true;
+                Advance();
+            }
+            if (Check(TokenKind.DotDotDot))
+            {
+                isRest = true;
                 Advance();
             }
             var name = ExpectMemberName();
@@ -406,14 +418,20 @@ public sealed class Parser
             ExpressionSyntax? defaultVal = null;
             if (Check(TokenKind.Equals))
             {
+                if (isRest)
+                    Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                        "A rest parameter cannot have a default value", Peek().Location));
                 Advance();
                 defaultVal = ParseExpression();
             }
             var paramRange = new SourceRange(Peek(-1).Location, Peek().Location);
-            parameters.Add(new ParameterSyntax(name, type, defaultVal, paramRange, typeWasInferred)
+            parameters.Add(new ParameterSyntax(name, type, defaultVal, paramRange, typeWasInferred, isRest)
             {
                 IsPropertyParameter = isPropertyParameter
             });
+            if (isRest && !Check(TokenKind.CloseParen))
+                Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                    "A rest parameter must be the last parameter", Peek().Location));
             if (Check(TokenKind.Comma)) Advance();
             // Malformed input must not stall the cursor; skip the bad token.
             if (_position == loopStart) Advance();
@@ -753,11 +771,21 @@ public sealed class Parser
     // Statement parsing
     public SyntaxNode ParseStatement()
     {
+        if (Check(TokenKind.Identifier) && Peek(1).Kind == TokenKind.Colon)
+        {
+            var label = Advance();
+            Advance(); // colon
+            var statement = ToStatement(ParseStatement());
+            return new LabelledStatementSyntax(label.Text, statement,
+                new SourceRange(label.Location, statement.Range.End));
+        }
+
         return Peek().Kind switch
         {
             TokenKind.OpenBrace => ParseBlock(),
             TokenKind.FuncKeyword => ParseFunctionDeclaration(new List<SyntaxToken>()),
             TokenKind.ReturnKeyword => ParseReturnStatement(),
+            TokenKind.YieldKeyword => ParseYieldStatement(),
             TokenKind.IfKeyword => ParseIfStatement(),
             TokenKind.SwitchKeyword => ParseSwitchStatement(),
             TokenKind.WhileKeyword => ParseWhileStatement(),
@@ -803,6 +831,19 @@ public sealed class Parser
         }
         if (Check(TokenKind.Semicolon)) Advance();
         return new ReturnStatementSyntax(value, new SourceRange(returnKw.Location, Peek(-1).Location));
+    }
+
+    private YieldStatementSyntax ParseYieldStatement()
+    {
+        var yieldKw = Advance();
+        ExpressionSyntax? value = null;
+        if (!Check(TokenKind.Semicolon) && !Check(TokenKind.CloseBrace) && !IsAtEnd() &&
+            Peek().Location.Line == yieldKw.Location.Line)
+        {
+            value = ParseExpression();
+        }
+        if (Check(TokenKind.Semicolon)) Advance();
+        return new YieldStatementSyntax(value, new SourceRange(yieldKw.Location, Peek(-1).Location));
     }
 
     private IfStatementSyntax ParseIfStatement()
@@ -908,19 +949,23 @@ public sealed class Parser
         var forKw = Advance();
         Expect(TokenKind.OpenParen);
 
-        // for (const x of iterable) { ... }
+        // for (const x of iterable) { ... } / for (const key in value) { ... }
         if ((Check(TokenKind.LetKeyword) || Check(TokenKind.ConstKeyword)) &&
-            IsMemberNameToken(Peek(1).Kind) && Peek(2).Kind == TokenKind.OfKeyword)
+            IsMemberNameToken(Peek(1).Kind) &&
+            (Peek(2).Kind == TokenKind.OfKeyword || Peek(2).Kind == TokenKind.InKeyword))
         {
             bool isConst = Check(TokenKind.ConstKeyword);
             Advance();
             var variable = Advance().Text;
-            Advance(); // of
-            var iterable = ParseExpression();
+            var kind = Advance().Kind;
+            var enumerable = ParseExpression();
             Expect(TokenKind.CloseParen);
-            var ofBody = ToStatement(ParseStatement());
-            return new ForOfStatementSyntax(variable, isConst, iterable, ofBody,
-                new SourceRange(forKw.Location, Peek(-1).Location));
+            var loopBody = ToStatement(ParseStatement());
+            return kind == TokenKind.OfKeyword
+                ? new ForOfStatementSyntax(variable, isConst, enumerable, loopBody,
+                    new SourceRange(forKw.Location, Peek(-1).Location))
+                : new ForInStatementSyntax(variable, isConst, enumerable, loopBody,
+                    new SourceRange(forKw.Location, Peek(-1).Location));
         }
 
         SyntaxNode? initializer = null;
@@ -955,15 +1000,21 @@ public sealed class Parser
     private BreakStatementSyntax ParseBreakStatement()
     {
         var keyword = Advance();
+        string? label = null;
+        if (Check(TokenKind.Identifier) && Peek().Location.Line == keyword.Location.Line)
+            label = Advance().Text;
         if (Check(TokenKind.Semicolon)) Advance();
-        return new BreakStatementSyntax(new SourceRange(keyword.Location, Peek(-1).Location));
+        return new BreakStatementSyntax(new SourceRange(keyword.Location, Peek(-1).Location), label);
     }
 
     private ContinueStatementSyntax ParseContinueStatement()
     {
         var keyword = Advance();
+        string? label = null;
+        if (Check(TokenKind.Identifier) && Peek().Location.Line == keyword.Location.Line)
+            label = Advance().Text;
         if (Check(TokenKind.Semicolon)) Advance();
-        return new ContinueStatementSyntax(new SourceRange(keyword.Location, Peek(-1).Location));
+        return new ContinueStatementSyntax(new SourceRange(keyword.Location, Peek(-1).Location), label);
     }
 
     private ThrowStatementSyntax ParseThrowStatement()
@@ -1014,6 +1065,9 @@ public sealed class Parser
     private SyntaxNode ParseVariableStatement(bool isConst)
     {
         var letKw = Advance();
+        if (Check(TokenKind.OpenBracket) || Check(TokenKind.OpenBrace))
+            return ParseDestructuringVariableStatement(isConst, letKw);
+
         var declarations = new List<VariableDeclarationSyntax>();
 
         while (true)
@@ -1049,6 +1103,80 @@ public sealed class Parser
             return declarations[0];
         return new VariableDeclarationListSyntax(declarations,
             new SourceRange(letKw.Location, Peek(-1).Location));
+    }
+
+    private SyntaxNode ParseDestructuringVariableStatement(bool isConst, Token keyword)
+    {
+        bool isArray = Check(TokenKind.OpenBracket);
+        var pattern = isArray ? ParseArrayLiteral() : ParseObjectLiteral();
+        ValidateBindingPattern(pattern);
+        ExpressionSyntax? initializer = null;
+        if (Check(TokenKind.Equals))
+        {
+            Advance();
+            initializer = ParseExpression();
+        }
+        else
+        {
+            Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error, "A destructuring declaration requires an initializer", pattern.Range.Start));
+        }
+        if (Check(TokenKind.Semicolon)) Advance();
+        return new DestructuringVariableDeclarationSyntax(isArray, new List<BindingElementSyntax>(), initializer, isConst,
+            new SourceRange(keyword.Location, Peek(-1).Location), pattern);
+    }
+
+    private void ValidateBindingPattern(ExpressionSyntax pattern)
+    {
+        switch (pattern)
+        {
+            case ArrayLiteralExpressionSyntax array:
+                for (int i = 0; i < array.Elements.Count; i++)
+                {
+                    var element = array.Elements[i];
+                    if (element is SpreadExpressionSyntax spread)
+                    {
+                        if (i != array.Elements.Count - 1)
+                            Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                                "A rest binding must be the last element in a binding pattern", spread.Range.Start));
+                        if (spread.Expression is AssignmentExpressionSyntax)
+                            Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                                "A rest binding cannot have an initializer", spread.Range.Start));
+                    }
+                    else
+                    {
+                        ValidateBindingPatternElement(element);
+                    }
+                }
+                break;
+
+            case ObjectLiteralExpressionSyntax obj:
+                for (int i = 0; i < obj.Properties.Count; i++)
+                {
+                    var property = obj.Properties[i];
+                    if (property is ObjectSpreadPropertySyntax spread)
+                    {
+                        if (i != obj.Properties.Count - 1)
+                            Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                                "A rest binding must be the last element in a binding pattern", spread.Range.Start));
+                    }
+                    else
+                    {
+                        ValidateBindingPatternElement(property.Value);
+                    }
+                }
+                break;
+        }
+    }
+
+    private void ValidateBindingPatternElement(ExpressionSyntax element)
+    {
+        if (element is AssignmentExpressionSyntax { OperatorToken.Kind: TokenKind.Equals } assignment)
+        {
+            ValidateBindingPatternElement(assignment.Target);
+            return;
+        }
+
+        ValidateBindingPattern(element);
     }
 
     private ExpressionStatementSyntax ParseExpressionStatement()
@@ -1345,9 +1473,28 @@ public sealed class Parser
             else if (Check(TokenKind.QuestionDot))
             {
                 Advance();
-                var member = ExpectMemberName();
-                expr = new MemberAccessExpressionSyntax(expr, member, true,
-                    new SourceRange(expr.Range.Start, Peek(-1).Location));
+                if (Check(TokenKind.OpenParen))
+                {
+                    Advance();
+                    var args = ParseArguments();
+                    Expect(TokenKind.CloseParen);
+                    expr = new CallExpressionSyntax(expr, new List<TypeSyntax>(), args,
+                        new SourceRange(expr.Range.Start, Peek(-1).Location), isNullConditional: true);
+                }
+                else if (Check(TokenKind.OpenBracket))
+                {
+                    Advance();
+                    var index = ParseExpression();
+                    Expect(TokenKind.CloseBracket);
+                    expr = new IndexExpressionSyntax(expr, index,
+                        new SourceRange(expr.Range.Start, Peek(-1).Location), isNullConditional: true);
+                }
+                else
+                {
+                    var member = ExpectMemberName();
+                    expr = new MemberAccessExpressionSyntax(expr, member, true,
+                        new SourceRange(expr.Range.Start, Peek(-1).Location));
+                }
             }
             else if (Check(TokenKind.OpenBracket))
             {
@@ -1443,6 +1590,21 @@ public sealed class Parser
             return ParseTemplateLiteral(Advance());
         }
 
+        if (Check(TokenKind.Slash))
+        {
+            var regex = TryParseRegexLiteral();
+            if (regex != null)
+                return regex;
+        }
+
+        if (Check(TokenKind.DotDotDot))
+        {
+            var spread = Advance();
+            var expression = ParseAssignment();
+            return new SpreadExpressionSyntax(expression,
+                new SourceRange(spread.Location, expression.Range.End));
+        }
+
         if (Check(TokenKind.ThisKeyword))
         {
             var token = Advance();
@@ -1453,6 +1615,32 @@ public sealed class Parser
         {
             var token = Advance();
             return new SuperExpressionSyntax(new SourceRange(token.Location, Peek(-1).Location));
+        }
+
+        if (Check(TokenKind.FuncKeyword))
+        {
+            // Function expressions share the lambda semantic node. A supplied
+            // name is parsed for source compatibility; closure-local recursion
+            // is introduced by the binder when it lifts the expression.
+            var functionKeyword = Advance();
+            bool isGenerator = false;
+            if (Check(TokenKind.Star))
+            {
+                Advance();
+                isGenerator = true;
+            }
+            if (IsMemberNameToken(Peek().Kind) && Peek(1).Kind == TokenKind.OpenParen)
+                Advance();
+            var parameters = ParseParameterList();
+            TypeSyntax? returnType = Check(TokenKind.Colon) ? ParseTypeAnnotation() : null;
+            var body = ParseBlock();
+            return new LambdaExpressionSyntax(parameters, returnType, body, false,
+                new SourceRange(functionKeyword.Location, body.Range.End), isGenerator);
+        }
+
+        if (Check(TokenKind.ClassKeyword))
+        {
+            return ParseClassExpression();
         }
 
         if (Check(TokenKind.Identifier))
@@ -1532,7 +1720,17 @@ public sealed class Parser
         while (!Check(TokenKind.CloseBracket) && !IsAtEnd())
         {
             int loopStart = _position;
-            elements.Add(ParseExpression());
+            if (Check(TokenKind.DotDotDot))
+            {
+                var spread = Advance();
+                var expression = ParseAssignment();
+                elements.Add(new SpreadExpressionSyntax(expression,
+                    new SourceRange(spread.Location, expression.Range.End)));
+            }
+            else
+            {
+                elements.Add(ParseExpression());
+            }
             if (Check(TokenKind.Comma)) Advance();
             if (_position == loopStart) Advance();
         }
@@ -1540,6 +1738,77 @@ public sealed class Parser
         Expect(TokenKind.CloseBracket);
         return new ArrayLiteralExpressionSyntax(elements,
             new SourceRange(openBracket.Location, Peek(-1).Location));
+    }
+
+    private ClassExpressionSyntax ParseClassExpression()
+    {
+        var classKw = Advance();
+        string? name = null;
+        if (Check(TokenKind.Identifier))
+            name = ExpectIdentifier();
+
+        var genericParams = ParseGenericParameters();
+        TypeSyntax? baseType = null;
+        if (Check(TokenKind.ExtendsKeyword))
+        {
+            Advance();
+            baseType = ParseType();
+        }
+        else if (Check(TokenKind.Colon))
+        {
+            Advance();
+            baseType = ParseType();
+        }
+
+        var implemented = new List<TypeSyntax>();
+        if (Check(TokenKind.Identifier) && Peek().Text == "implements")
+        {
+            Advance();
+            implemented.Add(ParseType());
+            while (Check(TokenKind.Comma))
+            {
+                Advance();
+                implemented.Add(ParseType());
+            }
+        }
+
+        var members = ParseClassBody();
+        var expression = new ClassExpressionSyntax(name, members,
+            new SourceRange(classKw.Location, Peek(-1).Location))
+        {
+            BaseType = baseType
+        };
+        expression.GenericParameters.AddRange(genericParams);
+        expression.ImplementedInterfaces.AddRange(implemented);
+        return expression;
+    }
+
+    private RegexLiteralExpressionSyntax? TryParseRegexLiteral()
+    {
+        var slash = Advance();
+        var pattern = new System.Text.StringBuilder();
+        int classDepth = 0;
+
+        while (!IsAtEnd())
+        {
+            var token = Advance();
+            if (token.Kind == TokenKind.OpenBracket) classDepth++;
+            else if (token.Kind == TokenKind.CloseBracket && classDepth > 0) classDepth--;
+            else if (token.Kind == TokenKind.Slash && classDepth == 0)
+            {
+                var flags = "";
+                if (Check(TokenKind.Identifier))
+                    flags = Advance().Text;
+                return new RegexLiteralExpressionSyntax(pattern.ToString(), flags,
+                    new SourceRange(slash.Location, Peek(-1).Location));
+            }
+
+            pattern.Append(token.Text);
+        }
+
+        Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+            "Unterminated regular expression literal", slash.Location));
+        return null;
     }
 
     // Attempts `(params) [: ReturnType] => body`. Restores position and drops
@@ -1755,8 +2024,22 @@ public sealed class Parser
                 continue;
             }
 
+            if (Check(TokenKind.OpenBracket))
+            {
+                var computedKeyStart = Advance().Location;
+                var keyExpression = ParseExpression();
+                Expect(TokenKind.CloseBracket);
+                Expect(TokenKind.Colon);
+                var computedValue = ParseExpression();
+                properties.Add(new ComputedObjectPropertySyntax(keyExpression, computedValue,
+                    new SourceRange(computedKeyStart, computedValue.Range.End)));
+                if (Check(TokenKind.Comma)) Advance();
+                if (_position == loopStart) Advance();
+                continue;
+            }
+
             var keyStart = Peek().Location;
-            var key = ExpectMemberName();
+            var key = ExpectObjectPropertyName();
             ExpressionSyntax value;
             if (Check(TokenKind.Colon))
             {
@@ -1785,7 +2068,17 @@ public sealed class Parser
 
         while (!IsAtEnd())
         {
-            args.Add(ParseExpression());
+            if (Check(TokenKind.DotDotDot))
+            {
+                var spread = Advance();
+                var expression = ParseAssignment();
+                args.Add(new SpreadExpressionSyntax(expression,
+                    new SourceRange(spread.Location, expression.Range.End)));
+            }
+            else
+            {
+                args.Add(ParseExpression());
+            }
             if (Check(TokenKind.Comma)) Advance();
             else break;
         }
@@ -1837,7 +2130,8 @@ public sealed class Parser
     private static bool IsMemberNameToken(TokenKind kind) =>
         kind == TokenKind.Identifier || IsTypeKeyword(kind) ||
         kind is TokenKind.TypeKeyword or TokenKind.FromKeyword or TokenKind.AsKeyword or
-        TokenKind.OfKeyword or TokenKind.MatchKeyword or TokenKind.DeleteKeyword;
+        TokenKind.OfKeyword or TokenKind.MatchKeyword or TokenKind.DeleteKeyword or
+        TokenKind.ReturnKeyword or TokenKind.ThrowKeyword or TokenKind.YieldKeyword;
 
     private string ExpectMemberName()
     {
@@ -1850,6 +2144,13 @@ public sealed class Parser
             return Peek().Text;
         }
         return Advance().Text;
+    }
+
+    private string ExpectObjectPropertyName()
+    {
+        if (Check(TokenKind.StringLiteral) || Check(TokenKind.IntegerLiteral) || Check(TokenKind.FloatLiteral))
+            return Advance().Value?.ToString() ?? Peek(-1).Text;
+        return ExpectMemberName();
     }
 
     private Token Expect(TokenKind kind)

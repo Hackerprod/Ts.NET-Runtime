@@ -228,6 +228,23 @@ public static class Builtins
                 _ => D(args[0]) != 0 && !double.IsNaN(D(args[0]))
             }),
             ["BigInt"] = args => args.Length > 0 ? ToBigInt(args[0]) : TsValue.FromBigInt(System.Numerics.BigInteger.Zero),
+            ["RegExp::test"] = args =>
+            {
+                if (args.Length < 2 || args[0] is not TsRegexValue regex)
+                    throw new InvalidOperationException("RegExp.test requires a RegExp receiver and input");
+                return Bool(regex.Test(S(args[1])));
+            },
+            ["Generator::next"] = args =>
+            {
+                if (args.Length < 1 || args[0] is not TsGeneratorValue generator)
+                    throw new InvalidOperationException("Generator.next requires a generator receiver");
+                if (!generator.TryNextLegacy(out var value, out var done))
+                    throw new InvalidOperationException("Generator.next must be executed by the interpreter");
+                var result = new TsObject("Object");
+                result.SetField("value", value);
+                result.SetField("done", Bool(done));
+                return new TsObjectValue(result);
+            },
 
             // ── Array instance members (receiver = args[0]) ──
             ["Array::push"] = args =>

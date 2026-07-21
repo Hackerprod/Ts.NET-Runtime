@@ -19,6 +19,10 @@ public static class BytecodeVerifier
                 Fail(function, "duplicate function name");
             if (function.ParameterCount < 0 || function.LocalCount < 0)
                 Fail(function, "invalid parameter/local counts");
+            if (function.RestParameterIndex < -1 || function.RestParameterIndex >= function.ParameterCount)
+                Fail(function, "invalid rest parameter index");
+            if (function.RestParameterIndex >= 0 && function.RestParameterIndex != function.ParameterCount - 1)
+                Fail(function, "rest parameter must be the last parameter");
             VerifyFunction(function);
         }
     }

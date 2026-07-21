@@ -20,7 +20,9 @@ public sealed class IRGenerator
     // Lambdas and nested function declarations are lifted: queued here while
     // the enclosing function generates, then emitted as siblings afterwards.
     private readonly Queue<BoundFunctionDeclaration> _liftedFunctions = new();
+    private readonly Queue<BoundClassDeclaration> _liftedClasses = new();
     private readonly HashSet<string> _generatedFunctions = new();
+    private readonly HashSet<string> _generatedClasses = new();
 
     // funcName -> captured variable names; direct calls to capturing functions
     // must build a closure carrying the current boxes.
@@ -32,6 +34,10 @@ public sealed class IRGenerator
     // loops only.  Keep separate stacks so a switch nested in a loop preserves
     // the enclosing loop's continue target.
     private readonly Stack<int> _breakTargets = new();
+    // Labels are installed by the loop/switch generator after it creates its
+    // concrete blocks. A label is visible only while its statement is emitted.
+    private readonly Dictionary<string, (int BreakTarget, int? ContinueTarget)> _labelTargets = new();
+    private readonly List<string> _pendingLabels = new();
 
     private readonly record struct LoopTargets(int BreakBlockId, int ContinueBlockId);
 
@@ -61,6 +67,7 @@ public sealed class IRGenerator
             }
             else if (member is BoundClassDeclaration cls)
             {
+                _generatedClasses.Add(cls.Symbol.Name);
                 GenerateClass(module, cls);
                 DrainLiftedFunctions(module);
             }
@@ -281,12 +288,23 @@ public sealed class IRGenerator
 
     private void DrainLiftedFunctions(ModuleIR module)
     {
-        while (_liftedFunctions.Count > 0)
+        while (_liftedFunctions.Count > 0 || _liftedClasses.Count > 0)
         {
-            var pending = _liftedFunctions.Dequeue();
-            if (!_generatedFunctions.Add(pending.Symbol.Name))
-                continue;
-            module.AddFunction(GenerateFunction(pending));
+            while (_liftedFunctions.Count > 0)
+            {
+                var pending = _liftedFunctions.Dequeue();
+                if (!_generatedFunctions.Add(pending.Symbol.Name))
+                    continue;
+                module.AddFunction(GenerateFunction(pending));
+            }
+
+            while (_liftedClasses.Count > 0)
+            {
+                var pendingClass = _liftedClasses.Dequeue();
+                if (!_generatedClasses.Add(pendingClass.Symbol.Name))
+                    continue;
+                GenerateClass(module, pendingClass);
+            }
         }
     }
 
@@ -372,12 +390,13 @@ public sealed class IRGenerator
     private FunctionIR GenerateFunction(BoundFunctionDeclaration func)
     {
         var parameters = func.Symbol.Parameters
-            .Select(p => new ParameterInfo(p.Name, p.Type))
+            .Select(p => new ParameterInfo(p.Name, p.Type, p.IsRest))
             .ToList();
 
         var funcIR = new FunctionIR(func.Symbol.Name, func.Symbol.Type, parameters)
         {
             IsAsync = func.Symbol.IsAsync,
+            IsGenerator = func.Symbol.IsGenerator,
             LocalCount = 0
         };
         funcIR.CapturedVariables.AddRange(func.CapturedVariables.Select(s => s.Name));
@@ -465,12 +484,13 @@ public sealed class IRGenerator
         var parameters = new List<ParameterInfo>();
         parameters.Add(new ParameterInfo("this", new TsClassType(className)));
         foreach (var p in explicitParams)
-            parameters.Add(new ParameterInfo(p.Name, p.Type));
+            parameters.Add(new ParameterInfo(p.Name, p.Type, p.IsRest));
 
         var qualifiedName = $"{className}::{methodName}";
         var funcIR = new FunctionIR(qualifiedName, returnType, parameters)
         {
             IsAsync = isAsync,
+            IsGenerator = false,
             LocalCount = 0
         };
 
@@ -581,6 +601,10 @@ public sealed class IRGenerator
                 GenerateReturn(ret);
                 break;
 
+            case BoundYieldStatement yield:
+                GenerateYield(yield);
+                break;
+
             case BoundIfStatement ifStmt:
                 GenerateIf(ifStmt);
                 break;
@@ -601,12 +625,16 @@ public sealed class IRGenerator
                 GenerateFor(forStmt);
                 break;
 
-            case BoundBreakStatement:
-                GenerateBreak();
+            case BoundLabelledStatement labelled:
+                GenerateLabelled(labelled);
                 break;
 
-            case BoundContinueStatement:
-                GenerateContinue();
+            case BoundBreakStatement breakStmt:
+                GenerateBreak(breakStmt.Label);
+                break;
+
+            case BoundContinueStatement continueStmt:
+                GenerateContinue(continueStmt.Label);
                 break;
 
             case BoundThrowStatement throwStmt:
@@ -647,6 +675,15 @@ public sealed class IRGenerator
             EmitStoreLocal(i + argumentOffset);
             _currentBlock = nextBlock;
         }
+    }
+
+    private void GenerateYield(BoundYieldStatement yield)
+    {
+        if (yield.Value != null)
+            GenerateExpression(yield.Value);
+        else
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Yield));
     }
 
     private void GenerateVariableDeclaration(BoundVariableDeclaration varDecl)
@@ -731,6 +768,7 @@ public sealed class IRGenerator
         var function = _currentFunction!;
         var afterBlock = function.CreateBlock();
         var clauseBlocks = switchStmt.Clauses.Select(_ => function.CreateBlock()).ToList();
+        InstallPendingLabel(afterBlock.Id, null);
 
         // Evaluate the discriminant exactly once. Case expressions are then
         // evaluated in source order, which preserves their side effects.
@@ -790,6 +828,7 @@ public sealed class IRGenerator
         var conditionBlock = func.CreateBlock();
         var bodyBlock = func.CreateBlock();
         var afterBlock = func.CreateBlock();
+        InstallPendingLabel(afterBlock.Id, conditionBlock.Id);
 
         if (!_currentBlock!.EndsInBranch)
             EmitBranch(conditionBlock.Id);
@@ -823,6 +862,7 @@ public sealed class IRGenerator
         var bodyBlock = func.CreateBlock();
         var conditionBlock = func.CreateBlock();
         var afterBlock = func.CreateBlock();
+        InstallPendingLabel(afterBlock.Id, conditionBlock.Id);
 
         if (!_currentBlock!.EndsInBranch)
             EmitBranch(bodyBlock.Id);
@@ -857,6 +897,7 @@ public sealed class IRGenerator
         var bodyBlock = func.CreateBlock();
         var iteratorBlock = func.CreateBlock();
         var afterBlock = func.CreateBlock();
+        InstallPendingLabel(afterBlock.Id, iteratorBlock.Id);
 
         if (forStmt.Initializer != null)
             GenerateStatement(forStmt.Initializer);
@@ -895,8 +936,52 @@ public sealed class IRGenerator
         _currentBlock = afterBlock;
     }
 
-    private void GenerateBreak()
+    private void GenerateLabelled(BoundLabelledStatement labelled)
     {
+        if (labelled.Statement is not (BoundWhileStatement or BoundDoWhileStatement or BoundForStatement or BoundSwitchStatement or BoundLabelledStatement))
+        {
+            var after = _currentFunction!.CreateBlock();
+            _labelTargets[labelled.Label] = (after.Id, null);
+            try
+            {
+                GenerateStatement(labelled.Statement);
+                if (!_currentBlock!.EndsInBranch)
+                    EmitBranch(after.Id);
+                _currentBlock = after;
+            }
+            finally { _labelTargets.Remove(labelled.Label); }
+            return;
+        }
+
+        _pendingLabels.Add(labelled.Label);
+        try
+        {
+            GenerateStatement(labelled.Statement);
+        }
+        finally
+        {
+            _pendingLabels.Remove(labelled.Label);
+            _labelTargets.Remove(labelled.Label);
+        }
+    }
+
+    private void InstallPendingLabel(int breakTarget, int? continueTarget)
+    {
+        if (_pendingLabels.Count == 0)
+            return;
+
+        foreach (var label in _pendingLabels)
+            _labelTargets[label] = (breakTarget, continueTarget);
+        _pendingLabels.Clear();
+    }
+
+    private void GenerateBreak(string? label)
+    {
+        if (label != null && _labelTargets.TryGetValue(label, out var labelledTarget))
+        {
+            EmitBranch(labelledTarget.BreakTarget);
+            return;
+        }
         if (_breakTargets.Count == 0)
         {
             throw new InvalidOperationException("'break' emitted outside a loop or switch");
@@ -905,8 +990,15 @@ public sealed class IRGenerator
         EmitBranch(_breakTargets.Peek());
     }
 
-    private void GenerateContinue()
+    private void GenerateContinue(string? label)
     {
+        if (label != null && _labelTargets.TryGetValue(label, out var labelledTarget))
+        {
+            if (labelledTarget.ContinueTarget == null)
+                throw new InvalidOperationException($"Label '{label}' does not name an iteration statement");
+            EmitBranch(labelledTarget.ContinueTarget.Value);
+            return;
+        }
         if (_loopTargets.Count == 0)
         {
             throw new InvalidOperationException("'continue' emitted outside a loop");
@@ -991,6 +1083,9 @@ public sealed class IRGenerator
             case BoundAssignmentExpression assign:
                 GenerateAssignment(assign);
                 break;
+            case BoundDestructuringAssignmentExpression destructuringAssign:
+                GenerateDestructuringAssignment(destructuringAssign);
+                break;
             case BoundThisExpression:
                 if (_boxSlots.TryGetValue("this", out int thisBoxSlot))
                 {
@@ -1017,10 +1112,33 @@ public sealed class IRGenerator
             case BoundArrayLiteralExpression arrLit:
                 GenerateArrayLiteral(arrLit);
                 break;
+            case BoundSpreadExpression spread:
+                GenerateExpression(spread.Expression);
+                break;
+            case BoundRegexLiteralExpression regex:
+                _currentBlock!.Instructions.Add(new Instruction(
+                    Opcode.LoadConst_Regex, 0, 0, $"{regex.Pattern}\0{regex.Flags}"));
+                break;
             case BoundIndexExpression indexExpr:
-                GenerateExpression(indexExpr.Object);
-                GenerateExpression(indexExpr.Index);
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadElement));
+                GenerateIndex(indexExpr);
+                break;
+            case BoundEnumerateKeysExpression enumerateKeys:
+                GenerateExpression(enumerateKeys.Operand);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.EnumerateKeys));
+                break;
+            case BoundArraySliceExpression slice:
+                GenerateExpression(slice.Source);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.ArraySliceFrom, slice.Start));
+                break;
+            case BoundObjectRestExpression rest:
+                GenerateExpression(rest.Source);
+                foreach (var key in rest.ExcludedKeys)
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_String, 0, 0, key));
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.ObjectRest, rest.ExcludedKeys.Count));
+                break;
+            case BoundIterableValuesExpression iterable:
+                GenerateExpression(iterable.Source);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.IterableValues));
                 break;
             case BoundConditionalExpression cond:
                 GenerateConditional(cond);
@@ -1032,6 +1150,10 @@ public sealed class IRGenerator
                         lambda.Function.CapturedVariables.Select(s => s.Name).ToList());
                 else
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0, lambda.Function.Symbol.Name));
+                break;
+            case BoundClassExpression classExpression:
+                _liftedClasses.Enqueue(classExpression.Declaration);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_String, 0, 0, classExpression.Declaration.Symbol.Name));
                 break;
             case BoundCastExpression cast:
                 GenerateExpression(cast.Operand);
@@ -1106,6 +1228,26 @@ public sealed class IRGenerator
 
     private void GenerateArrayLiteral(BoundArrayLiteralExpression arrLit)
     {
+        if (arrLit.Elements.Any(element => element is BoundSpreadExpression))
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.NewArray, 0));
+            foreach (var element in arrLit.Elements)
+            {
+                _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+                if (element is BoundSpreadExpression spread)
+                {
+                    GenerateExpression(spread.Expression);
+                    _currentBlock.Instructions.Add(new Instruction(Opcode.ArrayAppendSpread));
+                }
+                else
+                {
+                    GenerateExpression(element);
+                    _currentBlock.Instructions.Add(new Instruction(Opcode.ArrayAppend));
+                }
+            }
+            return;
+        }
+
         foreach (var element in arrLit.Elements)
             GenerateExpression(element);
         _currentBlock!.Instructions.Add(new Instruction(Opcode.NewArray, arrLit.Elements.Count));
@@ -1449,6 +1591,16 @@ public sealed class IRGenerator
 
     private void GenerateCall(BoundCallExpression call)
     {
+        if (call.IsNullConditional)
+        {
+            GenerateOptionalCall(call);
+            return;
+        }
+        if (call.Arguments.Any(arg => arg is BoundSpreadExpression))
+        {
+            GenerateSpreadCall(call);
+            return;
+        }
         if (call.Callee is BoundMemberAccessExpression memberAccess)
         {
             if (memberAccess.Member is MethodSymbol { DeclaringClassName: null } structuralMethod)
@@ -1533,6 +1685,118 @@ public sealed class IRGenerator
         }
     }
 
+    private void GenerateSpreadCall(BoundCallExpression call)
+    {
+        if (call.Callee is BoundVariableExpression { Symbol: FunctionSymbol funcSym })
+        {
+            var target = funcSym.TargetName ?? funcSym.Name;
+            if (_capturesByFunction.TryGetValue(target, out var calleeCaptures))
+                EmitClosureCreation(target, calleeCaptures);
+            else
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0, target));
+        }
+        else
+        {
+            GenerateExpression(call.Callee);
+        }
+
+        GenerateArgumentArray(call.Arguments);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.CallDynamicArray));
+    }
+
+    private void GenerateArgumentArray(IReadOnlyList<BoundNode> arguments)
+    {
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.NewArray, 0));
+        foreach (var argument in arguments)
+        {
+            _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+            if (argument is BoundSpreadExpression spread)
+            {
+                GenerateExpression(spread.Expression);
+                _currentBlock.Instructions.Add(new Instruction(Opcode.ArrayAppendSpread));
+            }
+            else
+            {
+                GenerateExpression(argument);
+                _currentBlock.Instructions.Add(new Instruction(Opcode.ArrayAppend));
+            }
+        }
+    }
+
+    private void GenerateOptionalCall(BoundCallExpression call)
+    {
+        // `fn?.(arg())`: evaluate the callee once; do not evaluate arguments
+        // if it is nullish. Optional member calls use the resolved property value.
+        GenerateExpression(call.Callee);
+        var func = _currentFunction!;
+        var nullBlock = func.CreateBlock();
+        var invokeBlock = func.CreateBlock();
+        var endBlock = func.CreateBlock();
+
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.NullCheck));
+        EmitBranchTrue(nullBlock.Id);
+        EmitBranch(invokeBlock.Id);
+
+        _currentBlock = nullBlock;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        // ECMAScript optional chaining produces undefined, not null.
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+        EmitBranch(endBlock.Id);
+
+        _currentBlock = invokeBlock;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        if (call.Arguments.Any(arg => arg is BoundSpreadExpression))
+        {
+            GenerateArgumentArray(call.Arguments);
+            _currentBlock.Instructions.Add(new Instruction(Opcode.CallDynamicArray));
+        }
+        else
+        {
+            for (int i = 0; i < call.Arguments.Count; i++)
+                GenerateExpression(call.Arguments[i]);
+            _currentBlock.Instructions.Add(new Instruction(Opcode.CallDynamic, call.Arguments.Count));
+        }
+        EmitBranch(endBlock.Id);
+
+        _currentBlock = endBlock;
+    }
+
+    private void GenerateIndex(BoundIndexExpression index)
+    {
+        GenerateExpression(index.Object);
+        if (!index.IsNullConditional)
+        {
+            GenerateExpression(index.Index);
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadElement));
+            return;
+        }
+
+        var func = _currentFunction!;
+        var nullBlock = func.CreateBlock();
+        var loadBlock = func.CreateBlock();
+        var endBlock = func.CreateBlock();
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.NullCheck));
+        EmitBranchTrue(nullBlock.Id);
+        EmitBranch(loadBlock.Id);
+
+        _currentBlock = nullBlock;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        // ECMAScript optional chaining produces undefined, not null.
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+        EmitBranch(endBlock.Id);
+
+        _currentBlock = loadBlock;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        GenerateExpression(index.Index);
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadElement));
+        EmitBranch(endBlock.Id);
+        _currentBlock = endBlock;
+    }
+
     private void GenerateNew(BoundNewExpression newExpr)
     {
         var className = GetClassName(newExpr.ConstructedType);
@@ -1550,11 +1814,25 @@ public sealed class IRGenerator
         foreach (var prop in objLit.Properties)
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
-            GenerateExpression(prop.Value);
             if (prop.IsSpread)
+            {
+                GenerateExpression(prop.Value);
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.CopyObjectFields));
+            }
+            else if (prop.IsComputed)
+            {
+                // STORE_ELEMENT takes target, key, value. Evaluate the key before
+                // the value, and each exactly once, matching object-literal
+                // evaluation order in JavaScript.
+                GenerateExpression(prop.ComputedKey!);
+                GenerateExpression(prop.Value);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreElement));
+            }
             else
+            {
+                GenerateExpression(prop.Value);
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, prop.Key));
+            }
         }
     }
 
@@ -1599,6 +1877,17 @@ public sealed class IRGenerator
                 }
             }
         }
+    }
+
+    private void GenerateDestructuringAssignment(BoundDestructuringAssignmentExpression assign)
+    {
+        foreach (var temporary in assign.Temporaries)
+            GenerateVariableDeclaration(temporary);
+
+        foreach (var assignment in assign.Assignments)
+            GenerateAssignment(assignment);
+
+        GenerateExpression(assign.Result);
     }
 
     private void GenerateMemberAccess(BoundMemberAccessExpression member)

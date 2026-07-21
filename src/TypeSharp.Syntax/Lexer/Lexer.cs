@@ -78,6 +78,7 @@ public sealed class Lexer
         ["try"] = TokenKind.TryKeyword,
         ["catch"] = TokenKind.CatchKeyword,
         ["finally"] = TokenKind.FinallyKeyword,
+        ["yield"] = TokenKind.YieldKeyword,
         ["delete"] = TokenKind.DeleteKeyword,
     };
 

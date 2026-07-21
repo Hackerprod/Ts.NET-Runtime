@@ -9,7 +9,7 @@ namespace TypeSharp.Semantics.Binder;
 
 public sealed class Binder
 {
-    private readonly record struct CallParameter(string Name, TsType Type, bool IsOptional);
+    private readonly record struct CallParameter(string Name, TsType Type, bool IsOptional, bool IsRest = false);
 
     private readonly SymbolTable _symbolTable;
     private readonly DiagnosticBag _diagnostics;
@@ -22,11 +22,13 @@ public sealed class Binder
     private ParameterSymbol? _currentThisSymbol;
     private TsType? _currentFunctionReturnType;
     private bool _currentFunctionIsAsync;
+    private bool _currentFunctionIsGenerator;
     private bool _inConstructor;
     private int _lambdaCounter;
     private int _forOfCounter;
     private int _loopDepth;
     private int _breakableDepth;
+    private readonly Stack<(string Name, bool IsLoop)> _labels = new();
     private string _currentSourceFileName = "module";
 
     // Generic type parameters in scope, innermost last.
@@ -440,11 +442,14 @@ public sealed class Binder
 
         var prevReturnType = _currentFunctionReturnType;
         var prevIsAsync = _currentFunctionIsAsync;
+        var prevIsGenerator = _currentFunctionIsGenerator;
         _currentFunctionIsAsync = sym.IsAsync;
+        _currentFunctionIsGenerator = sym.IsGenerator;
         _currentFunctionReturnType = BodyReturnType(sym.Type, sym.IsAsync);
         var body = BindNode(func.Body);
         _currentFunctionReturnType = prevReturnType;
         _currentFunctionIsAsync = prevIsAsync;
+        _currentFunctionIsGenerator = prevIsGenerator;
 
         _captureCollectors.RemoveAt(_captureCollectors.Count - 1);
         _functionDepth--;
@@ -469,10 +474,13 @@ public sealed class Binder
         var declaredReturnType = lambda.ReturnType != null
             ? ResolveType(lambda.ReturnType)
             : contextualType?.ReturnType ?? TsType.Any;
-        var returnType = NormalizeFunctionReturnType(declaredReturnType, lambda.IsAsync);
+        var returnType = lambda.IsGenerator
+            ? TsType.Any
+            : NormalizeFunctionReturnType(declaredReturnType, lambda.IsAsync);
         var sym = new FunctionSymbol(name, returnType, lambda.Range)
         {
             IsAsync = lambda.IsAsync,
+            IsGenerator = lambda.IsGenerator,
             IsExported = exported
         };
         sym.TypeParameters.AddRange(lambda.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
@@ -515,11 +523,14 @@ public sealed class Binder
 
         var prevReturnType = _currentFunctionReturnType;
         var prevIsAsync = _currentFunctionIsAsync;
+        var prevIsGenerator = _currentFunctionIsGenerator;
         _currentFunctionIsAsync = sym.IsAsync;
+        _currentFunctionIsGenerator = sym.IsGenerator;
         _currentFunctionReturnType = sym.Type is TsAnyType ? null : BodyReturnType(sym.Type, sym.IsAsync);
         var body = BindNode(lambda.Body);
         _currentFunctionReturnType = prevReturnType;
         _currentFunctionIsAsync = prevIsAsync;
+        _currentFunctionIsGenerator = prevIsGenerator;
 
         _captureCollectors.RemoveAt(_captureCollectors.Count - 1);
         _functionDepth--;
@@ -538,9 +549,13 @@ public sealed class Binder
 
         PushTypeParameters(func.GenericParameters);
         var declaredReturnType = ResolveType(func.ReturnType) ?? TsType.Void;
-        var sym = new FunctionSymbol(func.Name, NormalizeFunctionReturnType(declaredReturnType, func.IsAsync), func.Range)
+        var returnType = func.IsGenerator
+            ? TsType.Any
+            : NormalizeFunctionReturnType(declaredReturnType, func.IsAsync);
+        var sym = new FunctionSymbol(func.Name, returnType, func.Range)
         {
             IsAsync = func.IsAsync,
+            IsGenerator = func.IsGenerator,
             IsExported = func.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword)
         };
         sym.TypeParameters.AddRange(func.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
@@ -560,7 +575,8 @@ public sealed class Binder
         return new ParameterSymbol(parameter.Name, parameterType, parameter.Range)
         {
             HasDefault = parameter.DefaultValue != null,
-            IsTypeInferred = parameter.TypeWasInferred
+            IsTypeInferred = parameter.TypeWasInferred,
+            IsRest = parameter.IsRest
         };
     }
 
@@ -570,7 +586,8 @@ public sealed class Binder
         return new TsParameter(symbol.Name, symbol.Type)
         {
             HasDefault = symbol.HasDefault,
-            DefaultValue = symbol.DefaultValue
+            DefaultValue = symbol.DefaultValue,
+            IsRest = symbol.IsRest
         };
     }
 
@@ -578,14 +595,15 @@ public sealed class Binder
         new(symbol.Name, symbol.Type)
         {
             HasDefault = symbol.HasDefault,
-            DefaultValue = symbol.DefaultValue
+            DefaultValue = symbol.DefaultValue,
+            IsRest = symbol.IsRest
         };
 
     private static CallParameter ToCallParameter(ParameterSymbol symbol) =>
-        new(symbol.Name, symbol.Type, symbol.HasDefault || symbol.Type is TsNullableType);
+        new(symbol.Name, symbol.Type, symbol.HasDefault || symbol.Type is TsNullableType, symbol.IsRest);
 
     private static CallParameter ToCallParameter(TsParameter parameter) =>
-        new(parameter.Name, parameter.Type, parameter.HasDefault || parameter.Type is TsNullableType);
+        new(parameter.Name, parameter.Type, parameter.HasDefault || parameter.Type is TsNullableType, parameter.IsRest);
 
     private TsType? InferParameterTypeFromDefault(ExpressionSyntax? expression)
     {
@@ -666,33 +684,53 @@ public sealed class Binder
     }
 
     private BoundClassDeclaration BindClass(ClassDeclarationSyntax cls)
+        => BindClassCore(cls.Name, cls.GenericParameters, cls.BaseType, cls.Members, cls.Range, defineSymbol: true,
+            isExported: cls.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword));
+
+    private BoundClassExpression BindClassExpression(ClassExpressionSyntax cls)
     {
-        if (!_classTypes.TryGetValue(cls.Name, out var classType))
+        var name = cls.Name ?? $"$class_expr_{_lambdaCounter++}";
+        var declaration = BindClassCore(name, cls.GenericParameters, cls.BaseType, cls.Members, cls.Range,
+            defineSymbol: false, isExported: false);
+        return new BoundClassExpression(declaration);
+    }
+
+    private BoundClassDeclaration BindClassCore(
+        string name,
+        IReadOnlyList<GenericParameterSyntax> genericParameters,
+        TypeSyntax? baseTypeSyntax,
+        IReadOnlyList<SyntaxNode> classMembers,
+        SourceRange range,
+        bool defineSymbol,
+        bool isExported)
+    {
+        if (!_classTypes.TryGetValue(name, out var classType))
         {
-            classType = new TsClassType(cls.Name);
-            _classTypes[cls.Name] = classType;
+            classType = new TsClassType(name);
+            _classTypes[name] = classType;
         }
 
-        if (cls.BaseType != null && classType.BaseType == null)
+        if (baseTypeSyntax != null && classType.BaseType == null)
         {
-            var baseType = ResolveType(cls.BaseType);
+            var baseType = ResolveType(baseTypeSyntax);
             if (baseType is TsClassType baseClass)
                 classType.BaseType = baseClass;
         }
 
-        var sym = new ClassSymbol(cls.Name, classType, cls.Range)
+        var sym = new ClassSymbol(name, classType, range)
         {
-            IsExported = cls.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword)
+            IsExported = isExported
         };
 
-        _symbolTable.Define(sym);
-        PushTypeParameters(cls.GenericParameters);
+        if (defineSymbol)
+            _symbolTable.Define(sym);
+        PushTypeParameters(genericParameters);
         _symbolTable.PushScope();
 
         var members = new List<BoundNode>();
         var prevClass = _currentClassType;
         _currentClassType = classType;
-        foreach (var member in cls.Members)
+        foreach (var member in classMembers)
         {
             var bound = BindClassMember(member, classType);
             if (bound != null)
@@ -1050,6 +1088,7 @@ public sealed class Binder
         var copy = new FunctionSymbol(name, source.Type, location)
         {
             IsAsync = source.IsAsync,
+            IsGenerator = source.IsGenerator,
             IsExported = source.IsExported,
             TargetName = source.TargetName ?? source.Name
         };
@@ -1061,7 +1100,8 @@ public sealed class Binder
                 DefaultValue = parameter.DefaultValue,
                 DefaultExpression = parameter.DefaultExpression,
                 IsTypeInferred = parameter.IsTypeInferred,
-                IsCaptured = parameter.IsCaptured
+                IsCaptured = parameter.IsCaptured,
+                IsRest = parameter.IsRest
             });
         }
         copy.TypeParameters.AddRange(source.TypeParameters.Select(p => new TsTypeParameter(p.Name)));
@@ -1076,6 +1116,7 @@ public sealed class Binder
             BlockStatementSyntax block => BindBlock(block),
             VariableDeclarationSyntax varDecl => BindVariableDeclaration(varDecl),
             ReturnStatementSyntax ret => BindReturn(ret),
+            YieldStatementSyntax yield => BindYield(yield),
             IfStatementSyntax ifStmt => BindIf(ifStmt),
             SwitchStatementSyntax switchStmt => BindSwitch(switchStmt),
             WhileStatementSyntax whileStmt => BindWhile(whileStmt),
@@ -1086,9 +1127,12 @@ public sealed class Binder
             ThrowStatementSyntax throwStmt => BindThrow(throwStmt),
             TryStatementSyntax tryStmt => BindTry(tryStmt),
             ForOfStatementSyntax forOf => BindForOf(forOf),
+            ForInStatementSyntax forIn => BindForIn(forIn),
+            LabelledStatementSyntax labelled => BindLabelled(labelled),
             FunctionDeclarationSyntax nestedFunc => BindFunction(nestedFunc),
             VariableDeclarationListSyntax varList => new BoundBlockStatement(
                 varList.Declarations.Select(d => BindVariableDeclaration(d)).ToList()),
+            DestructuringVariableDeclarationSyntax destructuring => BindDestructuringVariableDeclaration(destructuring),
             ExpressionStatementSyntax exprStmt => BindExpressionStatement(exprStmt),
             _ => throw new InvalidOperationException($"Unexpected statement type: {stmt.NodeType}")
         };
@@ -1304,6 +1348,15 @@ public sealed class Binder
         return new BoundReturnStatement(value);
     }
 
+    private BoundYieldStatement BindYield(YieldStatementSyntax yield)
+    {
+        if (!_currentFunctionIsGenerator)
+            _diagnostics.Error("'yield' can only be used inside a generator function", yield.Range.Start);
+
+        var value = yield.Value != null ? BindExpression(yield.Value) : null;
+        return new BoundYieldStatement(value);
+    }
+
     private static TsType NormalizeFunctionReturnType(TsType declaredReturnType, bool isAsync)
     {
         if (!isAsync)
@@ -1346,6 +1399,164 @@ public sealed class Binder
                 : BindStatement(ifStmt.ElseBranch)
             : null;
         return new BoundIfStatement(condition, thenBranch, elseBranch);
+    }
+
+    private BoundNode BindDestructuringVariableDeclaration(DestructuringVariableDeclarationSyntax declaration)
+    {
+        if (declaration.Initializer == null)
+            return new BoundBlockStatement(new List<BoundNode>());
+
+        var source = BindExpression(declaration.Initializer);
+        var temp = new LocalSymbol($"$destructure_{_forOfCounter++}", source.Type, declaration.Range, isConst: true);
+        DefineWithDepth(temp);
+        var statements = new List<BoundNode> { new BoundVariableDeclaration(temp, source) };
+
+        if (declaration.Pattern != null)
+        {
+            BindDestructuringDeclarationPattern(
+                declaration.Pattern,
+                new BoundVariableExpression(temp),
+                declaration.IsConst,
+                statements);
+            return new BoundBlockStatement(statements);
+        }
+
+        for (int i = 0; i < declaration.Elements.Count; i++)
+        {
+            var element = declaration.Elements[i];
+            if (string.IsNullOrEmpty(element.Name))
+                continue;
+            if (element.IsRest)
+            {
+                if (!declaration.IsArray)
+                {
+                    var excluded = declaration.Elements.Take(i).Where(e => !string.IsNullOrEmpty(e.Name)).Select(e => e.SourceName).ToList();
+                    var objectRestSymbol = new LocalSymbol(element.Name, TsType.Any, element.Range, declaration.IsConst);
+                    DefineWithDepth(objectRestSymbol);
+                    statements.Add(new BoundVariableDeclaration(objectRestSymbol,
+                        new BoundObjectRestExpression(new BoundVariableExpression(temp), excluded)));
+                    continue;
+                }
+                var restSymbol = new LocalSymbol(element.Name, new TsArrayType(TsType.Any), element.Range, declaration.IsConst);
+                DefineWithDepth(restSymbol);
+                statements.Add(new BoundVariableDeclaration(restSymbol,
+                    new BoundArraySliceExpression(new BoundVariableExpression(temp), i)));
+                continue;
+            }
+
+            BoundNode value = declaration.IsArray
+                ? new BoundIndexExpression(new BoundVariableExpression(temp), new BoundLiteralExpression(i, TsType.Int32), TsType.Any)
+                : new BoundMemberAccessExpression(new BoundVariableExpression(temp), new PropertySymbol(element.SourceName, TsType.Any, element.Range));
+            if (element.DefaultValue != null)
+            {
+                var fallback = BindExpression(element.DefaultValue);
+                var isUndefined = new BoundBinaryExpression(value, TokenKind.TripleEquals,
+                    new BoundLiteralExpression(null, TsType.Void), TsType.Bool);
+                var isNull = new BoundBinaryExpression(value, TokenKind.TripleEquals,
+                    new BoundLiteralExpression(null, TsType.Any), TsType.Bool);
+                var isMissing = new BoundBinaryExpression(isUndefined, TokenKind.PipePipe, isNull, TsType.Bool);
+                value = new BoundConditionalExpression(isMissing, fallback, value, TsType.Any);
+            }
+
+            var symbol = new LocalSymbol(element.Name, TsType.Any, element.Range, declaration.IsConst);
+            DefineWithDepth(symbol);
+            statements.Add(new BoundVariableDeclaration(symbol, value));
+        }
+        return new BoundBlockStatement(statements);
+    }
+
+    private void BindDestructuringDeclarationPattern(
+        ExpressionSyntax pattern,
+        BoundNode source,
+        bool isConst,
+        List<BoundNode> statements)
+    {
+        switch (pattern)
+        {
+            case ArrayLiteralExpressionSyntax array:
+                for (int i = 0; i < array.Elements.Count; i++)
+                {
+                    var element = array.Elements[i];
+                    if (element is SpreadExpressionSyntax spread)
+                    {
+                        DeclareDestructuringBinding(spread.Expression, new BoundArraySliceExpression(source, i), isConst, statements);
+                        continue;
+                    }
+
+                    var value = new BoundIndexExpression(source, new BoundLiteralExpression(i, TsType.Int32), TsType.Any);
+                    BindDestructuringDeclarationElement(element, value, isConst, statements);
+                }
+                break;
+
+            case ObjectLiteralExpressionSyntax obj:
+                var excluded = new List<string>();
+                foreach (var property in obj.Properties)
+                {
+                    if (property is ObjectSpreadPropertySyntax spread)
+                    {
+                        DeclareDestructuringBinding(spread.Value, new BoundObjectRestExpression(source, excluded.ToList()), isConst, statements);
+                        continue;
+                    }
+
+                    if (property is ComputedObjectPropertySyntax computed)
+                    {
+                        var key = BindExpression(computed.KeyExpression);
+                        var value = new BoundIndexExpression(source, key, TsType.Any);
+                        BindDestructuringDeclarationElement(computed.Value, value, isConst, statements);
+                    }
+                    else
+                    {
+                        excluded.Add(property.Key);
+                        var value = new BoundMemberAccessExpression(source, new PropertySymbol(property.Key, TsType.Any, property.Range));
+                        BindDestructuringDeclarationElement(property.Value, value, isConst, statements);
+                    }
+                }
+                break;
+
+            default:
+                DeclareDestructuringBinding(pattern, source, isConst, statements);
+                break;
+        }
+    }
+
+    private void BindDestructuringDeclarationElement(
+        ExpressionSyntax targetPattern,
+        BoundNode value,
+        bool isConst,
+        List<BoundNode> statements)
+    {
+        ExpressionSyntax target = targetPattern;
+        ExpressionSyntax? defaultValue = null;
+        if (targetPattern is AssignmentExpressionSyntax { OperatorToken.Kind: TokenKind.Equals } defaulted)
+        {
+            target = defaulted.Target;
+            defaultValue = defaulted.Value;
+        }
+
+        value = ApplyDestructuringDefault(value, defaultValue);
+        if (target is ArrayLiteralExpressionSyntax or ObjectLiteralExpressionSyntax)
+        {
+            var nestedTemp = new LocalSymbol($"$destructure_nested_{_forOfCounter++}", TsType.Any, target.Range, isConst: true);
+            DefineWithDepth(nestedTemp);
+            statements.Add(new BoundVariableDeclaration(nestedTemp, value));
+            BindDestructuringDeclarationPattern(target, new BoundVariableExpression(nestedTemp), isConst, statements);
+            return;
+        }
+
+        DeclareDestructuringBinding(target, value, isConst, statements);
+    }
+
+    private void DeclareDestructuringBinding(ExpressionSyntax target, BoundNode value, bool isConst, List<BoundNode> statements)
+    {
+        if (target is not IdentifierExpressionSyntax identifier)
+        {
+            _diagnostics.Error("Invalid destructuring binding target", target.Range.Start);
+            return;
+        }
+
+        var symbol = new LocalSymbol(identifier.Name, TsType.Any, target.Range, isConst);
+        DefineWithDepth(symbol);
+        statements.Add(new BoundVariableDeclaration(symbol, value));
     }
 
     private BoundSwitchStatement BindSwitch(SwitchStatementSyntax switchStmt)
@@ -1798,7 +2009,6 @@ public sealed class Binder
         BoundNode? iterator = forStmt.Iterator != null ? BindExpression(forStmt.Iterator) : null;
         _loopDepth++;
         _breakableDepth++;
-        _breakableDepth++;
         BoundNode body;
         try
         {
@@ -1807,7 +2017,6 @@ public sealed class Binder
         finally
         {
             _loopDepth--;
-            _breakableDepth--;
             _breakableDepth--;
         }
 
@@ -1818,6 +2027,12 @@ public sealed class Binder
 
     private BoundBreakStatement BindBreak(BreakStatementSyntax breakStmt)
     {
+        if (breakStmt.Label != null)
+        {
+            if (!_labels.Any(label => label.Name == breakStmt.Label))
+                _diagnostics.Error($"Undefined label '{breakStmt.Label}'", breakStmt.Range.Start, DiagnosticCode.TS2016);
+            return new BoundBreakStatement(breakStmt.Label);
+        }
         if (_breakableDepth == 0)
         {
             _diagnostics.Error("'break' can only be used inside a loop or switch", breakStmt.Range.Start, DiagnosticCode.TS2016);
@@ -1828,12 +2043,39 @@ public sealed class Binder
 
     private BoundContinueStatement BindContinue(ContinueStatementSyntax continueStmt)
     {
+        if (continueStmt.Label != null)
+        {
+            var label = _labels.FirstOrDefault(candidate => candidate.Name == continueStmt.Label);
+            if (label.Name == null)
+                _diagnostics.Error($"Undefined label '{continueStmt.Label}'", continueStmt.Range.Start, DiagnosticCode.TS2016);
+            else if (!label.IsLoop)
+                _diagnostics.Error($"Label '{continueStmt.Label}' does not name an iteration statement", continueStmt.Range.Start, DiagnosticCode.TS2016);
+            return new BoundContinueStatement(continueStmt.Label);
+        }
         if (_loopDepth == 0)
         {
             _diagnostics.Error("'continue' can only be used inside a loop", continueStmt.Range.Start, DiagnosticCode.TS2016);
         }
 
         return new BoundContinueStatement();
+    }
+
+    private BoundNode BindLabelled(LabelledStatementSyntax labelled)
+    {
+        if (_labels.Any(label => label.Name == labelled.Label))
+            _diagnostics.Error($"Duplicate label '{labelled.Label}'", labelled.Range.Start, DiagnosticCode.TS2016);
+
+        bool isLoop = LabelsIterationStatement(labelled.Statement);
+        _labels.Push((labelled.Label, isLoop));
+        try { return new BoundLabelledStatement(labelled.Label, BindStatement(labelled.Statement)); }
+        finally { _labels.Pop(); }
+    }
+
+    private static bool LabelsIterationStatement(StatementSyntax statement)
+    {
+        while (statement is LabelledStatementSyntax labelled)
+            statement = labelled.Statement;
+        return statement is WhileStatementSyntax or DoWhileStatementSyntax or ForStatementSyntax or ForOfStatementSyntax or ForInStatementSyntax;
     }
 
     private BoundThrowStatement BindThrow(ThrowStatementSyntax throwStmt)
@@ -1897,10 +2139,13 @@ public sealed class Binder
             ArrayLiteralExpressionSyntax arrLit => BindArrayLiteral(arrLit),
             IndexExpressionSyntax indexExpr => BindIndexExpression(indexExpr),
             LambdaExpressionSyntax lambda => BindInlineLambda(lambda),
+            ClassExpressionSyntax classExpression => BindClassExpression(classExpression),
             AsExpressionSyntax asExpr => BindAsExpression(asExpr),
             TypeofExpressionSyntax typeofExpr => BindTypeof(typeofExpr),
             VoidExpressionSyntax voidExpr => BindVoid(voidExpr),
             DeleteExpressionSyntax deleteExpr => BindDelete(deleteExpr),
+            SpreadExpressionSyntax spread => BindSpread(spread),
+            RegexLiteralExpressionSyntax regex => BindRegexLiteral(regex),
             TemplatePartSyntax templatePart => new BoundCastExpression(
                 BindExpression(templatePart.Expression), TsType.String),
             NonNullAssertionSyntax nonNull => BindNonNullAssertion(nonNull),
@@ -2167,7 +2412,7 @@ public sealed class Binder
         var genericArguments = new Dictionary<string, TsType>(StringComparer.Ordinal);
         ApplyExplicitGenericArguments(call, genericParameters, genericArguments);
         var boundArgs = BindCallArguments(call.Arguments, expectedParams, genericArguments);
-        if (expectedParams != null)
+        if (expectedParams != null && !boundArgs.Any(arg => arg is BoundSpreadExpression))
         {
             var substitutedParams = expectedParams
                 .Select(p => p with { Type = TsType.Substitute(p.Type, genericArguments) })
@@ -2175,7 +2420,10 @@ public sealed class Binder
             ValidateCallArguments(boundArgs, substitutedParams, call.Range.Start);
         }
 
-        return new BoundCallExpression(callee, boundArgs, TsType.Substitute(returnType, genericArguments));
+        var boundReturnType = TsType.Substitute(returnType, genericArguments);
+        if (call.IsNullConditional && boundReturnType is not TsNullableType)
+            boundReturnType = new TsNullableType(boundReturnType);
+        return new BoundCallExpression(callee, boundArgs, boundReturnType, call.IsNullConditional);
     }
 
     private void ApplyExplicitGenericArguments(
@@ -2210,13 +2458,23 @@ public sealed class Binder
         Dictionary<string, TsType>? genericArguments = null)
     {
         var result = new List<BoundNode>(arguments.Count);
+        int restIndex = expectedParams?.ToList().FindIndex(p => p.IsRest) ?? -1;
         for (int i = 0; i < arguments.Count; i++)
         {
-            var expectedType = expectedParams != null && i < expectedParams.Count
-                ? TsType.Substitute(expectedParams[i].Type, genericArguments ?? new Dictionary<string, TsType>())
+            CallParameter? expectedParam = expectedParams != null
+                ? i < expectedParams.Count
+                    ? expectedParams[i]
+                    : restIndex >= 0
+                        ? expectedParams[restIndex]
+                        : null
+                : null;
+            var expectedType = expectedParam != null
+                ? TsType.Substitute(GetCallArgumentExpectedType(expectedParam.Value), genericArguments ?? new Dictionary<string, TsType>())
                 : null;
 
-            if (arguments[i] is LambdaExpressionSyntax lambda && expectedType is TsFunctionType fnType)
+            if (arguments[i] is SpreadExpressionSyntax spread)
+                result.Add(BindSpread(spread));
+            else if (arguments[i] is LambdaExpressionSyntax lambda && expectedType is TsFunctionType fnType)
                 result.Add(BindInlineLambda(lambda, fnType));
             else if (arguments[i] is ObjectLiteralExpressionSyntax objLit && expectedType != null)
                 result.Add(BindObjectLiteral(objLit, expectedType));
@@ -2225,12 +2483,17 @@ public sealed class Binder
             else
                 result.Add(BindExpression(arguments[i]));
 
-            if (expectedParams != null && genericArguments != null && i < expectedParams.Count)
-                InferGenericArguments(expectedParams[i].Type, result[i].Type, genericArguments);
+            if (expectedParam != null && genericArguments != null)
+                InferGenericArguments(GetCallArgumentExpectedType(expectedParam.Value), result[i].Type, genericArguments);
         }
 
         return result;
     }
+
+    private static TsType GetCallArgumentExpectedType(CallParameter parameter) =>
+        parameter.IsRest && parameter.Type is TsArrayType arrayType
+            ? arrayType.ElementType
+            : parameter.Type;
 
     private static void InferGenericArguments(
         TsType expected,
@@ -2281,14 +2544,18 @@ public sealed class Binder
         IReadOnlyList<CallParameter> expectedParams,
         SourceLocation location)
     {
-        var requiredCount = expectedParams.Count;
+        int restIndex = expectedParams.ToList().FindIndex(p => p.IsRest);
+        int fixedCount = restIndex >= 0 ? restIndex : expectedParams.Count;
+        var requiredCount = fixedCount;
         while (requiredCount > 0 && expectedParams[requiredCount - 1].IsOptional)
             requiredCount--;
 
-        if (args.Count < requiredCount || args.Count > expectedParams.Count)
+        if (args.Count < requiredCount || restIndex < 0 && args.Count > expectedParams.Count)
         {
             _diagnostics.Error(
-                requiredCount == expectedParams.Count
+                restIndex >= 0
+                    ? $"Expected at least {requiredCount} argument(s) but got {args.Count}"
+                    : requiredCount == expectedParams.Count
                     ? $"Expected {expectedParams.Count} argument(s) but got {args.Count}"
                     : $"Expected between {requiredCount} and {expectedParams.Count} argument(s) but got {args.Count}",
                 location);
@@ -2298,11 +2565,15 @@ public sealed class Binder
         for (int i = 0; i < args.Count; i++)
         {
             var argType = args[i].Type;
-            var param = expectedParams[i];
+            var param = i < expectedParams.Count
+                ? expectedParams[i]
+                : expectedParams[restIndex];
+            var expectedType = GetCallArgumentExpectedType(param);
+            param = param with { Type = expectedType };
             if (!IsArgumentAssignableToParameter(argType, param))
             {
                 _diagnostics.Error(
-                    $"Argument {i + 1}: cannot assign '{argType}' to parameter '{expectedParams[i].Name}' of type '{expectedParams[i].Type}'",
+                    $"Argument {i + 1}: cannot assign '{argType}' to parameter '{param.Name}' of type '{expectedType}'",
                     location);
             }
         }
@@ -2562,14 +2833,21 @@ public sealed class Binder
             sym.Parameters.Add(new ParameterSymbol(p.Name, TsType.Substitute(p.Type, genericMap), range)
             {
                 HasDefault = p.HasDefault,
-                DefaultValue = p.DefaultValue
+                DefaultValue = p.DefaultValue,
+                IsRest = p.IsRest
             });
         }
         return sym;
     }
 
-    private BoundAssignmentExpression BindAssignment(AssignmentExpressionSyntax assign)
+    private BoundNode BindAssignment(AssignmentExpressionSyntax assign)
     {
+        if (assign.OperatorToken.Kind == TokenKind.Equals &&
+            assign.Target is ArrayLiteralExpressionSyntax or ObjectLiteralExpressionSyntax)
+        {
+            return BindDestructuringAssignment(assign);
+        }
+
         var target = BindExpression(assign.Target);
         var value = BindExpression(assign.Value);
 
@@ -2630,6 +2908,139 @@ public sealed class Binder
         }
 
         return new BoundAssignmentExpression(target, value);
+    }
+
+    private BoundDestructuringAssignmentExpression BindDestructuringAssignment(AssignmentExpressionSyntax assign)
+    {
+        var source = BindExpression(assign.Value);
+        var sourceTemp = new LocalSymbol($"$destructure_assign_{_forOfCounter++}", source.Type, assign.Range, isConst: true);
+        DefineWithDepth(sourceTemp);
+
+        var temporaries = new List<BoundVariableDeclaration>
+        {
+            new(sourceTemp, source)
+        };
+        var assignments = new List<BoundAssignmentExpression>();
+
+        BindDestructuringAssignmentPattern(
+            assign.Target,
+            new BoundVariableExpression(sourceTemp),
+            temporaries,
+            assignments,
+            new List<string>());
+
+        return new BoundDestructuringAssignmentExpression(
+            temporaries,
+            assignments,
+            new BoundVariableExpression(sourceTemp));
+    }
+
+    private void BindDestructuringAssignmentPattern(
+        ExpressionSyntax pattern,
+        BoundNode source,
+        List<BoundVariableDeclaration> temporaries,
+        List<BoundAssignmentExpression> assignments,
+        List<string> excludedObjectKeys)
+    {
+        switch (pattern)
+        {
+            case ArrayLiteralExpressionSyntax array:
+                for (int i = 0; i < array.Elements.Count; i++)
+                {
+                    var element = array.Elements[i];
+                    if (element is SpreadExpressionSyntax spread)
+                    {
+                        var target = BindDestructuringTarget(spread.Expression);
+                        assignments.Add(new BoundAssignmentExpression(target, new BoundArraySliceExpression(source, i)));
+                        continue;
+                    }
+
+                    var value = new BoundIndexExpression(source, new BoundLiteralExpression(i, TsType.Int32), TsType.Any);
+                    BindDestructuringAssignmentElement(element, value, temporaries, assignments, excludedObjectKeys);
+                }
+                break;
+
+            case ObjectLiteralExpressionSyntax obj:
+                var localExcludedObjectKeys = new List<string>();
+                foreach (var property in obj.Properties)
+                {
+                    if (property is ObjectSpreadPropertySyntax spread)
+                    {
+                        var target = BindDestructuringTarget(spread.Value);
+                        assignments.Add(new BoundAssignmentExpression(target, new BoundObjectRestExpression(source, localExcludedObjectKeys.ToList())));
+                        continue;
+                    }
+
+                    if (property is ComputedObjectPropertySyntax computed)
+                    {
+                        var key = BindExpression(computed.KeyExpression);
+                        var value = new BoundIndexExpression(source, key, TsType.Any);
+                        BindDestructuringAssignmentElement(computed.Value, value, temporaries, assignments, localExcludedObjectKeys);
+                    }
+                    else
+                    {
+                        localExcludedObjectKeys.Add(property.Key);
+                        var value = new BoundMemberAccessExpression(source, new PropertySymbol(property.Key, TsType.Any, property.Range));
+                        BindDestructuringAssignmentElement(property.Value, value, temporaries, assignments, localExcludedObjectKeys);
+                    }
+                }
+                break;
+
+            default:
+                assignments.Add(new BoundAssignmentExpression(BindDestructuringTarget(pattern), source));
+                break;
+        }
+    }
+
+    private void BindDestructuringAssignmentElement(
+        ExpressionSyntax targetPattern,
+        BoundNode value,
+        List<BoundVariableDeclaration> temporaries,
+        List<BoundAssignmentExpression> assignments,
+        List<string> excludedObjectKeys)
+    {
+        ExpressionSyntax target = targetPattern;
+        ExpressionSyntax? defaultValue = null;
+        if (targetPattern is AssignmentExpressionSyntax { OperatorToken.Kind: TokenKind.Equals } defaulted)
+        {
+            target = defaulted.Target;
+            defaultValue = defaulted.Value;
+        }
+
+        if (target is ArrayLiteralExpressionSyntax or ObjectLiteralExpressionSyntax)
+        {
+            var temp = new LocalSymbol($"$destructure_nested_{_forOfCounter++}", TsType.Any, target.Range, isConst: true);
+            DefineWithDepth(temp);
+            temporaries.Add(new BoundVariableDeclaration(temp, ApplyDestructuringDefault(value, defaultValue)));
+            BindDestructuringAssignmentPattern(target, new BoundVariableExpression(temp), temporaries, assignments, excludedObjectKeys);
+            return;
+        }
+
+        assignments.Add(new BoundAssignmentExpression(
+            BindDestructuringTarget(target),
+            ApplyDestructuringDefault(value, defaultValue)));
+    }
+
+    private BoundNode ApplyDestructuringDefault(BoundNode value, ExpressionSyntax? defaultValue)
+    {
+        if (defaultValue == null)
+            return value;
+
+        var fallback = BindExpression(defaultValue);
+        var isUndefined = new BoundBinaryExpression(value, TokenKind.TripleEquals,
+            new BoundLiteralExpression(null, TsType.Void), TsType.Bool);
+        var isNull = new BoundBinaryExpression(value, TokenKind.TripleEquals,
+            new BoundLiteralExpression(null, TsType.Any), TsType.Bool);
+        var isMissing = new BoundBinaryExpression(isUndefined, TokenKind.PipePipe, isNull, TsType.Bool);
+        return new BoundConditionalExpression(isMissing, fallback, value, TsType.Any);
+    }
+
+    private BoundNode BindDestructuringTarget(ExpressionSyntax target)
+    {
+        var bound = BindExpression(target);
+        if (bound is not (BoundVariableExpression or BoundMemberAccessExpression or BoundIndexExpression))
+            _diagnostics.Error("Invalid destructuring assignment target", target.Range.Start);
+        return bound;
     }
 
     private BoundConditionalExpression BindConditional(ConditionalExpressionSyntax cond)
@@ -2757,6 +3168,14 @@ public sealed class Binder
                     continue;
                 }
 
+                if (prop is ComputedObjectPropertySyntax computed)
+                {
+                    var key = BindExpression(computed.KeyExpression);
+                    var computedValue = BindExpression(computed.Value);
+                    properties.Add(new BoundObjectPropertyNode(string.Empty, computedValue, computedValue.Type, computedKey: key));
+                    continue;
+                }
+
                 TsType expectedPropertyType;
                 if (ifaceType.Properties.TryGetValue(prop.Key, out var ifaceProp))
                 {
@@ -2822,6 +3241,13 @@ public sealed class Binder
                 {
                     properties.Add(new BoundObjectPropertyNode(string.Empty, value, value.Type, isSpread: true));
                     AddSpreadFieldsToStructuralType(structuralType, value.Type);
+                    continue;
+                }
+
+                if (prop is ComputedObjectPropertySyntax computed)
+                {
+                    var key = BindExpression(computed.KeyExpression);
+                    properties.Add(new BoundObjectPropertyNode(string.Empty, value, value.Type, computedKey: key));
                     continue;
                 }
 
@@ -2982,8 +3408,8 @@ public sealed class Binder
 
     private BoundNode BindForOf(ForOfStatementSyntax forOf)
     {
-        // Desugars to an index-based loop over a captured iterable:
-        //   { const $arr = iterable; for (let $i = 0; $i < $arr.length; $i = $i + 1) { const x = $arr[$i]; body } }
+        // Desugars to an index-based loop over a VM-materialized iterable.
+        // Spread, Array.from and for...of share the same runtime iterable policy.
         var iterable = BindExpression(forOf.Iterable);
         TsType elementType = iterable.Type switch
         {
@@ -2991,21 +3417,21 @@ public sealed class Binder
             TsPrimitiveType { Name: "string" } => TsType.String,
             _ => TsType.Any
         };
-        if (elementType is TsAnyType && iterable.Type is not TsAnyType)
+        if (elementType is TsAnyType && iterable.Type is not (TsAnyType or TsClassType or TsInterfaceType or TsMapType or TsSetType))
         {
-            _diagnostics.Error($"for...of requires an array or string, got '{iterable.Type}'",
+            _diagnostics.Error($"for...of requires an iterable value, got '{iterable.Type}'",
                 forOf.Iterable.Range.Start);
         }
 
         _symbolTable.PushScope();
         int id = _forOfCounter++;
 
-        var arrSym = new LocalSymbol($"$of_arr_{id}", iterable.Type, forOf.Range, isConst: true);
+        var arrSym = new LocalSymbol($"$of_arr_{id}", new TsArrayType(elementType), forOf.Range, isConst: true);
         var idxSym = new LocalSymbol($"$of_idx_{id}", TsType.Int32, forOf.Range);
         DefineWithDepth(arrSym);
         DefineWithDepth(idxSym);
 
-        var arrDecl = new BoundVariableDeclaration(arrSym, iterable);
+        var arrDecl = new BoundVariableDeclaration(arrSym, new BoundIterableValuesExpression(iterable));
         var idxDecl = new BoundVariableDeclaration(idxSym, new BoundLiteralExpression(0, TsType.Int32));
 
         var lengthAccess = new BoundMemberAccessExpression(
@@ -3028,6 +3454,7 @@ public sealed class Binder
                 elementType));
 
         _loopDepth++;
+        _breakableDepth++;
         BoundNode body;
         try
         {
@@ -3036,12 +3463,74 @@ public sealed class Binder
         finally
         {
             _loopDepth--;
+            _breakableDepth--;
         }
         var loopBody = new BoundBlockStatement(new List<BoundNode> { elementDecl, body });
         var loop = new BoundForStatement(idxDecl, condition, increment, loopBody);
 
         _symbolTable.PopScope();
         return new BoundBlockStatement(new List<BoundNode> { arrDecl, loop });
+    }
+
+    private BoundRegexLiteralExpression BindRegexLiteral(RegexLiteralExpressionSyntax regex)
+    {
+        return new BoundRegexLiteralExpression(regex.Pattern, regex.Flags);
+    }
+
+    private BoundSpreadExpression BindSpread(SpreadExpressionSyntax spread)
+    {
+        var expression = BindExpression(spread.Expression);
+        return new BoundSpreadExpression(expression);
+    }
+
+    private BoundNode BindForIn(ForInStatementSyntax forIn)
+    {
+        // Snapshot keys exactly once before the loop. This makes mutation during
+        // iteration deterministic and prevents the body from observing host members.
+        var enumerable = BindExpression(forIn.Enumerable);
+        bool supported = enumerable.Type is TsAnyType or TsArrayType or TsClassType or TsInterfaceType ||
+                         enumerable.Type == TsType.String;
+        if (!supported)
+        {
+            _diagnostics.Error($"for...in requires an object, array, string, or any, got '{enumerable.Type}'",
+                forIn.Enumerable.Range.Start);
+        }
+
+        _symbolTable.PushScope();
+        int id = _forOfCounter++;
+        var keysType = new TsArrayType(TsType.String);
+        var keysSym = new LocalSymbol($"$in_keys_{id}", keysType, forIn.Range, isConst: true);
+        var idxSym = new LocalSymbol($"$in_idx_{id}", TsType.Int32, forIn.Range);
+        DefineWithDepth(keysSym);
+        DefineWithDepth(idxSym);
+
+        var keysDecl = new BoundVariableDeclaration(keysSym, new BoundEnumerateKeysExpression(enumerable));
+        var idxDecl = new BoundVariableDeclaration(idxSym, new BoundLiteralExpression(0, TsType.Int32));
+        var condition = new BoundBinaryExpression(
+            new BoundVariableExpression(idxSym), TokenKind.LessThan,
+            new BoundMemberAccessExpression(new BoundVariableExpression(keysSym),
+                new PropertySymbol("length", TsType.Int32, forIn.Range)), TsType.Bool);
+        var increment = new BoundAssignmentExpression(new BoundVariableExpression(idxSym),
+            new BoundBinaryExpression(new BoundVariableExpression(idxSym), TokenKind.Plus,
+                new BoundLiteralExpression(1, TsType.Int32), TsType.Int32));
+        var keySym = new LocalSymbol(forIn.VariableName, TsType.String, forIn.Range, forIn.IsConst);
+        DefineWithDepth(keySym);
+        var keyDecl = new BoundVariableDeclaration(keySym,
+            new BoundIndexExpression(new BoundVariableExpression(keysSym), new BoundVariableExpression(idxSym), TsType.String));
+
+        _loopDepth++;
+        _breakableDepth++;
+        BoundNode body;
+        try { body = BindStatement(forIn.Body); }
+        finally { _loopDepth--; _breakableDepth--; }
+
+        _symbolTable.PopScope();
+        return new BoundBlockStatement(new List<BoundNode>
+        {
+            keysDecl,
+            new BoundForStatement(idxDecl, condition, increment,
+                new BoundBlockStatement(new List<BoundNode> { keyDecl, body }))
+        });
     }
 
     private BoundArrayLiteralExpression BindArrayLiteral(ArrayLiteralExpressionSyntax arrLit, TsType? expectedType = null)
@@ -3053,13 +3542,25 @@ public sealed class Binder
             _ => expectedType
         };
 
-        var elements = expectedElementType != null
-            ? arrLit.Elements.Select(element => BindExpressionWithExpectedType(element, expectedElementType)).ToList()
-            : arrLit.Elements.Select(BindExpression).ToList();
-        var elementType = expectedElementType ?? (elements.Count > 0 ? elements[0].Type : TsType.Any);
+        var elements = new List<BoundNode>(arrLit.Elements.Count);
+        for (int i = 0; i < arrLit.Elements.Count; i++)
+        {
+            if (arrLit.Elements[i] is SpreadExpressionSyntax spread)
+                elements.Add(BindSpread(spread));
+            else if (expectedElementType != null)
+                elements.Add(BindExpressionWithExpectedType(arrLit.Elements[i], expectedElementType));
+            else
+                elements.Add(BindExpression(arrLit.Elements[i]));
+        }
+
+        var firstNormalElement = elements.FirstOrDefault(e => e is not BoundSpreadExpression);
+        var elementType = expectedElementType ?? firstNormalElement?.Type ?? TsType.Any;
 
         for (int i = expectedElementType != null ? 0 : 1; i < elements.Count; i++)
         {
+            if (elements[i] is BoundSpreadExpression)
+                continue;
+
             if (!TsType.IsCompatibleWith(elements[i].Type, elementType))
             {
                 _diagnostics.Error(
@@ -3096,7 +3597,9 @@ public sealed class Binder
                 indexExpr.Index.Range.Start);
         }
 
-        return new BoundIndexExpression(obj, index, resultType);
+        if (indexExpr.IsNullConditional && resultType is not TsNullableType)
+            resultType = new TsNullableType(resultType);
+        return new BoundIndexExpression(obj, index, resultType, indexExpr.IsNullConditional);
     }
 
     // Type resolution
@@ -3310,6 +3813,9 @@ public sealed class Binder
 
         if (_typeAliases.TryGetValue(named.Name, out var aliased))
             return aliased;
+
+        if (_symbolTable.Lookup(named.Name) is LocalSymbol { Type: TsClassType localClassType })
+            return localClassType;
 
         // User-declared interfaces shadow same-named builtin classes (a repo
         // defining its own `Map` interface must win over the builtin).

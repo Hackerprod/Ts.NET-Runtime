@@ -16,20 +16,27 @@ public enum SyntaxNodeType
     ThisExpression,
     SuperExpression,
     LambdaExpression,
+    ClassExpression,
     AwaitExpression,
     TypeofExpression,
     VoidExpression,
     DeleteExpression,
+    SpreadExpression,
+    RegexLiteralExpression,
     ObjectLiteralExpression,
     ArrayLiteralExpression,
     AsExpression,
     ForOfStatement,
+    ForInStatement,
+    LabelledStatement,
     VariableDeclarationList,
+    DestructuringVariableDeclaration,
     TypeofExpressionNode,
 
     // Statements
     ExpressionStatement,
     ReturnStatement,
+    YieldStatement,
     IfStatement,
     SwitchStatement,
     SwitchClause,
@@ -213,17 +220,20 @@ public sealed class CallExpressionSyntax : ExpressionSyntax
     public ExpressionSyntax Callee { get; }
     public List<TypeSyntax> TypeArguments { get; }
     public List<ExpressionSyntax> Arguments { get; }
+    public bool IsNullConditional { get; }
 
     public CallExpressionSyntax(
         ExpressionSyntax callee,
         List<TypeSyntax> typeArguments,
         List<ExpressionSyntax> arguments,
-        SourceRange range)
+        SourceRange range,
+        bool isNullConditional = false)
         : base(SyntaxNodeType.CallExpression, range)
     {
         Callee = callee;
         TypeArguments = typeArguments;
         Arguments = arguments;
+        IsNullConditional = isNullConditional;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -232,6 +242,34 @@ public sealed class CallExpressionSyntax : ExpressionSyntax
         foreach (var typeArg in TypeArguments) yield return typeArg;
         foreach (var arg in Arguments) yield return arg;
     }
+}
+
+public sealed class SpreadExpressionSyntax : ExpressionSyntax
+{
+    public ExpressionSyntax Expression { get; }
+
+    public SpreadExpressionSyntax(ExpressionSyntax expression, SourceRange range)
+        : base(SyntaxNodeType.SpreadExpression, range)
+    {
+        Expression = expression;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Expression };
+}
+
+public sealed class RegexLiteralExpressionSyntax : ExpressionSyntax
+{
+    public string Pattern { get; }
+    public string Flags { get; }
+
+    public RegexLiteralExpressionSyntax(string pattern, string flags, SourceRange range)
+        : base(SyntaxNodeType.RegexLiteralExpression, range)
+    {
+        Pattern = pattern;
+        Flags = flags;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => Enumerable.Empty<SyntaxNode>();
 }
 
 public sealed class MemberAccessExpressionSyntax : ExpressionSyntax
@@ -255,12 +293,14 @@ public sealed class IndexExpressionSyntax : ExpressionSyntax
 {
     public ExpressionSyntax Object { get; }
     public ExpressionSyntax Index { get; }
+    public bool IsNullConditional { get; }
 
-    public IndexExpressionSyntax(ExpressionSyntax obj, ExpressionSyntax index, SourceRange range)
+    public IndexExpressionSyntax(ExpressionSyntax obj, ExpressionSyntax index, SourceRange range, bool isNullConditional = false)
         : base(SyntaxNodeType.IndexExpression, range)
     {
         Object = obj;
         Index = index;
+        IsNullConditional = isNullConditional;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Object, Index };
@@ -337,15 +377,17 @@ public sealed class LambdaExpressionSyntax : ExpressionSyntax
     public TypeSyntax? ReturnType { get; }
     public SyntaxNode Body { get; }
     public bool IsAsync { get; }
+    public bool IsGenerator { get; }
     public List<GenericParameterSyntax> GenericParameters { get; } = new();
 
-    public LambdaExpressionSyntax(List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode body, bool isAsync, SourceRange range)
+    public LambdaExpressionSyntax(List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode body, bool isAsync, SourceRange range, bool isGenerator = false)
         : base(SyntaxNodeType.LambdaExpression, range)
     {
         Parameters = parameters;
         ReturnType = returnType;
         Body = body;
         IsAsync = isAsync;
+        IsGenerator = isGenerator;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -354,6 +396,24 @@ public sealed class LambdaExpressionSyntax : ExpressionSyntax
         if (ReturnType != null) yield return ReturnType;
         yield return Body;
     }
+}
+
+public sealed class ClassExpressionSyntax : ExpressionSyntax
+{
+    public string? Name { get; }
+    public List<GenericParameterSyntax> GenericParameters { get; } = new();
+    public TypeSyntax? BaseType { get; set; }
+    public List<TypeSyntax> ImplementedInterfaces { get; } = new();
+    public List<SyntaxNode> Members { get; }
+
+    public ClassExpressionSyntax(string? name, List<SyntaxNode> members, SourceRange range)
+        : base(SyntaxNodeType.ClassExpression, range)
+    {
+        Name = name;
+        Members = members;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => Members;
 }
 
 public sealed class AsExpressionSyntax : ExpressionSyntax
@@ -485,6 +545,36 @@ public sealed class IfStatementSyntax : StatementSyntax
     }
 }
 
+public sealed class YieldStatementSyntax : StatementSyntax
+{
+    public ExpressionSyntax? Value { get; }
+
+    public YieldStatementSyntax(ExpressionSyntax? value, SourceRange range)
+        : base(SyntaxNodeType.YieldStatement, range)
+    {
+        Value = value;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() =>
+        Value != null ? new[] { Value } : Enumerable.Empty<SyntaxNode>();
+}
+
+// A computed key is kept as an expression so it is evaluated exactly once at
+// object construction time.  Collapsing it to a string in the parser would
+// lose both side effects and the JavaScript property-key conversion rules.
+public sealed class ComputedObjectPropertySyntax : ObjectPropertySyntax
+{
+    public ExpressionSyntax KeyExpression { get; }
+
+    public ComputedObjectPropertySyntax(ExpressionSyntax keyExpression, ExpressionSyntax value, SourceRange range)
+        : base(string.Empty, value, range)
+    {
+        KeyExpression = keyExpression;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { KeyExpression, Value };
+}
+
 public sealed class SwitchClauseSyntax : SyntaxNode
 {
     public ExpressionSyntax? Test { get; }
@@ -581,9 +671,12 @@ public sealed class ForStatementSyntax : StatementSyntax
 
 public sealed class BreakStatementSyntax : StatementSyntax
 {
-    public BreakStatementSyntax(SourceRange range)
+    public string? Label { get; }
+
+    public BreakStatementSyntax(SourceRange range, string? label = null)
         : base(SyntaxNodeType.BreakStatement, range)
     {
+        Label = label;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -594,9 +687,12 @@ public sealed class BreakStatementSyntax : StatementSyntax
 
 public sealed class ContinueStatementSyntax : StatementSyntax
 {
-    public ContinueStatementSyntax(SourceRange range)
+    public string? Label { get; }
+
+    public ContinueStatementSyntax(SourceRange range, string? label = null)
         : base(SyntaxNodeType.ContinueStatement, range)
     {
+        Label = label;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -689,9 +785,10 @@ public sealed class FunctionDeclarationSyntax : DeclarationSyntax
     public TypeSyntax? ReturnType { get; }
     public SyntaxNode Body { get; }
     public bool IsAsync { get; }
+    public bool IsGenerator { get; }
     public List<GenericParameterSyntax> GenericParameters { get; } = new();
 
-    public FunctionDeclarationSyntax(string name, List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode body, bool isAsync, SourceRange range)
+    public FunctionDeclarationSyntax(string name, List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode body, bool isAsync, SourceRange range, bool isGenerator = false)
         : base(SyntaxNodeType.FunctionDeclaration, range)
     {
         Name = name;
@@ -699,6 +796,7 @@ public sealed class FunctionDeclarationSyntax : DeclarationSyntax
         ReturnType = returnType;
         Body = body;
         IsAsync = isAsync;
+        IsGenerator = isGenerator;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -909,6 +1007,7 @@ public sealed class ParameterSyntax : SyntaxNode
     public TypeSyntax TypeAnnotation { get; }
     public bool TypeWasInferred { get; }
     public ExpressionSyntax? DefaultValue { get; }
+    public bool IsRest { get; }
 
     // TypeScript constructor parameter properties: `constructor(private x: T)`
     // declares a field and assigns it from the parameter.
@@ -919,13 +1018,15 @@ public sealed class ParameterSyntax : SyntaxNode
         TypeSyntax typeAnnotation,
         ExpressionSyntax? defaultValue,
         SourceRange range,
-        bool typeWasInferred = false)
+        bool typeWasInferred = false,
+        bool isRest = false)
         : base(SyntaxNodeType.Parameter, range)
     {
         Name = name;
         TypeAnnotation = typeAnnotation;
         TypeWasInferred = typeWasInferred;
         DefaultValue = defaultValue;
+        IsRest = isRest;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -1156,6 +1257,95 @@ public sealed class ForOfStatementSyntax : StatementSyntax
     }
 
     public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Iterable, Body };
+}
+
+// Binding patterns are deliberately syntax nodes rather than expressions: an
+// array/object on the left of a declaration has l-value semantics and must not
+// be evaluated as a runtime literal.
+public sealed class BindingElementSyntax : SyntaxNode
+{
+    public string SourceName { get; }
+    public string Name { get; }
+    public ExpressionSyntax? DefaultValue { get; }
+    public bool IsRest { get; }
+
+    public BindingElementSyntax(string name, ExpressionSyntax? defaultValue, bool isRest, SourceRange range, string? sourceName = null)
+        : base(SyntaxNodeType.DestructuringVariableDeclaration, range)
+    {
+        SourceName = sourceName ?? name;
+        Name = name;
+        DefaultValue = defaultValue;
+        IsRest = isRest;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        if (DefaultValue != null) yield return DefaultValue;
+    }
+}
+
+public sealed class DestructuringVariableDeclarationSyntax : StatementSyntax
+{
+    public bool IsArray { get; }
+    public List<BindingElementSyntax> Elements { get; }
+    public ExpressionSyntax? Pattern { get; }
+    public ExpressionSyntax? Initializer { get; }
+    public bool IsConst { get; }
+
+    public DestructuringVariableDeclarationSyntax(bool isArray, List<BindingElementSyntax> elements,
+        ExpressionSyntax? initializer, bool isConst, SourceRange range, ExpressionSyntax? pattern = null)
+        : base(SyntaxNodeType.DestructuringVariableDeclaration, range)
+    {
+        IsArray = isArray;
+        Elements = elements;
+        Pattern = pattern;
+        Initializer = initializer;
+        IsConst = isConst;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        if (Pattern != null) yield return Pattern;
+        foreach (var element in Elements) yield return element;
+        if (Initializer != null) yield return Initializer;
+    }
+}
+
+public sealed class LabelledStatementSyntax : StatementSyntax
+{
+    public string Label { get; }
+    public StatementSyntax Statement { get; }
+
+    public LabelledStatementSyntax(string label, StatementSyntax statement, SourceRange range)
+        : base(SyntaxNodeType.LabelledStatement, range)
+    {
+        Label = label;
+        Statement = statement;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Statement };
+}
+
+// `for (let key in value) { ... }` enumerates the value's own enumerable keys.
+// It is deliberately separate from ForOf: the latter consumes an iterator,
+// whereas for-in observes property names.
+public sealed class ForInStatementSyntax : StatementSyntax
+{
+    public string VariableName { get; }
+    public bool IsConst { get; }
+    public ExpressionSyntax Enumerable { get; }
+    public StatementSyntax Body { get; }
+
+    public ForInStatementSyntax(string variableName, bool isConst, ExpressionSyntax enumerable, StatementSyntax body, SourceRange range)
+        : base(SyntaxNodeType.ForInStatement, range)
+    {
+        VariableName = variableName;
+        IsConst = isConst;
+        Enumerable = enumerable;
+        Body = body;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { Enumerable, Body };
 }
 
 public sealed class ArrayTypeSyntax : TypeSyntax

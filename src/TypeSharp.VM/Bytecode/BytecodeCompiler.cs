@@ -9,6 +9,8 @@ public sealed class BytecodeFunction
     public int ParameterCount { get; }
     public int LocalCount { get; }
     public bool IsAsync { get; }
+    public bool IsGenerator { get; }
+    public int RestParameterIndex { get; }
     public string[] StringConstants { get; }
     public long[] IntegerConstants { get; }
     public double[] DoubleConstants { get; }
@@ -17,13 +19,16 @@ public sealed class BytecodeFunction
 
     public BytecodeFunction(string name, byte[] instructions, int parameterCount, int localCount,
         bool isAsync, string[] stringConstants, long[] integerConstants, double[] doubleConstants,
-        decimal[]? decimalConstants = null, int operandStackCapacity = 0)
+        decimal[]? decimalConstants = null, int operandStackCapacity = 0, bool isGenerator = false,
+        int restParameterIndex = -1)
     {
         Name = name;
         Instructions = instructions;
         ParameterCount = parameterCount;
         LocalCount = localCount;
         IsAsync = isAsync;
+        IsGenerator = isGenerator;
+        RestParameterIndex = restParameterIndex;
         StringConstants = stringConstants;
         IntegerConstants = integerConstants;
         DoubleConstants = doubleConstants;
@@ -109,7 +114,9 @@ public static class BytecodeCompiler
             intConstants,
             doubleConstants,
             decimalConstants,
-            stackCapacity);
+            stackCapacity,
+            function.IsGenerator,
+            function.Parameters.FindIndex(p => p.IsRest));
     }
 
     // ────────────────────────────────────────────────────────
@@ -143,7 +150,7 @@ public static class BytecodeCompiler
         // Pushes
         Opcode.LoadConst_I32 or Opcode.LoadConst_I64 or Opcode.LoadConst_U64 or
         Opcode.LoadConst_BigInt or Opcode.LoadConst_F32 or Opcode.LoadConst_F64 or
-        Opcode.LoadConst_Decimal or Opcode.LoadConst_String or Opcode.LoadConst_Bool or
+        Opcode.LoadConst_Decimal or Opcode.LoadConst_String or Opcode.LoadConst_Regex or Opcode.LoadConst_Bool or
         Opcode.LoadConst_Null or Opcode.LoadConst_Void or
         Opcode.LoadLocal or Opcode.LoadArg or Opcode.LoadThis or
         Opcode.LoadField or Opcode.LoadGlobal or
@@ -151,6 +158,13 @@ public static class BytecodeCompiler
 
         Opcode.CopyObjectFields => -2,
         Opcode.LoadElement => -1, // pop obj + index, push value
+        Opcode.EnumerateKeys => 0, // pop value, push keys array
+        Opcode.IterableValues => 0, // pop iterable, push materialized value array
+        Opcode.ArraySliceFrom => 0, // pop source, push copied suffix
+        Opcode.ObjectRest => -instr.Operand0, // source + N keys -> object
+        Opcode.ArrayAppend or Opcode.ArrayAppendSpread => -2, // duplicated target + value; original array remains
+        Opcode.NewGenerator => 0, // legacy: pop yielded array, push generator
+        Opcode.Yield => -1, // pop yielded value; resume object receives it out-of-band
         Opcode.NewMap => 1,
 
         // NewArray: pops N (operand0) elements, pushes 1 array
@@ -190,6 +204,7 @@ public static class BytecodeCompiler
         // Call: -(argCount + 1) + 1 = -argCount
         Opcode.Call or Opcode.CallVirt => -(instr.Operand1),
         Opcode.CallDynamic => -(instr.Operand1),
+        Opcode.CallDynamicArray => -1, // pop callee + args array, push result
 
         // Return
         Opcode.ReturnVoid => 0,
@@ -254,6 +269,10 @@ public static class BytecodeCompiler
                 break;
             case Opcode.LoadConst_String:
                 writer.Write(Opcodes.LoadConstString);
+                writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.LoadConst_Regex:
+                writer.Write(Opcodes.LoadConstRegex);
                 writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.LoadConst_Bool:
@@ -436,6 +455,10 @@ public static class BytecodeCompiler
                 writer.WriteInt32(instr.Operand1);
                 break;
             case Opcode.CopyObjectFields: writer.Write(Opcodes.CopyObjectFields); break;
+            case Opcode.EnumerateKeys: writer.Write(Opcodes.EnumerateKeys); break;
+            case Opcode.IterableValues: writer.Write(Opcodes.IterableValues); break;
+            case Opcode.ArraySliceFrom: writer.Write(Opcodes.ArraySliceFrom); writer.WriteInt32(instr.Operand0); break;
+            case Opcode.ObjectRest: writer.Write(Opcodes.ObjectRest); writer.WriteInt32(instr.Operand0); break;
             case Opcode.Dup: writer.Write(Opcodes.Dup); break;
             case Opcode.Pop: writer.Write(Opcodes.Pop); break;
 
@@ -488,10 +511,14 @@ public static class BytecodeCompiler
                 writer.WriteInt32(instr.Operand1);
                 break;
             case Opcode.Throw: writer.Write(Opcodes.Throw); break;
+            case Opcode.Yield: writer.Write(Opcodes.Yield); break;
             case Opcode.NewArray:
                 writer.Write(Opcodes.NewArray);
                 writer.WriteInt32(instr.Operand0);
                 break;
+            case Opcode.ArrayAppend: writer.Write(Opcodes.ArrayAppend); break;
+            case Opcode.ArrayAppendSpread: writer.Write(Opcodes.ArrayAppendSpread); break;
+            case Opcode.NewGenerator: writer.Write(Opcodes.NewGenerator); break;
             case Opcode.LoadElement: writer.Write(Opcodes.LoadElement); break;
             case Opcode.StoreElement: writer.Write(Opcodes.StoreElement); break;
             case Opcode.LoadFunc:
@@ -501,6 +528,9 @@ public static class BytecodeCompiler
             case Opcode.CallDynamic:
                 writer.Write(Opcodes.CallDynamic);
                 writer.WriteInt32(instr.Operand0);
+                break;
+            case Opcode.CallDynamicArray:
+                writer.Write(Opcodes.CallDynamicArray);
                 break;
             case Opcode.MakeClosure:
                 writer.Write(Opcodes.MakeClosure);
@@ -552,6 +582,7 @@ public static class BytecodeCompiler
                 if (instr.OperandObject is string s)
                 {
                     if (instr.Opcode is Opcode.LoadConst_String or
+                        Opcode.LoadConst_Regex or
                         Opcode.LoadConst_BigInt or
                         Opcode.Call or
                         Opcode.CallVirt or

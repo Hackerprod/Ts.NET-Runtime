@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using TypeSharp.VM.Bytecode;
 
 namespace TypeSharp.VM.Memory;
@@ -25,6 +26,8 @@ public abstract class TsValue
     public static TsValue FromDecimal(decimal value) => new TsDecimalValue(value);
     public static TsValue FromUint8Array(byte[] value) => new TsUint8ArrayValue(value);
     public static TsValue FromPromise(Task<TsValue?> task) => new TsPromiseValue(task);
+    public static TsValue FromRegex(string pattern, string flags) => new TsRegexValue(pattern, flags);
+    public static TsValue FromGenerator(TsArray values) => new TsGeneratorValue(values);
     public static TsValue FromNull() => Null;
 
     public override string ToString() => RawValue?.ToString() ?? "null";
@@ -32,7 +35,7 @@ public abstract class TsValue
 
 public enum TsValueType
 {
-    Void, Null, Bool, Int32, Int64, UInt64, BigInt, Float32, Float64, Decimal, String, Object, Array, Map, Set, Uint8Array, Promise
+    Void, Null, Bool, Int32, Int64, UInt64, BigInt, Float32, Float64, Decimal, String, Object, Array, Map, Set, Uint8Array, Promise, Regex, Generator
 }
 
 public sealed class TsVoid : TsValue
@@ -249,6 +252,88 @@ public sealed class TsPromiseValue : TsValue
     public override string ToString() => "[object Promise]";
 }
 
+public sealed class TsRegexValue : TsValue
+{
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(100);
+
+    public string Pattern { get; }
+    public string Flags { get; }
+    public Regex Regex { get; }
+    public override TsValueType ValueType => TsValueType.Regex;
+    public override object? RawValue => Regex;
+
+    public TsRegexValue(string pattern, string flags)
+    {
+        Pattern = pattern;
+        Flags = flags;
+        Regex = new Regex(pattern, ToOptions(flags), MatchTimeout);
+    }
+
+    public bool Test(string input) => Regex.IsMatch(input);
+
+    public override string ToString() => $"/{Pattern}/{Flags}";
+
+    private static RegexOptions ToOptions(string flags)
+    {
+        var options = RegexOptions.CultureInvariant;
+        foreach (var flag in flags)
+        {
+            options |= flag switch
+            {
+                'i' => RegexOptions.IgnoreCase,
+                'm' => RegexOptions.Multiline,
+                's' => RegexOptions.Singleline,
+                _ => RegexOptions.None
+            };
+        }
+        return options;
+    }
+}
+
+public sealed class TsGeneratorValue : TsValue
+{
+    private readonly TsArray? _legacyValues;
+    private int _legacyIndex;
+
+    public override TsValueType ValueType => TsValueType.Generator;
+    public override object? RawValue => Frame ?? (object?)_legacyValues;
+
+    public BytecodeModule? Module { get; }
+    public CallFrame? Frame { get; }
+    public bool Done { get; set; }
+    public bool Running { get; set; }
+
+    public TsGeneratorValue(BytecodeModule module, CallFrame frame)
+    {
+        Module = module;
+        Frame = frame;
+    }
+
+    public TsGeneratorValue(TsArray values)
+    {
+        _legacyValues = values;
+    }
+
+    public bool TryNextLegacy(out TsValue value, out bool done)
+    {
+        value = TsValue.Void;
+        done = false;
+        if (_legacyValues == null)
+            return false;
+
+        if (_legacyIndex >= _legacyValues.Count)
+        {
+            done = true;
+            return true;
+        }
+
+        value = _legacyValues.Get(_legacyIndex++);
+        return true;
+    }
+
+    public override string ToString() => "[object Generator]";
+}
+
 // Runtime objects
 public sealed class TsObject
 {
@@ -286,7 +371,9 @@ public sealed class TsArray
 
     public TsValue Get(int index)
     {
-        if (index < 0 || index >= _count) return TsValue.Null;
+        // JavaScript array reads outside the current length yield undefined;
+        // this is also what makes destructuring defaults observable.
+        if (index < 0 || index >= _count) return TsValue.Void;
         if (_presence != null && !_presence[index]) return TsValue.Void;
         return _elements[index];
     }
@@ -441,6 +528,8 @@ public sealed class TsSet
     private readonly HashSet<TsValue> _entries = new(TsValueMapKeyComparer.Instance);
 
     public int Count => _entries.Count;
+
+    public IEnumerable<TsValue> Entries => _entries;
 
     public bool Add(TsValue value) => _entries.Add(value);
 

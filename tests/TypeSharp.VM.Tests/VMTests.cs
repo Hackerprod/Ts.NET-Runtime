@@ -35,6 +35,365 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void ForIn_EnumeratesOwnObjectKeysInInsertionOrder()
+    {
+        var result = Run("function main(): string { let seen: string = ''; for (let key in { first: 1, second: 2 }) { seen = seen + key; } return seen; }");
+        Assert.Equal("firstsecond", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void ForIn_EnumeratesPresentArrayIndexesAndSkipsHoles()
+    {
+        var result = Run("function main(): string { let a = [10, 20, 30]; delete a[1]; let seen: string = ''; for (let key in a) { seen = seen + key; } return seen; }");
+        Assert.Equal("02", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void ForIn_SnapshotsKeysBeforeTheLoopBodyMutatesTheObject()
+    {
+        var result = Run("function main(): int32 { let value = { first: 1, second: 2 }; let count: int32 = 0; for (let key in value) { value.third = 3; count = count + 1; } return count; }");
+        Assert.Equal(2, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ForIn_NullEnumerationFailsAsAVmError()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): void { for (let key in null) { } }"));
+        Assert.Contains("Cannot enumerate keys", error.Message);
+    }
+
+    [Fact]
+    public void OptionalIndex_DoesNotEvaluateTheIndexForANullishReceiver()
+    {
+        var result = Run("function main(): int32 { let count: int32 = 0; function index(): int32 { count = count + 1; return 0; } let value: any = null; value?.[index()]; return count; }");
+        Assert.Equal(0, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void OptionalIndex_LoadsTheElementForANonNullReceiver()
+    {
+        var result = Run("function main(): int32 { let value = [7]; return value?.[0]; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void OptionalCall_SkipsArgumentsForANullishCallee()
+    {
+        var result = Run("function main(): int32 { let count: int32 = 0; function bump(): int32 { count = count + 1; return 1; } let fn: any = null; fn?.(bump()); return count; }");
+        Assert.Equal(0, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void OptionalCall_InvokesANonNullFunction()
+    {
+        var result = Run("function plusOne(value: int32): int32 { return value + 1; } function main(): int32 { return plusOne?.(4); }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void OptionalChaining_NullishReceiverProducesUndefined()
+    {
+        var indexResult = Run("function main(): any { let value: any = null; return value?.[0]; }");
+        var callResult = Run("function main(): any { let fn: any = null; return fn?.(); }");
+
+        Assert.IsType<TsVoid>(indexResult);
+        Assert.IsType<TsVoid>(callResult);
+    }
+
+    [Fact]
+    public void FunctionExpression_CapturesItsLexicalEnvironment()
+    {
+        var result = Run("function main(): int32 { let offset: int32 = 3; let add = function(value: int32): int32 { return value + offset; }; return add(4); }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ClassExpression_CanBeConstructedFromLocalBinding()
+    {
+        var result = Run("function main(): int32 { let Box = class { constructor(public value: int32) {} get(): int32 { return this.value; } }; let box = new Box(7); return box.get(); }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void NamedClassExpression_UsesInternalClassNameForMethods()
+    {
+        var result = Run("function main(): int32 { let Box = class InternalBox { get(): int32 { return 9; } }; let box = new Box(); return box.get(); }");
+        Assert.Equal(9, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ClassExpression_CanBeConstructedFromClosure()
+    {
+        var result = Run("function main(): int32 { let Box = class { get(): int32 { return 8; } }; let make = function(): int32 { let box = new Box(); return box.get(); }; return make(); }");
+        Assert.Equal(8, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ComputedObjectProperty_EvaluatesKeyBeforeValueAndStoresByRuntimeKey()
+    {
+        var result = Run("function main(): string { let order: string = ''; function key(): string { order = order + 'k'; return 'answer'; } function value(): int32 { order = order + 'v'; return 42; } let obj = { [key()]: value() }; return order + obj['answer']; }");
+        Assert.Equal("kv42", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void ComputedObjectProperty_ConvertsNumericKeyToPropertyName()
+    {
+        var result = Run("function main(): int32 { let obj = { [1]: 9 }; return obj[1]; }");
+        Assert.Equal(9, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LabelledBreak_ExitsTheNamedOuterLoop()
+    {
+        var result = Run("function main(): int32 { let count: int32 = 0; outer: for (let i: int32 = 0; i < 3; i = i + 1) { for (let j: int32 = 0; j < 3; j = j + 1) { count = count + 1; break outer; } } return count; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LabelledContinue_ResumesTheNamedOuterLoop()
+    {
+        var result = Run("function main(): int32 { let count: int32 = 0; outer: for (let i: int32 = 0; i < 3; i = i + 1) { for (let j: int32 = 0; j < 3; j = j + 1) { continue outer; } count = count + 10; } return count; }");
+        Assert.Equal(0, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ChainedLabels_CanTargetTheSameLoopForContinue()
+    {
+        var result = Run("function main(): int32 { let count: int32 = 0; outer: inner: for (let i: int32 = 0; i < 3; i = i + 1) { count = count + 1; continue outer; count = count + 100; } return count; }");
+        Assert.Equal(3, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ArrayDestructuring_EvaluatesTheSourceOnceAndBindsIndexes()
+    {
+        var result = Run("function main(): int32 { let calls: int32 = 0; function source(): any { calls = calls + 1; return [4, 5]; } let [first, second] = source(); return calls * 100 + first * 10 + second; }");
+        Assert.Equal(145, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void ObjectDestructuring_BindsNamedProperties()
+    {
+        var result = Run("function main(): int32 { let { left, right } = { left: 6, right: 7 }; return left * 10 + right; }");
+        Assert.Equal(67, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void ArrayDestructuring_AppliesDefaultAndCreatesIndependentRestArray()
+    {
+        var result = Run("function main(): int64 { let [first, missing = 8, ...rest] = [3]; rest[0] = 9; return first * 100 + missing * 10 + rest.length; }");
+        Assert.Equal(381, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void ObjectDestructuring_RestExcludesBoundOwnProperties()
+    {
+        var result = Run("function main(): int64 { let { kept, ...rest } = { kept: 2, other: 4 }; return kept * 10 + rest.other; }");
+        Assert.Equal(24, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void ObjectDestructuring_AliasUsesTheSourcePropertyName()
+    {
+        var result = Run("function main(): int64 { let { source: local } = { source: 12 }; return local; }");
+        Assert.Equal(12, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DestructuringDeclaration_SupportsNestedDefaultsAndRest()
+    {
+        var result = Run("function main(): int64 { let [first, { missing: second = 8 }, ...rest] = [3, {}, 5, 6]; return first * 1000 + second * 100 + rest[0] * 10 + rest[1]; }");
+        Assert.Equal(3856, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void ObjectDestructuringDeclaration_NestedAliasAndRest()
+    {
+        var result = Run("function main(): int64 { let { nested: { value: local }, ...rest } = { nested: { value: 4 }, kept: 7 }; return local * 10 + rest.kept; }");
+        Assert.Equal(47, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void Destructuring_RestMustBeLast()
+    {
+        const string source = "function main(): void { let [first, ...rest, last] = [1, 2, 3]; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+
+        parser.Parse();
+
+        Assert.Contains(parser.Diagnostics,
+            diagnostic => diagnostic.Message.Contains("rest binding must be the last", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DestructuringAssignment_EvaluatesSourceOnceAndAssignsArrayElements()
+    {
+        var result = Run("function main(): int32 { let calls: int32 = 0; let a: int32 = 0; let b: int32 = 0; function source(): any { calls = calls + 1; return [4, 5]; } [a, b] = source(); return calls * 100 + a * 10 + b; }");
+        Assert.Equal(145, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DestructuringAssignment_SupportsNestedDefaultsAndObjectRest()
+    {
+        var result = Run("function main(): int64 { let a: int32 = 0; let b: int32 = 0; let rest: any = null; ({ left: a, nested: { missing: b = 7 }, ...rest } = { left: 3, nested: {}, kept: 9 }); return a * 100 + b * 10 + rest.kept; }");
+        Assert.Equal(379, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void DestructuringAssignment_InvalidTargetReportsBinderError()
+    {
+        const string source = "function main(): void { [1] = [2]; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        Assert.Contains(binder.Diagnostics.GetErrors(),
+            diagnostic => diagnostic.Message.Contains("Invalid destructuring assignment target", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ArraySpread_EvaluatesSourceOnceAndCopiesInOrder()
+    {
+        var result = Run("function main(): int64 { let calls: int32 = 0; function source(): any { calls = calls + 1; return [2, 3]; } let values = [1, ...source(), 4]; return calls * 1000 + values[0] * 100 + values[1] * 10 + values[3]; }");
+        Assert.Equal(1124, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void CallSpread_ExpandsArgumentsInEvaluationOrder()
+    {
+        var result = Run("function sum(a: int32, b: int32, c: int32): int32 { return a * 100 + b * 10 + c; } function main(): int32 { return sum(1, ...[2], 3); }");
+        Assert.Equal(123, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void RestParameter_CapturesExtraArgumentsInOrder()
+    {
+        var result = Run("function pack(first: int32, ...rest: any): int32 { return first * 100 + rest[0] * 10 + rest[1]; } function main(): int32 { return pack(1, 2, 3); }");
+        Assert.Equal(123, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void RestParameter_CreatesEmptyArrayWhenNoExtraArguments()
+    {
+        var result = Run("function pack(...rest: any): int32 { return rest.length; } function main(): int32 { return pack(); }");
+        Assert.Equal(0, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void RestParameter_MustBeLast()
+    {
+        const string source = "function main(...rest: any, value: int32): void { }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+
+        parser.Parse();
+
+        Assert.Contains(parser.Diagnostics,
+            diagnostic => diagnostic.Message.Contains("rest parameter must be the last", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ArraySpread_ConsumesArrayLikeRuntimeObjects()
+    {
+        var result = Run("function main(): int64 { let source: any = { length: 2, 0: 6, 1: 7 }; let values = [5, ...source]; return values[0] * 100 + values[1] * 10 + values[2]; }");
+        Assert.Equal(567, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ForOf_ConsumesArrayLikeRuntimeObjectsThroughSharedIterablePolicy()
+    {
+        var result = Run("function main(): int64 { let source: any = { length: 2, 0: 4, 1: 5 }; let total: int64 = 0; for (let value of source) { total = total * 10 + value; } return total; }");
+        Assert.Equal(45, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void ArrayFrom_UsesSharedIterablePolicyAndMapper()
+    {
+        var result = Run("function main(): int64 { let source: any = { length: 2, 0: 3, 1: 4 }; let values = Array.from(source, (value: int32) => value + 1); return values[0] * 10 + values[1]; }");
+        Assert.Equal(45, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void OptionalCallSpread_SkipsSpreadEvaluationForNullishCallee()
+    {
+        var result = Run("function main(): int32 { let count: int32 = 0; function args(): any { count = count + 1; return [1]; } let fn: any = null; fn?.(...args()); return count; }");
+        Assert.Equal(0, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void RegexLiteral_ProducesDedicatedValueAndSupportsTest()
+    {
+        var result = Run("function main(): bool { return /^a+$/i.test('AAA'); }");
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+    }
+
+    [Fact]
+    public void GeneratorFunction_YieldsValuesThroughNext()
+    {
+        var result = Run("function* numbers(): any { yield 4; yield 5; } function main(): int32 { let g: any = numbers(); let first: any = g.next(); let second: any = g.next(); let third: any = g.next(); if (third.done) { return first.value * 10 + second.value; } return 0; }");
+        Assert.Equal(45, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void GeneratorFunction_IsLazyAndSuspendsBetweenNextCalls()
+    {
+        var result = Run("let count: int32 = 0; function* numbers(): any { count = count + 1; yield count; count = count + 1; yield count; count = count + 1; return 7; } function main(): int32 { let g: any = numbers(); let before: int32 = count; let first: any = g.next(); let mid: int32 = count; let second: any = g.next(); let third: any = g.next(); let after: int32 = count; if (third.done) { return before * 10000 + first.value * 1000 + mid * 100 + second.value * 10 + after; } return 0; }");
+        Assert.Equal(1123, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void GeneratorReturn_ClosesTheGenerator()
+    {
+        var result = Run("function* numbers(): any { yield 1; yield 2; } function main(): int32 { let g: any = numbers(); let first: any = g.next(); let closed: any = g.return(99); let after: any = g.next(); if (first.value === 1 && closed.done && closed.value === 99 && after.done) { return 1; } return 0; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void GeneratorThrow_ClosesAndPropagatesUnhandledScriptValue()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            Run("function* numbers(): any { yield 1; yield 2; } function main(): int32 { let g: any = numbers(); g.next(); g.throw('boom'); return 0; }"));
+        Assert.Contains("boom", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GeneratorThrow_ResumesIntoActiveCatchHandler()
+    {
+        var result = Run("function* numbers(): any { try { yield 1; yield 2; } catch (e: any) { yield 9; } } function main(): int32 { let g: any = numbers(); let first: any = g.next(); let caught: any = g.throw('boom'); let done: any = g.next(); if (first.value === 1 && caught.value === 9 && !caught.done && done.done) { return 1; } return 0; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void YieldOutsideGenerator_ReportsBinderError()
+    {
+        const string source = "function main(): void { yield 1; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        Assert.Contains(binder.Diagnostics.GetErrors(),
+            diagnostic => diagnostic.Message.Contains("yield", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ForOf_BreakIsAcceptedAndExitsTheLoop()
+    {
+        const string source = "function main(): int32 { let count: int32 = 0; for (let value of [1, 2, 3]) { count = count + 1; break; } return count; }";
+        var lexer = new TypeSharp.Syntax.Lexer(source);
+        var parser = new TypeSharp.Syntax.Parser.Parser(lexer.Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+
+        Assert.False(binder.Diagnostics.HasErrors,
+            string.Join("; ", binder.Diagnostics.GetErrors().Select(d => d.Message)));
+
+        var module = BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree));
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(module, "main");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
     public void ExecuteAddFunction()
     {
         var code = "function add(a: int32, b: int32): int32 { return a + b; }";
@@ -1416,7 +1775,10 @@ public class BytecodeTests
         var code = new byte[] { Opcodes.LoadConstI32, 42, 0, 0, 0, Opcodes.Return };
         var function = new BytecodeFunction("main", code, 0, 0, false,
             new[] { "unused" }, Array.Empty<long>(), Array.Empty<double>(), new[] { 12.5m });
-        var module = new BytecodeModule("roundtrip", new[] { function });
+        var generator = new BytecodeFunction("gen", new[] { Opcodes.ReturnVoid }, 1, 0, false,
+            Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>(),
+            operandStackCapacity: 0, isGenerator: true, restParameterIndex: 0);
+        var module = new BytecodeModule("roundtrip", new[] { function, generator });
 
         using var stream = new MemoryStream();
         BytecodeSerializer.Serialize(stream, module);
@@ -1426,6 +1788,8 @@ public class BytecodeTests
         var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(restored, "main");
         Assert.Equal(42, ((TsInt32Value)result!).Value);
         Assert.Equal(12.5m, restored.Functions[0].DecimalConstants[0]);
+        Assert.True(restored.Functions[1].IsGenerator);
+        Assert.Equal(0, restored.Functions[1].RestParameterIndex);
     }
 
     [Fact]
