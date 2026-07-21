@@ -68,8 +68,11 @@ public enum SyntaxNodeType
     GenericConstraint,
     PropertyDeclaration,
     MethodDeclaration,
+    AccessorDeclaration,
     ConstructorDeclaration,
     FieldDeclaration,
+    StaticBlock,
+    IndexSignature,
     EnumMember,
     Modifier,
 
@@ -405,6 +408,8 @@ public sealed class ClassExpressionSyntax : ExpressionSyntax
     public TypeSyntax? BaseType { get; set; }
     public List<TypeSyntax> ImplementedInterfaces { get; } = new();
     public List<SyntaxNode> Members { get; }
+    public bool IsAbstract { get; set; }
+    public List<DecoratorSyntax> Decorators { get; } = new();
 
     public ClassExpressionSyntax(string? name, List<SyntaxNode> members, SourceRange range)
         : base(SyntaxNodeType.ClassExpression, range)
@@ -413,7 +418,14 @@ public sealed class ClassExpressionSyntax : ExpressionSyntax
         Members = members;
     }
 
-    public override IEnumerable<SyntaxNode> GetChildren() => Members;
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        foreach (var d in Decorators) yield return d;
+        foreach (var g in GenericParameters) yield return g;
+        if (BaseType != null) yield return BaseType;
+        foreach (var iface in ImplementedInterfaces) yield return iface;
+        foreach (var m in Members) yield return m;
+    }
 }
 
 public sealed class AsExpressionSyntax : ExpressionSyntax
@@ -814,6 +826,8 @@ public sealed class ClassDeclarationSyntax : DeclarationSyntax
     public TypeSyntax? BaseType { get; set; }
     public List<TypeSyntax> ImplementedInterfaces { get; } = new();
     public List<SyntaxNode> Members { get; }
+    public bool IsAbstract { get; set; }
+    public List<DecoratorSyntax> Decorators { get; } = new();
 
     public ClassDeclarationSyntax(string name, List<SyntaxNode> members, SourceRange range)
         : base(SyntaxNodeType.ClassDeclaration, range)
@@ -822,7 +836,14 @@ public sealed class ClassDeclarationSyntax : DeclarationSyntax
         Members = members;
     }
 
-    public override IEnumerable<SyntaxNode> GetChildren() => Members;
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        foreach (var d in Decorators) yield return d;
+        foreach (var g in GenericParameters) yield return g;
+        if (BaseType != null) yield return BaseType;
+        foreach (var iface in ImplementedInterfaces) yield return iface;
+        foreach (var m in Members) yield return m;
+    }
 }
 
 public sealed class InterfaceDeclarationSyntax : DeclarationSyntax
@@ -919,9 +940,14 @@ public sealed class MethodDeclarationSyntax : SyntaxNode
     public TypeSyntax? ReturnType { get; }
     public SyntaxNode? Body { get; }
     public bool IsAsync { get; }
+    public bool IsStatic { get; }
+    public bool IsAbstract { get; }
+    public bool IsPrivateName { get; }
     public List<GenericParameterSyntax> GenericParameters { get; } = new();
+    public List<DecoratorSyntax> Decorators { get; } = new();
 
-    public MethodDeclarationSyntax(string name, List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode? body, bool isAsync, SourceRange range)
+    public MethodDeclarationSyntax(string name, List<ParameterSyntax> parameters, TypeSyntax? returnType, SyntaxNode? body, bool isAsync, SourceRange range,
+        bool isStatic = false, bool isAbstract = false, bool isPrivateName = false)
         : base(SyntaxNodeType.MethodDeclaration, range)
     {
         Name = name;
@@ -929,6 +955,9 @@ public sealed class MethodDeclarationSyntax : SyntaxNode
         ReturnType = returnType;
         Body = body;
         IsAsync = isAsync;
+        IsStatic = isStatic;
+        IsAbstract = isAbstract;
+        IsPrivateName = isPrivateName;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -940,10 +969,47 @@ public sealed class MethodDeclarationSyntax : SyntaxNode
     }
 }
 
+public sealed class AccessorDeclarationSyntax : SyntaxNode
+{
+    public string Name { get; }
+    public bool IsGetter { get; }
+    public ParameterSyntax? Parameter { get; }
+    public TypeSyntax? TypeAnnotation { get; }
+    public SyntaxNode? Body { get; }
+    public bool IsStatic { get; }
+    public bool IsAbstract { get; }
+    public bool IsPrivateName { get; }
+    public List<DecoratorSyntax> Decorators { get; } = new();
+
+    public AccessorDeclarationSyntax(string name, bool isGetter, ParameterSyntax? parameter,
+        TypeSyntax? typeAnnotation, SyntaxNode? body, SourceRange range,
+        bool isStatic = false, bool isAbstract = false, bool isPrivateName = false)
+        : base(SyntaxNodeType.AccessorDeclaration, range)
+    {
+        Name = name;
+        IsGetter = isGetter;
+        Parameter = parameter;
+        TypeAnnotation = typeAnnotation;
+        Body = body;
+        IsStatic = isStatic;
+        IsAbstract = isAbstract;
+        IsPrivateName = isPrivateName;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren()
+    {
+        foreach (var d in Decorators) yield return d;
+        if (Parameter != null) yield return Parameter;
+        if (TypeAnnotation != null) yield return TypeAnnotation;
+        if (Body != null) yield return Body;
+    }
+}
+
 public sealed class ConstructorDeclarationSyntax : SyntaxNode
 {
     public List<ParameterSyntax> Parameters { get; }
     public SyntaxNode Body { get; }
+    public List<DecoratorSyntax> Decorators { get; } = new();
 
     public ConstructorDeclarationSyntax(List<ParameterSyntax> parameters, SyntaxNode body, SourceRange range)
         : base(SyntaxNodeType.ConstructorDeclaration, range)
@@ -965,14 +1031,22 @@ public sealed class FieldDeclarationSyntax : SyntaxNode
     public TypeSyntax TypeAnnotation { get; }
     public ExpressionSyntax? Initializer { get; }
     public bool IsReadonly { get; }
+    public bool IsStatic { get; }
+    public bool IsAbstract { get; }
+    public bool IsPrivateName { get; }
+    public List<DecoratorSyntax> Decorators { get; } = new();
 
-    public FieldDeclarationSyntax(string name, TypeSyntax typeAnnotation, ExpressionSyntax? initializer, SourceRange range, bool isReadonly = false)
+    public FieldDeclarationSyntax(string name, TypeSyntax typeAnnotation, ExpressionSyntax? initializer, SourceRange range,
+        bool isReadonly = false, bool isStatic = false, bool isAbstract = false, bool isPrivateName = false)
         : base(SyntaxNodeType.FieldDeclaration, range)
     {
         Name = name;
         TypeAnnotation = typeAnnotation;
         Initializer = initializer;
         IsReadonly = isReadonly;
+        IsStatic = isStatic;
+        IsAbstract = isAbstract;
+        IsPrivateName = isPrivateName;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
@@ -980,6 +1054,51 @@ public sealed class FieldDeclarationSyntax : SyntaxNode
         yield return TypeAnnotation;
         if (Initializer != null) yield return Initializer;
     }
+}
+
+public sealed class StaticBlockSyntax : SyntaxNode
+{
+    public BlockStatementSyntax Body { get; }
+
+    public StaticBlockSyntax(BlockStatementSyntax body, SourceRange range)
+        : base(SyntaxNodeType.StaticBlock, range)
+    {
+        Body = body;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Body };
+}
+
+public sealed class IndexSignatureSyntax : SyntaxNode
+{
+    public string ParameterName { get; }
+    public TypeSyntax KeyType { get; }
+    public TypeSyntax ValueType { get; }
+    public bool IsReadonly { get; }
+
+    public IndexSignatureSyntax(string parameterName, TypeSyntax keyType, TypeSyntax valueType, bool isReadonly, SourceRange range)
+        : base(SyntaxNodeType.IndexSignature, range)
+    {
+        ParameterName = parameterName;
+        KeyType = keyType;
+        ValueType = valueType;
+        IsReadonly = isReadonly;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new SyntaxNode[] { KeyType, ValueType };
+}
+
+public sealed class DecoratorSyntax : SyntaxNode
+{
+    public ExpressionSyntax Expression { get; }
+
+    public DecoratorSyntax(ExpressionSyntax expression, SourceRange range)
+        : base(SyntaxNodeType.Decorator, range)
+    {
+        Expression = expression;
+    }
+
+    public override IEnumerable<SyntaxNode> GetChildren() => new[] { Expression };
 }
 
 public sealed class EnumMemberSyntax : SyntaxNode

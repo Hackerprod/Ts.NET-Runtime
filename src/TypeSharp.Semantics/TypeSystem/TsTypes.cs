@@ -365,9 +365,11 @@ public sealed class TsClassType : TsType
     public Dictionary<string, TsField> Fields { get; } = new();
     public Dictionary<string, TsProperty> Properties { get; } = new();
     public Dictionary<string, TsMethod> Methods { get; } = new();
+    public List<TsIndexSignature> IndexSignatures { get; } = new();
     public TsMethod? Constructor { get; set; }
     public List<TsTypeParameter> TypeParameters { get; } = new();
     public int GenerationId { get; set; }
+    public bool IsAbstract { get; set; }
 
     public TsClassType(string name)
     {
@@ -642,6 +644,9 @@ public sealed class TsField
     public TsType Type { get; }
     public bool IsReadonly { get; set; }
     public bool IsStatic { get; set; }
+    public bool IsAbstract { get; set; }
+    public bool IsPrivateName { get; set; }
+    public string? RuntimeName { get; set; }
     public TsAccessModifier AccessModifier { get; set; }
 
     public TsField(string name, TsType type)
@@ -656,6 +661,15 @@ public sealed class TsProperty
     public string Name { get; }
     public TsType Type { get; }
     public bool IsReadonly { get; set; }
+    public bool IsStatic { get; set; }
+    public bool IsAbstract { get; set; }
+    public bool IsPrivateName { get; set; }
+    public bool HasGetter { get; set; }
+    public bool HasSetter { get; set; }
+    public string? GetterName { get; set; }
+    public string? SetterName { get; set; }
+    public string? RuntimeName { get; set; }
+    public string? DeclaringClassName { get; set; }
     public TsAccessModifier AccessModifier { get; set; }
 
     public TsProperty(string name, TsType type)
@@ -673,6 +687,9 @@ public sealed class TsMethod
     public List<TsParameter> Parameters { get; }
     public bool IsStatic { get; set; }
     public bool IsAsync { get; set; }
+    public bool IsAbstract { get; set; }
+    public bool IsPrivateName { get; set; }
+    public string? RuntimeName { get; set; }
     public TsAccessModifier AccessModifier { get; set; }
 
     public TsMethod(string name, TsType returnType, List<TsParameter> parameters)
@@ -680,6 +697,19 @@ public sealed class TsMethod
         Name = name;
         ReturnType = returnType;
         Parameters = parameters;
+    }
+}
+
+public sealed class TsIndexSignature
+{
+    public TsType KeyType { get; }
+    public TsType ValueType { get; }
+    public bool IsReadonly { get; set; }
+
+    public TsIndexSignature(TsType keyType, TsType valueType)
+    {
+        KeyType = keyType;
+        ValueType = valueType;
     }
 }
 

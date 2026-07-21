@@ -26,6 +26,7 @@ public sealed class ExecutionContext : IDisposable
     public TsHeap Heap { get; }
     public VMRuntimeLimits Limits { get; }
     public IDictionary<string, TsValue> Globals { get; }
+    public HashSet<string> InitializedModules { get; } = new(StringComparer.Ordinal);
 
     public ExecutionContext(VMRuntimeLimits limits, TsHeap heap, IDictionary<string, TsValue>? globals = null)
     {
@@ -156,6 +157,11 @@ public sealed class Interpreter
             if (!module.FunctionIndex.TryGetValue(entryPoint, out int funcIdx))
                 throw new InvalidOperationException($"Entry point '{entryPoint}' not found");
 
+            if (entryPoint.StartsWith("$module_init_", StringComparison.Ordinal))
+                ctx.InitializedModules.Add(entryPoint);
+            else
+                EnsureModuleInitializers(module, ctx);
+
             var func = module.Functions[funcIdx];
             _profile.RecordCall(module.Name, func.Name);
             var frame = CreateCallFrame(func, null, args ?? Array.Empty<TsValue>(), ctx);
@@ -202,6 +208,18 @@ public sealed class Interpreter
                 frame.Push(thrown.Value);
                 frame.InstructionPointer = handler.HandlerOffset;
             }
+        }
+    }
+
+    private void EnsureModuleInitializers(BytecodeModule module, ExecutionContext ctx)
+    {
+        foreach (var functionName in module.FunctionIndex.Keys
+            .Where(name => name.StartsWith("$module_init_", StringComparison.Ordinal))
+            .OrderBy(name => name, StringComparer.Ordinal))
+        {
+            if (!ctx.InitializedModules.Add(functionName))
+                continue;
+            Execute(module, functionName, null, ctx);
         }
     }
 
@@ -359,7 +377,8 @@ public sealed class Interpreter
                     if (target is TsObjectValue targetObject && source is TsObjectValue sourceObject)
                     {
                         foreach (var field in sourceObject.Value.Fields)
-                            targetObject.Value.SetField(field.Key, field.Value);
+                            if (!IsPrivateRuntimeField(field.Key))
+                                targetObject.Value.SetField(field.Key, field.Value);
                     }
                     break;
                 }
@@ -372,7 +391,8 @@ public sealed class Interpreter
                     {
                         case TsObjectValue objectValue:
                             foreach (var key in objectValue.Value.Fields.Keys)
-                                keys.Add(TsValue.FromString(key));
+                                if (!IsPrivateRuntimeField(key))
+                                    keys.Add(TsValue.FromString(key));
                             break;
                         case TsArrayValue arrayValue:
                             for (int i = 0; i < arrayValue.Value.Count; i++)
@@ -417,7 +437,8 @@ public sealed class Interpreter
                         throw new InvalidOperationException("Object rest binding requires an object value");
                     var copy = ctx.Heap.AllocateObject("Object");
                     foreach (var field in objectValue.Value.Fields)
-                        if (!excluded.Contains(field.Key)) copy.SetField(field.Key, field.Value);
+                        if (!excluded.Contains(field.Key) && !IsPrivateRuntimeField(field.Key))
+                            copy.SetField(field.Key, field.Value);
                     frame.Push(new TsObjectValue(copy));
                     break;
                 }
@@ -2312,6 +2333,9 @@ public sealed class Interpreter
         TsBigIntValue v => v.Value.ToString(CultureInfo.InvariantCulture),
         _ => value.ToString() ?? ""
     };
+
+    private static bool IsPrivateRuntimeField(string name) =>
+        name.StartsWith("\uE000private:", StringComparison.Ordinal);
 
     private static CallFrame CreateCallFrame(BytecodeFunction function, CallFrame? caller,
         IReadOnlyList<TsValue> args, ExecutionContext ctx, IReadOnlyList<TsValue>? captured = null)

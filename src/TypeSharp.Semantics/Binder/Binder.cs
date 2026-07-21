@@ -335,6 +335,7 @@ public sealed class Binder
             case ClassDeclarationSyntax cls:
                 if (!_classTypes.TryGetValue(cls.Name, out var classType))
                     break;
+                classType.IsAbstract = cls.IsAbstract;
 
                 PushTypeParameters(cls.GenericParameters);
 
@@ -358,7 +359,11 @@ public sealed class Binder
                         case FieldDeclarationSyntax field:
                             classType.Fields[field.Name] = new TsField(field.Name, ResolveType(field.TypeAnnotation))
                             {
-                                IsReadonly = field.IsReadonly
+                                IsReadonly = field.IsReadonly,
+                                IsStatic = field.IsStatic,
+                                IsAbstract = field.IsAbstract,
+                                IsPrivateName = field.IsPrivateName,
+                                RuntimeName = GetRuntimeFieldName(cls.Name, field.Name, field.IsPrivateName)
                             };
                             break;
 
@@ -366,10 +371,58 @@ public sealed class Binder
                             PushTypeParameters(method.GenericParameters);
                             var classMethod = new TsMethod(method.Name,
                                 ResolveType(method.ReturnType) ?? TsType.Void,
-                                method.Parameters.Select(CreateTypeParameter).ToList());
+                                method.Parameters.Select(CreateTypeParameter).ToList())
+                            {
+                                IsStatic = method.IsStatic,
+                                IsAbstract = method.IsAbstract,
+                                IsPrivateName = method.IsPrivateName,
+                                RuntimeName = GetRuntimeMemberName(cls.Name, method.Name, method.IsPrivateName)
+                            };
                             classMethod.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
                             classType.Methods[method.Name] = classMethod;
                             PopTypeParameters();
+                            break;
+
+                        case AccessorDeclarationSyntax accessor:
+                        {
+                            var valueType = accessor.IsGetter
+                                ? ResolveType(accessor.TypeAnnotation) ?? TsType.Any
+                                : accessor.Parameter != null
+                                    ? CreateParameterSymbol(accessor.Parameter).Type
+                                    : TsType.Any;
+                            if (!classType.Properties.TryGetValue(accessor.Name, out var property))
+                            {
+                                property = new TsProperty(accessor.Name, valueType)
+                                {
+                                    IsStatic = accessor.IsStatic,
+                                    IsAbstract = accessor.IsAbstract,
+                                    IsPrivateName = accessor.IsPrivateName,
+                                    RuntimeName = GetRuntimeFieldName(cls.Name, accessor.Name, accessor.IsPrivateName),
+                                    DeclaringClassName = cls.Name
+                                };
+                                classType.Properties[accessor.Name] = property;
+                            }
+                            if (accessor.IsGetter)
+                            {
+                                property.HasGetter = true;
+                                property.GetterName = $"{cls.Name}::get:{accessor.Name}";
+                            }
+                            else
+                            {
+                                property.HasSetter = true;
+                                property.SetterName = $"{cls.Name}::set:{accessor.Name}";
+                                property.IsReadonly = false;
+                            }
+                            break;
+                        }
+
+                        case IndexSignatureSyntax indexSignature:
+                            classType.IndexSignatures.Add(new TsIndexSignature(
+                                ResolveType(indexSignature.KeyType),
+                                ResolveType(indexSignature.ValueType))
+                            {
+                                IsReadonly = indexSignature.IsReadonly
+                            });
                             break;
 
                         case PropertyDeclarationSyntax prop:
@@ -605,6 +658,16 @@ public sealed class Binder
     private static CallParameter ToCallParameter(TsParameter parameter) =>
         new(parameter.Name, parameter.Type, parameter.HasDefault || parameter.Type is TsNullableType, parameter.IsRest);
 
+    private static string GetRuntimeFieldName(string className, string memberName, bool isPrivateName) =>
+        isPrivateName
+            ? $"\uE000private:{className}:{memberName.TrimStart('#')}"
+            : memberName;
+
+    private static string GetRuntimeMemberName(string className, string memberName, bool isPrivateName) =>
+        isPrivateName
+            ? $"#{className}:{memberName.TrimStart('#')}"
+            : memberName;
+
     private TsType? InferParameterTypeFromDefault(ExpressionSyntax? expression)
     {
         if (expression == null)
@@ -685,13 +748,14 @@ public sealed class Binder
 
     private BoundClassDeclaration BindClass(ClassDeclarationSyntax cls)
         => BindClassCore(cls.Name, cls.GenericParameters, cls.BaseType, cls.Members, cls.Range, defineSymbol: true,
-            isExported: cls.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword));
+            isExported: cls.Modifiers.Any(m => m.Token.Kind == TokenKind.ExportKeyword), cls.IsAbstract,
+            cls.Decorators);
 
     private BoundClassExpression BindClassExpression(ClassExpressionSyntax cls)
     {
         var name = cls.Name ?? $"$class_expr_{_lambdaCounter++}";
         var declaration = BindClassCore(name, cls.GenericParameters, cls.BaseType, cls.Members, cls.Range,
-            defineSymbol: false, isExported: false);
+            defineSymbol: false, isExported: false, isAbstract: false, decorators: Array.Empty<DecoratorSyntax>());
         return new BoundClassExpression(declaration);
     }
 
@@ -702,7 +766,9 @@ public sealed class Binder
         IReadOnlyList<SyntaxNode> classMembers,
         SourceRange range,
         bool defineSymbol,
-        bool isExported)
+        bool isExported,
+        bool isAbstract = false,
+        IReadOnlyList<DecoratorSyntax>? decorators = null)
     {
         if (!_classTypes.TryGetValue(name, out var classType))
         {
@@ -719,8 +785,10 @@ public sealed class Binder
 
         var sym = new ClassSymbol(name, classType, range)
         {
-            IsExported = isExported
+            IsExported = isExported,
+            IsAbstract = isAbstract
         };
+        classType.IsAbstract = isAbstract;
 
         if (defineSymbol)
             _symbolTable.Define(sym);
@@ -730,21 +798,30 @@ public sealed class Binder
         var members = new List<BoundNode>();
         var prevClass = _currentClassType;
         _currentClassType = classType;
+        int staticOrdinal = 0;
         foreach (var member in classMembers)
         {
-            var bound = BindClassMember(member, classType);
+            var bound = BindClassMember(member, classType, staticOrdinal);
             if (bound != null)
+            {
                 members.Add(bound);
+                if (bound is BoundStaticBlock)
+                    staticOrdinal++;
+            }
         }
         _currentClassType = prevClass;
 
         _symbolTable.PopScope();
         PopTypeParameters();
 
-        return new BoundClassDeclaration(sym, members);
+        var declaration = new BoundClassDeclaration(sym, members);
+        if (decorators != null)
+            declaration.Decorators.AddRange(decorators.Select(decorator => BindExpression(decorator.Expression)));
+        ValidateAbstractImplementation(classType, range.Start);
+        return declaration;
     }
 
-    private BoundNode? BindClassMember(SyntaxNode member, TsClassType classType)
+    private BoundNode? BindClassMember(SyntaxNode member, TsClassType classType, int staticOrdinal = 0)
     {
         switch (member)
         {
@@ -818,13 +895,23 @@ public sealed class Binder
                 var fieldType = ResolveType(field.TypeAnnotation);
                 var fieldSym = new FieldSymbol(field.Name, fieldType, field.Range)
                 {
-                    IsReadonly = field.IsReadonly
+                    IsReadonly = field.IsReadonly,
+                    IsStatic = field.IsStatic,
+                    IsAbstract = field.IsAbstract,
+                    IsPrivateName = field.IsPrivateName,
+                    RuntimeName = GetRuntimeFieldName(classType.Name, field.Name, field.IsPrivateName)
                 };
                 classType.Fields[field.Name] = new TsField(field.Name, fieldType)
                 {
-                    IsReadonly = field.IsReadonly
+                    IsReadonly = field.IsReadonly,
+                    IsStatic = field.IsStatic,
+                    IsAbstract = field.IsAbstract,
+                    IsPrivateName = field.IsPrivateName,
+                    RuntimeName = fieldSym.RuntimeName
                 };
-                return new BoundFieldInitializer(classType.Name, fieldSym);
+                var boundField = new BoundFieldInitializer(classType.Name, fieldSym);
+                boundField.Decorators.AddRange(field.Decorators.Select(decorator => BindExpression(decorator.Expression)));
+                return boundField;
             }
 
             case MethodDeclarationSyntax method:
@@ -834,7 +921,11 @@ public sealed class Binder
                 var methodType = NormalizeFunctionReturnType(declaredMethodType, method.IsAsync);
                 var methodSym = new MethodSymbol(method.Name, methodType, method.Range)
                 {
-                    IsAsync = method.IsAsync
+                    IsAsync = method.IsAsync,
+                    IsStatic = method.IsStatic,
+                    IsAbstract = method.IsAbstract,
+                    IsPrivateName = method.IsPrivateName,
+                    RuntimeName = GetRuntimeMemberName(classType.Name, method.Name, method.IsPrivateName)
                 };
                 methodSym.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
 
@@ -847,11 +938,23 @@ public sealed class Binder
                 var tsMethod = new TsMethod(method.Name, methodType,
                     methodSym.Parameters.Select(CreateTypeParameter).ToList())
                 {
-                    IsAsync = method.IsAsync
+                    IsAsync = method.IsAsync,
+                    IsStatic = method.IsStatic,
+                    IsAbstract = method.IsAbstract,
+                    IsPrivateName = method.IsPrivateName,
+                    RuntimeName = methodSym.RuntimeName
                 };
                 tsMethod.TypeParameters.AddRange(methodSym.TypeParameters.Select(p => new TsTypeParameter(p.Name)));
                 ValidateOverride(classType, methodSym, method.Range.Start);
                 classType.Methods[method.Name] = tsMethod;
+
+                if (method.IsAbstract)
+                {
+                    if (method.Body != null)
+                        _diagnostics.Error("Abstract methods cannot have an implementation", method.Range.Start);
+                    PopTypeParameters();
+                    return null;
+                }
 
                 if (method.Body != null)
                 {
@@ -878,9 +981,110 @@ public sealed class Binder
                     _functionDepth--;
                     _symbolTable.PopScope();
                     PopTypeParameters();
-                    return new BoundMethodDeclaration(classType.Name, methodSym, body!);
+                    var boundMethod = new BoundMethodDeclaration(classType.Name, methodSym, body!);
+                    boundMethod.Decorators.AddRange(method.Decorators.Select(decorator => BindExpression(decorator.Expression)));
+                    return boundMethod;
                 }
                 PopTypeParameters();
+                return null;
+            }
+
+            case AccessorDeclarationSyntax accessor:
+            {
+                var accessorType = accessor.IsGetter
+                    ? ResolveType(accessor.TypeAnnotation) ?? TsType.Any
+                    : accessor.Parameter != null ? CreateParameterSymbol(accessor.Parameter).Type : TsType.Any;
+                var propSym = new PropertySymbol(accessor.Name, accessorType, accessor.Range)
+                {
+                    IsStatic = accessor.IsStatic,
+                    IsAbstract = accessor.IsAbstract,
+                    IsPrivateName = accessor.IsPrivateName,
+                    HasGetter = accessor.IsGetter,
+                    HasSetter = !accessor.IsGetter,
+                    GetterName = accessor.IsGetter ? $"{classType.Name}::get:{accessor.Name}" : null,
+                    SetterName = accessor.IsGetter ? null : $"{classType.Name}::set:{accessor.Name}",
+                    RuntimeName = GetRuntimeFieldName(classType.Name, accessor.Name, accessor.IsPrivateName),
+                    DeclaringClassName = classType.Name
+                };
+
+                if (!classType.Properties.TryGetValue(accessor.Name, out var tsProperty))
+                {
+                    tsProperty = new TsProperty(accessor.Name, accessorType)
+                    {
+                        IsStatic = accessor.IsStatic,
+                        IsAbstract = accessor.IsAbstract,
+                        IsPrivateName = accessor.IsPrivateName,
+                        RuntimeName = propSym.RuntimeName,
+                        DeclaringClassName = classType.Name
+                    };
+                    classType.Properties[accessor.Name] = tsProperty;
+                }
+                if (accessor.IsGetter)
+                {
+                    tsProperty.HasGetter = true;
+                    tsProperty.GetterName = propSym.GetterName;
+                }
+                else
+                {
+                    tsProperty.HasSetter = true;
+                    tsProperty.SetterName = propSym.SetterName;
+                }
+
+                if (accessor.IsAbstract)
+                {
+                    if (accessor.Body != null)
+                        _diagnostics.Error("Abstract accessors cannot have an implementation", accessor.Range.Start);
+                    return null;
+                }
+
+                if (accessor.Body == null)
+                    return null;
+
+                _symbolTable.PushScope();
+                _functionDepth++;
+                var thisSymbol = new ParameterSymbol("this", classType, accessor.Range);
+                DefineWithDepth(thisSymbol);
+                ParameterSymbol? paramSym = null;
+                if (!accessor.IsGetter && accessor.Parameter != null)
+                {
+                    paramSym = CreateParameterSymbol(accessor.Parameter);
+                    DefineWithDepth(paramSym);
+                }
+                var prevReturnType = _currentFunctionReturnType;
+                var prevThisSymbol = _currentThisSymbol;
+                _currentThisSymbol = thisSymbol;
+                _currentFunctionReturnType = accessor.IsGetter ? BodyReturnType(accessorType, isAsync: false) : TsType.Void;
+                var body = BindNode(accessor.Body);
+                _currentFunctionReturnType = prevReturnType;
+                _currentThisSymbol = prevThisSymbol;
+                _functionDepth--;
+                _symbolTable.PopScope();
+                var boundAccessor = new BoundAccessorDeclaration(classType.Name, propSym, accessor.IsGetter, paramSym, body!);
+                boundAccessor.Decorators.AddRange(accessor.Decorators.Select(decorator => BindExpression(decorator.Expression)));
+                return boundAccessor;
+            }
+
+            case StaticBlockSyntax staticBlock:
+            {
+                _symbolTable.PushScope();
+                _functionDepth++;
+                var prevReturnType = _currentFunctionReturnType;
+                _currentFunctionReturnType = TsType.Void;
+                var body = BindNode(staticBlock.Body);
+                _currentFunctionReturnType = prevReturnType;
+                _functionDepth--;
+                _symbolTable.PopScope();
+                return new BoundStaticBlock(classType.Name, staticOrdinal, body!);
+            }
+
+            case IndexSignatureSyntax indexSignature:
+            {
+                classType.IndexSignatures.Add(new TsIndexSignature(
+                    ResolveType(indexSignature.KeyType),
+                    ResolveType(indexSignature.ValueType))
+                {
+                    IsReadonly = indexSignature.IsReadonly
+                });
                 return null;
             }
 
@@ -896,6 +1100,27 @@ public sealed class Binder
 
             default:
                 return null;
+        }
+    }
+
+    private void ValidateAbstractImplementation(TsClassType classType, SourceLocation location)
+    {
+        if (classType.IsAbstract || classType.BaseType == null)
+            return;
+
+        for (var current = classType.BaseType; current != null; current = current.BaseType)
+        {
+            foreach (var method in current.Methods.Values.Where(m => m.IsAbstract))
+            {
+                if (!classType.Methods.TryGetValue(method.Name, out var implementation) || implementation.IsAbstract)
+                    _diagnostics.Error($"Class '{classType.Name}' must implement abstract method '{method.Name}'", location);
+            }
+
+            foreach (var property in current.Properties.Values.Where(p => p.IsAbstract))
+            {
+                if (!classType.Properties.TryGetValue(property.Name, out var implementation) || implementation.IsAbstract)
+                    _diagnostics.Error($"Class '{classType.Name}' must implement abstract property '{property.Name}'", location);
+            }
         }
     }
 
@@ -2614,26 +2839,48 @@ public sealed class Binder
             objType = generic.Definition;
         }
 
+        bool isStaticAccess = obj is BoundVariableExpression { Symbol: ClassSymbol };
+
         if (objType is TsClassType classType)
         {
             for (var current = classType; current != null && memberSym == null; current = current.BaseType)
             {
-                if (current.Fields.TryGetValue(member.MemberName, out var field))
+                if (current.Fields.TryGetValue(member.MemberName, out var field) && field.IsStatic == isStaticAccess)
                 {
+                    if (field.IsPrivateName && _currentClassType?.Name != current.Name)
+                        _diagnostics.Error($"Private field '{member.MemberName}' is not accessible here", member.Range.Start);
                     memberSym = new FieldSymbol(member.MemberName, TsType.Substitute(field.Type, genericMap), member.Range)
                     {
-                        IsReadonly = field.IsReadonly
+                        IsReadonly = field.IsReadonly,
+                        IsStatic = field.IsStatic,
+                        IsPrivateName = field.IsPrivateName,
+                        RuntimeName = field.IsStatic
+                            ? $"$static:{current.Name}:{field.Name}"
+                            : field.RuntimeName ?? field.Name
                     };
                 }
-                else if (current.Methods.TryGetValue(member.MemberName, out var method))
+                else if (current.Methods.TryGetValue(member.MemberName, out var method) &&
+                         (method.IsStatic == isStaticAccess || isStaticAccess && IsBuiltinStaticNamespace(current.Name)))
                 {
+                    if (method.IsPrivateName && _currentClassType?.Name != current.Name)
+                        _diagnostics.Error($"Private method '{member.MemberName}' is not accessible here", member.Range.Start);
                     memberSym = CreateMethodSymbol(method, current.Name, member.Range, genericMap);
                 }
-                else if (current.Properties.TryGetValue(member.MemberName, out var prop))
+                else if (current.Properties.TryGetValue(member.MemberName, out var prop) && prop.IsStatic == isStaticAccess)
                 {
+                    if (prop.IsPrivateName && _currentClassType?.Name != current.Name)
+                        _diagnostics.Error($"Private accessor '{member.MemberName}' is not accessible here", member.Range.Start);
                     memberSym = new PropertySymbol(member.MemberName, TsType.Substitute(prop.Type, genericMap), member.Range)
                     {
-                        IsReadonly = prop.IsReadonly
+                        IsReadonly = prop.IsReadonly,
+                        IsStatic = prop.IsStatic,
+                        IsPrivateName = prop.IsPrivateName,
+                        HasGetter = prop.HasGetter,
+                        HasSetter = prop.HasSetter,
+                        GetterName = prop.GetterName,
+                        SetterName = prop.SetterName,
+                        RuntimeName = prop.IsStatic ? $"$static:{current.Name}:{prop.Name}" : prop.RuntimeName,
+                        DeclaringClassName = prop.DeclaringClassName ?? current.Name
                     };
                 }
             }
@@ -2825,7 +3072,11 @@ public sealed class Binder
         var sym = new MethodSymbol(method.Name, TsType.Substitute(method.ReturnType, genericMap), range)
         {
             DeclaringClassName = declaringClass,
-            IsAsync = method.IsAsync
+            IsAsync = method.IsAsync,
+            IsStatic = method.IsStatic,
+            IsAbstract = method.IsAbstract,
+            IsPrivateName = method.IsPrivateName,
+            RuntimeName = method.RuntimeName
         };
         sym.TypeParameters.AddRange(method.TypeParameters.Select(p => new TsTypeParameter(p.Name)));
         foreach (var p in method.Parameters)
@@ -2891,7 +3142,7 @@ public sealed class Binder
             bool isReadonly = memberExpr.Member switch
             {
                 FieldSymbol field => field.IsReadonly,
-                PropertySymbol property => property.IsReadonly,
+                PropertySymbol property => property.IsReadonly || property.HasGetter && !property.HasSetter,
                 _ => false
             };
             if (isReadonly)
@@ -3091,6 +3342,9 @@ public sealed class Binder
         // `new Array(n)` builds a real array value, not a class instance.
         if (type is TsArrayType arrayNew)
             return new BoundArrayConstructionExpression(args, arrayNew);
+
+        if (type is TsClassType { IsAbstract: true } abstractClass)
+            _diagnostics.Error($"Cannot create an instance of abstract class '{abstractClass.Name}'", newExpr.Range.Start);
 
         if (type is TsClassType { Constructor: not null } ctorClass)
         {
@@ -3577,10 +3831,15 @@ public sealed class Binder
         var obj = BindExpression(indexExpr.Object);
         var index = BindExpression(indexExpr.Index);
 
+        var classIndexSignature = obj.Type is TsClassType cls
+            ? cls.IndexSignatures.FirstOrDefault(sig => IsIndexKeyCompatible(index.Type, sig.KeyType))
+            : null;
+
         var resultType = obj.Type switch
         {
             TsArrayType arr => arr.ElementType,
             TsClassType { Name: "Uint8Array" } => TsType.Number,
+            TsClassType when classIndexSignature != null => classIndexSignature.ValueType,
             TsTupleType tuple when index is BoundLiteralExpression { Value: int constIdx } &&
                 constIdx >= 0 && constIdx < tuple.ElementTypes.Count => tuple.ElementTypes[constIdx],
             TsTupleType tuple => tuple.UnifiedElementType(),
@@ -3596,10 +3855,29 @@ public sealed class Binder
             _diagnostics.Error($"Index must be numeric, got '{index.Type}'",
                 indexExpr.Index.Range.Start);
         }
+        else if (obj.Type is TsClassType { IndexSignatures.Count: > 0 } && classIndexSignature == null && index.Type is not TsAnyType)
+        {
+            _diagnostics.Error($"Index type '{index.Type}' is not compatible with declared index signatures",
+                indexExpr.Index.Range.Start);
+        }
 
         if (indexExpr.IsNullConditional && resultType is not TsNullableType)
             resultType = new TsNullableType(resultType);
         return new BoundIndexExpression(obj, index, resultType, indexExpr.IsNullConditional);
+    }
+
+    private static bool IsBuiltinStaticNamespace(string name) =>
+        name is "Math" or "Number" or "console" or "Array" or "Date" or "Uint8Array";
+
+    private static bool IsIndexKeyCompatible(TsType actual, TsType expected)
+    {
+        if (actual is TsAnyType || expected is TsAnyType)
+            return true;
+        if (expected == TsType.String && actual == TsType.String)
+            return true;
+        if (expected == TsType.Number && actual is TsPrimitiveType { IsNumericType: true })
+            return true;
+        return TsType.IsCompatibleWith(actual, expected);
     }
 
     // Type resolution

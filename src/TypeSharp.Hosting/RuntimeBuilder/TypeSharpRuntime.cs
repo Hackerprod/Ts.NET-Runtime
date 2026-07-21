@@ -345,7 +345,11 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
                 .OrderBy(name => name, StringComparer.Ordinal))
             {
                 if (!generation.InitializedModules.Add(functionName))
+                {
+                    context.InitializedModules.Add(functionName);
                     continue;
+                }
+                context.InitializedModules.Add(functionName);
                 _interpreter.Execute(linkedModule, functionName, null, context);
             }
         }

@@ -66,12 +66,13 @@ public sealed class Parser
 
     private SyntaxNode? ParseDeclaration()
     {
+        var decorators = ParseDecorators();
         var modifiers = ParseModifiers();
 
         return Peek().Kind switch
         {
             TokenKind.FuncKeyword => ParseFunctionDeclaration(modifiers),
-            TokenKind.ClassKeyword => ParseClassDeclaration(modifiers),
+            TokenKind.ClassKeyword => ParseClassDeclaration(modifiers, decorators),
             TokenKind.InterfaceKeyword => ParseInterfaceDeclaration(modifiers),
             TokenKind.EnumKeyword => ParseEnumDeclaration(modifiers),
             TokenKind.TypeKeyword => ParseTypeAlias(modifiers),
@@ -87,11 +88,38 @@ public sealed class Parser
         var modifiers = new List<SyntaxToken>();
         while (Check(TokenKind.PublicKeyword) || Check(TokenKind.PrivateKeyword) ||
                Check(TokenKind.ProtectedKeyword) || Check(TokenKind.StaticKeyword) ||
-               Check(TokenKind.ReadonlyKeyword) || Check(TokenKind.AsyncKeyword))
+               Check(TokenKind.ReadonlyKeyword) || Check(TokenKind.AsyncKeyword) ||
+               Check(TokenKind.AbstractKeyword))
         {
             modifiers.Add(new SyntaxToken(Advance()));
         }
         return modifiers;
+    }
+
+    private List<DecoratorSyntax> ParseDecorators()
+    {
+        var decorators = new List<DecoratorSyntax>();
+        while (Check(TokenKind.Identifier) && Peek().Text.StartsWith("@", StringComparison.Ordinal))
+        {
+            var start = Peek().Location;
+            var name = Advance().Text[1..];
+            ExpressionSyntax expression = new IdentifierExpressionSyntax(name, new SourceRange(start, start));
+            while (Check(TokenKind.Dot))
+            {
+                Advance();
+                var member = ExpectMemberName();
+                expression = new MemberAccessExpressionSyntax(expression, member, false,
+                    new SourceRange(start, Peek(-1).Location));
+            }
+            if (Check(TokenKind.OpenParen))
+            {
+                var args = ParseArguments();
+                expression = new CallExpressionSyntax(expression, new List<TypeSyntax>(), args,
+                    new SourceRange(start, Peek(-1).Location));
+            }
+            decorators.Add(new DecoratorSyntax(expression, new SourceRange(start, Peek(-1).Location)));
+        }
+        return decorators;
     }
 
     private FunctionDeclarationSyntax ParseFunctionDeclaration(List<SyntaxToken> modifiers)
@@ -129,7 +157,7 @@ public sealed class Parser
         return funcDecl;
     }
 
-    private ClassDeclarationSyntax ParseClassDeclaration(List<SyntaxToken> modifiers)
+    private ClassDeclarationSyntax ParseClassDeclaration(List<SyntaxToken> modifiers, List<DecoratorSyntax>? decorators = null)
     {
         var classKw = Advance();
         var name = ExpectIdentifier();
@@ -165,7 +193,10 @@ public sealed class Parser
         {
             GenericParameters = genericParams,
             BaseType = baseType,
+            IsAbstract = modifiers.Any(m => m.Token.Kind == TokenKind.AbstractKeyword),
         };
+        if (decorators != null)
+            classDecl.Decorators.AddRange(decorators);
         classDecl.ImplementedInterfaces.AddRange(implemented);
         return classDecl;
     }
@@ -297,18 +328,36 @@ public sealed class Parser
 
     private SyntaxNode? ParseClassMember()
     {
+        var decorators = ParseDecorators();
         var mods = ParseModifiers();
+        bool isStatic = mods.Any(m => m.Token.Kind == TokenKind.StaticKeyword);
+        bool isAbstract = mods.Any(m => m.Token.Kind == TokenKind.AbstractKeyword);
+
+        if (isStatic && Check(TokenKind.OpenBrace))
+        {
+            var body = ParseBlock();
+            return new StaticBlockSyntax(body, body.Range);
+        }
+
+        if (Check(TokenKind.OpenBracket))
+            return ParseIndexSignature(mods);
 
         if (Check(TokenKind.Identifier) && Peek(1).Kind == TokenKind.OpenParen)
         {
             if (Peek().Text == "constructor")
-                return ParseConstructor(mods);
-            return ParseMethodOrProperty(mods);
+                return ParseConstructor(mods, decorators);
+            return ParseMethodOrProperty(mods, decorators);
         }
 
-        if (IsMemberNameToken(Peek().Kind))
+        if ((Check(TokenKind.GetKeyword) || Check(TokenKind.SetKeyword)) &&
+            (IsMemberNameToken(Peek(1).Kind) || Peek(1).Kind == TokenKind.Hash))
         {
-            return ParseMethodOrProperty(mods);
+            return ParseAccessor(mods, decorators);
+        }
+
+        if (IsMemberNameToken(Peek().Kind) || Check(TokenKind.Hash))
+        {
+            return ParseMethodOrProperty(mods, decorators);
         }
 
         if (mods.Count > 0)
@@ -318,17 +367,79 @@ public sealed class Parser
         return null;
     }
 
-    private ConstructorDeclarationSyntax ParseConstructor(List<SyntaxToken> mods)
+    private ConstructorDeclarationSyntax ParseConstructor(List<SyntaxToken> mods, List<DecoratorSyntax>? decorators = null)
     {
         var name = ExpectIdentifier();
         var parameters = ParseParameterList();
         var body = ParseBlock();
-        return new ConstructorDeclarationSyntax(parameters, body, body.Range);
+        var ctor = new ConstructorDeclarationSyntax(parameters, body, body.Range);
+        if (decorators != null)
+            ctor.Decorators.AddRange(decorators);
+        return ctor;
     }
 
-    private SyntaxNode ParseMethodOrProperty(List<SyntaxToken> mods)
+    private (string Name, bool IsPrivateName) ParseClassMemberName()
     {
-        var name = ExpectMemberName();
+        if (Check(TokenKind.Hash))
+        {
+            Advance();
+            var name = ExpectMemberName();
+            return ($"#{name}", true);
+        }
+        return (ExpectMemberName(), false);
+    }
+
+    private SyntaxNode ParseAccessor(List<SyntaxToken> mods, List<DecoratorSyntax>? decorators)
+    {
+        var accessorToken = Advance();
+        bool isGetter = accessorToken.Kind == TokenKind.GetKeyword;
+        var (name, isPrivateName) = ParseClassMemberName();
+        ParameterSyntax? parameter = null;
+        if (Check(TokenKind.OpenParen))
+        {
+            var parameters = ParseParameterList();
+            if (isGetter && parameters.Count != 0)
+                Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error, "A getter cannot have parameters", accessorToken.Location));
+            if (!isGetter && parameters.Count != 1)
+                Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error, "A setter must have exactly one parameter", accessorToken.Location));
+            parameter = parameters.FirstOrDefault();
+        }
+        else if (!isGetter)
+        {
+            Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error, "A setter requires one parameter", accessorToken.Location));
+        }
+
+        var type = Check(TokenKind.Colon) ? ParseTypeAnnotation() : null;
+        SyntaxNode? body = Check(TokenKind.OpenBrace) ? ParseBlock() : null;
+        if (body == null && Check(TokenKind.Semicolon)) Advance();
+        var range = new SourceRange(accessorToken.Location, Peek(-1).Location);
+        var accessor = new AccessorDeclarationSyntax(name, isGetter, parameter, type, body, range,
+            mods.Any(m => m.Token.Kind == TokenKind.StaticKeyword),
+            mods.Any(m => m.Token.Kind == TokenKind.AbstractKeyword),
+            isPrivateName);
+        if (decorators != null)
+            accessor.Decorators.AddRange(decorators);
+        return accessor;
+    }
+
+    private SyntaxNode ParseIndexSignature(List<SyntaxToken> mods)
+    {
+        var open = Expect(TokenKind.OpenBracket);
+        var name = ExpectIdentifier();
+        Expect(TokenKind.Colon);
+        var keyType = ParseType();
+        Expect(TokenKind.CloseBracket);
+        Expect(TokenKind.Colon);
+        var valueType = ParseType();
+        if (Check(TokenKind.Semicolon)) Advance();
+        return new IndexSignatureSyntax(name, keyType, valueType,
+            mods.Any(m => m.Token.Kind == TokenKind.ReadonlyKeyword),
+            new SourceRange(open.Location, Peek(-1).Location));
+    }
+
+    private SyntaxNode ParseMethodOrProperty(List<SyntaxToken> mods, List<DecoratorSyntax>? decorators = null)
+    {
+        var (name, isPrivateName) = ParseClassMemberName();
         var genericParams = ParseGenericParameters();
 
         if (Check(TokenKind.OpenParen))
@@ -340,8 +451,13 @@ public sealed class Parser
 
             bool isAsync = mods.Any(m => m.Token.Kind == TokenKind.AsyncKeyword);
             var range = new SourceRange(Peek(-1).Location, Peek().Location);
-            var method = new MethodDeclarationSyntax(name, parameters, returnType, body, isAsync, range);
+            var method = new MethodDeclarationSyntax(name, parameters, returnType, body, isAsync, range,
+                mods.Any(m => m.Token.Kind == TokenKind.StaticKeyword),
+                mods.Any(m => m.Token.Kind == TokenKind.AbstractKeyword),
+                isPrivateName);
             method.GenericParameters.AddRange(genericParams);
+            if (decorators != null)
+                method.Decorators.AddRange(decorators);
             return method;
         }
 
@@ -377,7 +493,13 @@ public sealed class Parser
         var fieldRange = new SourceRange(Peek(-1).Location, Peek().Location);
 
         bool isReadonly = mods.Any(m => m.Token.Kind == TokenKind.ReadonlyKeyword);
-        return new FieldDeclarationSyntax(name, type!, initializer, fieldRange, isReadonly);
+        var field = new FieldDeclarationSyntax(name, type ?? AnyType(fieldRange.Start), initializer, fieldRange, isReadonly,
+            mods.Any(m => m.Token.Kind == TokenKind.StaticKeyword),
+            mods.Any(m => m.Token.Kind == TokenKind.AbstractKeyword),
+            isPrivateName);
+        if (decorators != null)
+            field.Decorators.AddRange(decorators);
+        return field;
     }
 
     private List<ParameterSyntax> ParseParameterList()
@@ -1466,7 +1588,9 @@ public sealed class Parser
             else if (Check(TokenKind.Dot))
             {
                 Advance();
-                var member = ExpectMemberName();
+                var member = Check(TokenKind.Hash)
+                    ? ParseClassMemberName().Name
+                    : ExpectMemberName();
                 expr = new MemberAccessExpressionSyntax(expr, member, false,
                     new SourceRange(expr.Range.Start, Peek(-1).Location));
             }
@@ -2131,7 +2255,8 @@ public sealed class Parser
         kind == TokenKind.Identifier || IsTypeKeyword(kind) ||
         kind is TokenKind.TypeKeyword or TokenKind.FromKeyword or TokenKind.AsKeyword or
         TokenKind.OfKeyword or TokenKind.MatchKeyword or TokenKind.DeleteKeyword or
-        TokenKind.ReturnKeyword or TokenKind.ThrowKeyword or TokenKind.YieldKeyword;
+        TokenKind.ReturnKeyword or TokenKind.ThrowKeyword or TokenKind.YieldKeyword or
+        TokenKind.GetKeyword or TokenKind.SetKeyword or TokenKind.AbstractKeyword;
 
     private string ExpectMemberName()
     {

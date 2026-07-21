@@ -47,6 +47,41 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task ModuleInitializersRunOnceAcrossRuntimeInvocations()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_module_init_once_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "module-init-once.ts");
+        await File.WriteAllTextAsync(file, """
+            let count: int32 = 0;
+
+            class Counter {
+                static {
+                    count = count + 1;
+                }
+            }
+
+            export function value(): int32 {
+                return count;
+            }
+            """);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .BuildAsync();
+
+            Assert.Equal(1, await runtime.InvokeAsync<int>("module-init-once", "value"));
+            Assert.Equal(1, await runtime.InvokeAsync<int>("module-init-once", "value"));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
     public async Task ExplicitGenericCallArgumentsDriveReturnType()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_generic_call_" + Guid.NewGuid().ToString("N")[..8]);

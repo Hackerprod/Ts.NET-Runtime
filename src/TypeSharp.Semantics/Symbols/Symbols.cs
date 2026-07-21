@@ -77,6 +77,9 @@ public sealed class FieldSymbol : Symbol
     public override SymbolKind Kind => SymbolKind.Field;
     public bool IsReadonly { get; set; }
     public bool IsStatic { get; set; }
+    public bool IsAbstract { get; set; }
+    public bool IsPrivateName { get; set; }
+    public string? RuntimeName { get; set; }
     public TypeSystem.TsAccessModifier AccessModifier { get; set; }
 
     public FieldSymbol(string name, TypeSystem.TsType type, SourceRange location)
@@ -87,6 +90,15 @@ public sealed class PropertySymbol : Symbol
 {
     public override SymbolKind Kind => SymbolKind.Property;
     public bool IsReadonly { get; set; }
+    public bool IsStatic { get; set; }
+    public bool IsAbstract { get; set; }
+    public bool IsPrivateName { get; set; }
+    public bool HasGetter { get; set; }
+    public bool HasSetter { get; set; }
+    public string? GetterName { get; set; }
+    public string? SetterName { get; set; }
+    public string? RuntimeName { get; set; }
+    public string? DeclaringClassName { get; set; }
     public TypeSystem.TsAccessModifier AccessModifier { get; set; }
 
     public PropertySymbol(string name, TypeSystem.TsType type, SourceRange location)
@@ -100,6 +112,9 @@ public sealed class MethodSymbol : Symbol
     public List<ParameterSymbol> Parameters { get; } = new();
     public bool IsAsync { get; set; }
     public bool IsStatic { get; set; }
+    public bool IsAbstract { get; set; }
+    public bool IsPrivateName { get; set; }
+    public string? RuntimeName { get; set; }
     public TypeSystem.TsAccessModifier AccessModifier { get; set; }
 
     // Class that actually declares the method (may be a base class of the
@@ -132,6 +147,7 @@ public sealed class ClassSymbol : Symbol
     public override SymbolKind Kind => SymbolKind.Class;
     public TypeSystem.TsClassType ClassType => (TypeSystem.TsClassType)Type;
     public bool IsExported { get; set; }
+    public bool IsAbstract { get; set; }
 
     public ClassSymbol(string name, TypeSystem.TsClassType type, SourceRange location)
         : base(name, type, location) { }

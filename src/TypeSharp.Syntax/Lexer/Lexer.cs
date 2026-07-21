@@ -67,10 +67,13 @@ public sealed class Lexer
         ["this"] = TokenKind.ThisKeyword,
         ["super"] = TokenKind.SuperKeyword,
         ["static"] = TokenKind.StaticKeyword,
+        ["abstract"] = TokenKind.AbstractKeyword,
         ["private"] = TokenKind.PrivateKeyword,
         ["public"] = TokenKind.PublicKeyword,
         ["protected"] = TokenKind.ProtectedKeyword,
         ["readonly"] = TokenKind.ReadonlyKeyword,
+        ["get"] = TokenKind.GetKeyword,
+        ["set"] = TokenKind.SetKeyword,
         ["let"] = TokenKind.LetKeyword,
         ["const"] = TokenKind.ConstKeyword,
         ["match"] = TokenKind.MatchKeyword,
@@ -480,6 +483,7 @@ public sealed class Lexer
                 ? AdvanceAnd(TokenKind.DotDotDot, "...")
                 : new Token(TokenKind.Dot, ".", start),
             '~' => new Token(TokenKind.Tilde, "~", start),
+            '#' => new Token(TokenKind.Hash, "#", start),
             '?' => Peek() switch
             {
                 '.' => AdvanceAnd(TokenKind.QuestionDot, "?."),

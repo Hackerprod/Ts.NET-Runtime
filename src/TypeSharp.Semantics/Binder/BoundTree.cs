@@ -70,8 +70,10 @@ public enum BoundNodeKind
 
     FunctionDeclaration,
     MethodDeclaration,
+    AccessorDeclaration,
     ConstructorDeclaration,
     FieldInitializer,
+    StaticBlock,
     ClassDeclaration,
     InterfaceDeclaration,
     EnumDeclaration,
@@ -705,12 +707,34 @@ public sealed class BoundMethodDeclaration : BoundNode
     public string ClassName { get; }
     public MethodSymbol Symbol { get; }
     public BoundNode Body { get; }
+    public List<BoundNode> Decorators { get; } = new();
 
     public BoundMethodDeclaration(string className, MethodSymbol symbol, BoundNode body)
         : base(BoundNodeKind.MethodDeclaration, TsType.Void)
     {
         ClassName = className;
         Symbol = symbol;
+        Body = body;
+    }
+}
+
+public sealed class BoundAccessorDeclaration : BoundNode
+{
+    public string ClassName { get; }
+    public PropertySymbol Symbol { get; }
+    public bool IsGetter { get; }
+    public ParameterSymbol? Parameter { get; }
+    public BoundNode Body { get; }
+    public List<BoundNode> Decorators { get; } = new();
+
+    public BoundAccessorDeclaration(string className, PropertySymbol symbol, bool isGetter,
+        ParameterSymbol? parameter, BoundNode body)
+        : base(BoundNodeKind.AccessorDeclaration, TsType.Void)
+    {
+        ClassName = className;
+        Symbol = symbol;
+        IsGetter = isGetter;
+        Parameter = parameter;
         Body = body;
     }
 }
@@ -734,6 +758,7 @@ public sealed class BoundFieldInitializer : BoundNode
 {
     public string ClassName { get; }
     public FieldSymbol Field { get; }
+    public List<BoundNode> Decorators { get; } = new();
 
     public BoundFieldInitializer(string className, FieldSymbol field)
         : base(BoundNodeKind.FieldInitializer, TsType.Void)
@@ -743,10 +768,26 @@ public sealed class BoundFieldInitializer : BoundNode
     }
 }
 
+public sealed class BoundStaticBlock : BoundNode
+{
+    public string ClassName { get; }
+    public int Ordinal { get; }
+    public BoundNode Body { get; }
+
+    public BoundStaticBlock(string className, int ordinal, BoundNode body)
+        : base(BoundNodeKind.StaticBlock, TsType.Void)
+    {
+        ClassName = className;
+        Ordinal = ordinal;
+        Body = body;
+    }
+}
+
 public sealed class BoundClassDeclaration : BoundNode
 {
     public ClassSymbol Symbol { get; }
     public List<BoundNode> Members { get; }
+    public List<BoundNode> Decorators { get; } = new();
 
     public BoundClassDeclaration(ClassSymbol symbol, List<BoundNode> members)
         : base(BoundNodeKind.ClassDeclaration, TsType.Void)

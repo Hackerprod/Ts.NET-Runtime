@@ -79,7 +79,13 @@ public sealed class IRGenerator
     private FunctionIR? GenerateModuleInitializer(BoundSourceFile sourceFile)
     {
         var executableMembers = sourceFile.Members
-            .Where(member => member is BoundVariableDeclaration or BoundExpressionStatement)
+            .Where(member => member is BoundVariableDeclaration or BoundExpressionStatement ||
+                             member is BoundClassDeclaration cls &&
+                             (cls.Decorators.Count > 0 || cls.Members.Any(m =>
+                                 m is BoundStaticBlock ||
+                                 m is BoundMethodDeclaration { Decorators.Count: > 0 } ||
+                                 m is BoundAccessorDeclaration { Decorators.Count: > 0 } ||
+                                 m is BoundFieldInitializer { Decorators.Count: > 0 })))
             .ToList();
         if (executableMembers.Count == 0)
             return null;
@@ -161,10 +167,22 @@ public sealed class IRGenerator
                 CollectCaptureInfo(func.Body);
                 break;
             case BoundClassDeclaration cls:
+                foreach (var decorator in cls.Decorators) CollectCaptureInfo(decorator);
                 foreach (var member in cls.Members) CollectCaptureInfo(member);
                 break;
             case BoundMethodDeclaration method:
+                foreach (var decorator in method.Decorators) CollectCaptureInfo(decorator);
                 CollectCaptureInfo(method.Body);
+                break;
+            case BoundAccessorDeclaration accessor:
+                foreach (var decorator in accessor.Decorators) CollectCaptureInfo(decorator);
+                CollectCaptureInfo(accessor.Body);
+                break;
+            case BoundFieldInitializer field:
+                foreach (var decorator in field.Decorators) CollectCaptureInfo(decorator);
+                break;
+            case BoundStaticBlock staticBlock:
+                CollectCaptureInfo(staticBlock.Body);
                 break;
             case BoundConstructorDeclaration ctor:
                 CollectCaptureInfo(ctor.Body);
@@ -565,8 +583,20 @@ public sealed class IRGenerator
                 case BoundMethodDeclaration method:
                 {
                     var funcIR = GenerateMethodFunction(
-                        cls.Symbol.Name, method.Symbol.Name, method.Symbol.Type,
+                        cls.Symbol.Name, method.Symbol.RuntimeName ?? method.Symbol.Name, method.Symbol.Type,
                         method.Symbol.Parameters, method.Body, method.Symbol.IsAsync);
+                    module.AddFunction(funcIR);
+                    break;
+                }
+                case BoundAccessorDeclaration accessor:
+                {
+                    var funcIR = GenerateAccessorFunction(accessor);
+                    module.AddFunction(funcIR);
+                    break;
+                }
+                case BoundStaticBlock staticBlock:
+                {
+                    var funcIR = GenerateStaticBlockFunction(staticBlock);
                     module.AddFunction(funcIR);
                     break;
                 }
@@ -576,6 +606,168 @@ public sealed class IRGenerator
         }
     }
 
+    private FunctionIR GenerateAccessorFunction(BoundAccessorDeclaration accessor)
+    {
+        var parameters = new List<ParameterInfo>
+        {
+            new("this", new TsClassType(accessor.ClassName))
+        };
+        if (!accessor.IsGetter && accessor.Parameter != null)
+            parameters.Add(new ParameterInfo(accessor.Parameter.Name, accessor.Parameter.Type, accessor.Parameter.IsRest));
+
+        var functionName = accessor.IsGetter
+            ? accessor.Symbol.GetterName ?? $"{accessor.ClassName}::get:{accessor.Symbol.Name}"
+            : accessor.Symbol.SetterName ?? $"{accessor.ClassName}::set:{accessor.Symbol.Name}";
+        var funcIR = new FunctionIR(functionName, accessor.IsGetter ? accessor.Symbol.Type : TsType.Void, parameters)
+        {
+            LocalCount = 0
+        };
+
+        var previousFunction = _currentFunction;
+        var previousBlock = _currentBlock;
+        var previousLocalMap = _localMap;
+        var previousBoxSlots = _boxSlots;
+        var previousTempCounter = _tempCounter;
+
+        _currentFunction = funcIR;
+        _tempCounter = 0;
+        _localMap = new Dictionary<string, int> { ["this"] = 0 };
+        if (!accessor.IsGetter && accessor.Parameter != null)
+            _localMap[accessor.Parameter.Name] = 1;
+        _boxSlots = new Dictionary<string, int>();
+        _tempCounter = parameters.Count;
+        _currentBlock = funcIR.CreateBlock();
+
+        GenerateStatement(accessor.Body);
+        funcIR.LocalCount = _tempCounter;
+        if (!_currentBlock.EndsInBranch)
+            EmitReturnVoid();
+
+        _currentFunction = previousFunction;
+        _currentBlock = previousBlock;
+        _localMap = previousLocalMap;
+        _boxSlots = previousBoxSlots;
+        _tempCounter = previousTempCounter;
+
+        return funcIR;
+    }
+
+    private FunctionIR GenerateStaticBlockFunction(BoundStaticBlock staticBlock)
+    {
+        var functionName = $"{staticBlock.ClassName}::static:{staticBlock.Ordinal}";
+        var funcIR = new FunctionIR(functionName, TsType.Void, new List<ParameterInfo>())
+        {
+            LocalCount = 0
+        };
+
+        var previousFunction = _currentFunction;
+        var previousBlock = _currentBlock;
+        var previousLocalMap = _localMap;
+        var previousBoxSlots = _boxSlots;
+        var previousTempCounter = _tempCounter;
+
+        _currentFunction = funcIR;
+        _tempCounter = 0;
+        _localMap = new Dictionary<string, int>();
+        _boxSlots = new Dictionary<string, int>();
+        _currentBlock = funcIR.CreateBlock();
+
+        GenerateStatement(staticBlock.Body);
+        funcIR.LocalCount = _tempCounter;
+        if (!_currentBlock.EndsInBranch)
+            EmitReturnVoid();
+
+        _currentFunction = previousFunction;
+        _currentBlock = previousBlock;
+        _localMap = previousLocalMap;
+        _boxSlots = previousBoxSlots;
+        _tempCounter = previousTempCounter;
+
+        return funcIR;
+    }
+
+    private void GenerateClassRuntimeInitializer(BoundClassDeclaration cls)
+    {
+        foreach (var staticBlock in cls.Members.OfType<BoundStaticBlock>().OrderBy(b => b.Ordinal))
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 0, $"{staticBlock.ClassName}::static:{staticBlock.Ordinal}"));
+
+        foreach (var member in cls.Members)
+        {
+            switch (member)
+            {
+                case BoundMethodDeclaration method:
+                    foreach (var decorator in method.Decorators)
+                        GenerateDecoratorCall(
+                            decorator,
+                            TsValueTargetName($"{method.ClassName}::{method.Symbol.RuntimeName ?? method.Symbol.Name}"),
+                            "method",
+                            method.Symbol.Name,
+                            method.Symbol.IsStatic,
+                            method.Symbol.IsPrivateName);
+                    break;
+                case BoundAccessorDeclaration accessor:
+                    foreach (var decorator in accessor.Decorators)
+                        GenerateDecoratorCall(
+                            decorator,
+                            TsValueTargetName(accessor.IsGetter
+                                ? accessor.Symbol.GetterName ?? $"{accessor.ClassName}::get:{accessor.Symbol.Name}"
+                                : accessor.Symbol.SetterName ?? $"{accessor.ClassName}::set:{accessor.Symbol.Name}"),
+                            accessor.IsGetter ? "getter" : "setter",
+                            accessor.Symbol.Name,
+                            accessor.Symbol.IsStatic,
+                            accessor.Symbol.IsPrivateName);
+                    break;
+                case BoundFieldInitializer field:
+                    foreach (var decorator in field.Decorators)
+                        GenerateDecoratorCall(
+                            decorator,
+                            field.Field.RuntimeName ?? field.Field.Name,
+                            "field",
+                            field.Field.Name,
+                            field.Field.IsStatic,
+                            field.Field.IsPrivateName);
+                    break;
+            }
+        }
+
+        foreach (var decorator in cls.Decorators)
+        {
+            GenerateDecoratorCall(decorator, cls.Symbol.Name, "class", cls.Symbol.Name, isStatic: false, isPrivate: false);
+        }
+    }
+
+    private static string TsValueTargetName(string name) => name;
+
+    private void GenerateDecoratorCall(BoundNode decorator, string targetName, string kind, string name, bool isStatic, bool isPrivate)
+    {
+        GenerateExpression(decorator);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_String, 0, 0, targetName));
+        GenerateDecoratorContext(kind, name, isStatic, isPrivate);
+        _currentBlock.Instructions.Add(new Instruction(Opcode.CallDynamic, 2));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+    }
+
+    private void GenerateDecoratorContext(string kind, string name, bool isStatic, bool isPrivate)
+    {
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.NewObject, 0, 0, "Object"));
+
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_String, 0, 0, kind));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "kind"));
+
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_String, 0, 0, name));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "name"));
+
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Bool, isStatic ? 1 : 0));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "static"));
+
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Bool, isPrivate ? 1 : 0));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "private"));
+    }
+
     private void GenerateStatement(BoundNode node)
     {
         switch (node)
@@ -583,6 +775,9 @@ public sealed class IRGenerator
             case BoundBlockStatement block:
                 foreach (var stmt in block.Statements)
                     GenerateStatement(stmt);
+                break;
+            case BoundClassDeclaration cls:
+                GenerateClassRuntimeInitializer(cls);
                 break;
 
             case BoundVariableDeclaration varDecl:
@@ -1635,7 +1830,7 @@ public sealed class IRGenerator
                 : GetClassName(memberAccess.Object.Type);
 
             if (memberAccess.Member is MethodSymbol methodSym)
-                funcName = $"{methodSym.DeclaringClassName ?? className}::{methodSym.Name}";
+                funcName = $"{methodSym.DeclaringClassName ?? className}::{methodSym.RuntimeName ?? methodSym.Name}";
             else if (memberAccess.Member is PropertySymbol propSym)
                 funcName = $"{className}::{propSym.Name}";
 
@@ -1841,9 +2036,30 @@ public sealed class IRGenerator
         if (assign.Target is BoundMemberAccessExpression memberAccess &&
             memberAccess.Member is FieldSymbol or PropertySymbol)
         {
+            if (memberAccess.Member is FieldSymbol { IsStatic: true } staticField)
+            {
+                GenerateExpression(assign.Value);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreGlobal, 0, 0,
+                    staticField.RuntimeName ?? $"$static:{staticField.Name}"));
+                return;
+            }
+
+            if (memberAccess.Member is PropertySymbol prop && prop.HasSetter)
+            {
+                if (!prop.IsStatic)
+                    GenerateExpression(memberAccess.Object);
+                GenerateExpression(assign.Value);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, prop.IsStatic ? 1 : 2,
+                    prop.SetterName ?? $"{prop.DeclaringClassName}::set:{prop.Name}"));
+                return;
+            }
+
             GenerateExpression(memberAccess.Object);
             GenerateExpression(assign.Value);
-            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, memberAccess.Member.Name));
+            var runtimeName = memberAccess.Member is FieldSymbol field
+                ? field.RuntimeName ?? field.Name
+                : memberAccess.Member.Name;
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, runtimeName));
         }
         else if (assign.Target is BoundIndexExpression indexTarget)
         {
@@ -1892,6 +2108,22 @@ public sealed class IRGenerator
 
     private void GenerateMemberAccess(BoundMemberAccessExpression member)
     {
+        if (member.Member is FieldSymbol { IsStatic: true } staticField)
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadGlobal, 0, 0,
+                staticField.RuntimeName ?? $"$static:{staticField.Name}"));
+            return;
+        }
+
+        if (member.Member is PropertySymbol prop && prop.HasGetter)
+        {
+            if (!prop.IsStatic)
+                GenerateExpression(member.Object);
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, prop.IsStatic ? 0 : 1,
+                prop.GetterName ?? $"{prop.DeclaringClassName}::get:{prop.Name}"));
+            return;
+        }
+
         GenerateExpression(member.Object);
 
         if (member.Member is not (FieldSymbol or PropertySymbol))
@@ -1919,15 +2151,22 @@ public sealed class IRGenerator
 
             _currentBlock = loadBlock;
             _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // duplicated obj
-            _currentBlock.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, member.Member.Name));
+            _currentBlock.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, GetRuntimeFieldName(member.Member)));
             EmitBranch(endBlock.Id);
 
             _currentBlock = endBlock;
             return;
         }
 
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, member.Member.Name));
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, GetRuntimeFieldName(member.Member)));
     }
+
+    private static string GetRuntimeFieldName(Symbol member) => member switch
+    {
+        FieldSymbol field => field.RuntimeName ?? field.Name,
+        PropertySymbol property => property.RuntimeName ?? property.Name,
+        _ => member.Name
+    };
 
     private string GetClassName(TsType type)
     {

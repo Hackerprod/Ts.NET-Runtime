@@ -130,6 +130,108 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void ClassAccessors_InvokeGetterAndSetterThroughInheritance()
+    {
+        var result = Run("class Base { #value: int32; constructor(value: int32) { this.#value = value; } get value(): int32 { return this.#value; } set value(next: int32) { this.#value = next + 1; } } class Derived extends Base { constructor(value: int32) { super(value); } } function main(): int32 { let item = new Derived(2); item.value = 4; return item.value; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void PrivateFieldsUseClassIdentityAndAreNotEnumerable()
+    {
+        var result = Run("class A { #x: int32; visible: int32; constructor(value: int32) { this.#x = value; this.visible = 1; } get(): int32 { return this.#x; } } class B { #x: int32; constructor(value: int32) { this.#x = value; } get(): int32 { return this.#x; } } function main(): int32 { let a = new A(3); let b = new B(7); let count: int32 = 0; for (let key in a) { count = count + 1; } let copy = { ...a }; return a.get() * 100 + b.get() * 10 + count + copy.visible; }");
+        Assert.Equal(372, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticBlocks_RunOnceInDeclarationOrder()
+    {
+        var result = Run("let order: string = ''; class Counter { static value: int32; static { order = order + 'a'; Counter.value = 1; } static { order = order + 'b'; Counter.value = Counter.value + 1; } } function main(): string { return order + Counter.value; }");
+        Assert.Equal("ab2", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void ClassDecorators_EvaluateAndInvokeInOrder()
+    {
+        var result = Run("let order: string = ''; function first(target: any): void { order = order + '1' + target; } function second(target: any): void { order = order + '2' + target; } @first @second class Decorated { } function main(): string { return order; }");
+        Assert.Equal("1Decorated2Decorated", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void MethodDecorators_InvokeBeforeClassDecorators()
+    {
+        var result = Run("let order: string = ''; function mark(target: any): void { order = order + target; } @mark class C { @mark run(): int32 { return 1; } } function main(): string { return order; }");
+        Assert.Equal("C::runC", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void DecoratorsReceiveStandardShapeContext()
+    {
+        var result = Run("let order: string = ''; function mark(target: any, context: any): void { if (context['static']) { order = order + 'S'; } else { order = order + 'I'; } if (context['private']) { order = order + 'P'; } else { order = order + 'N'; } let kind: string = context.kind; let name: string = context.name; order = order + kind + name; } class C { @mark static run(): int32 { return 1; } @mark get value(): int32 { return 2; } } function main(): string { return order; }");
+        Assert.Equal("SNmethodrunINgettervalue", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void IndexSignature_ProvidesIndexedValueTypeAndValidatesKey()
+    {
+        var result = Run("class Bag { [key: string]: int32; } function main(): int32 { let bag = new Bag(); bag['a'] = 9; return bag['a']; }");
+        Assert.Equal(9, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void AbstractClassInstantiationAndMissingOverrideReportDiagnostics()
+    {
+        const string source = "abstract class Base { abstract value(): int32; } class Derived extends Base { } function main(): void { let base = new Base(); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("abstract class 'Base'", StringComparison.Ordinal));
+        Assert.Contains(errors, message => message.Contains("abstract method 'value'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PrivateMemberAccessOutsideDeclaringClassReportsDiagnostic()
+    {
+        const string source = "class Box { #value: int32; constructor() { this.#value = 1; } } function main(): int32 { let box = new Box(); return box.#value; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("Private field '#value' is not accessible here", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GetterOnlyPropertyAssignmentReportsDiagnostic()
+    {
+        const string source = "class Box { get value(): int32 { return 1; } } function main(): void { let box = new Box(); box.value = 2; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("Cannot assign to readonly member 'value'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void IndexSignatureRejectsIncompatibleKeyType()
+    {
+        const string source = "class Bag { [key: string]: int32; } function main(): int32 { let bag = new Bag(); return bag[true]; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().Select(d => d.Message).ToArray();
+        Assert.Contains(errors, message => message.Contains("Index type 'bool' is not compatible with declared index signatures", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ComputedObjectProperty_EvaluatesKeyBeforeValueAndStoresByRuntimeKey()
     {
         var result = Run("function main(): string { let order: string = ''; function key(): string { order = order + 'k'; return 'answer'; } function value(): int32 { order = order + 'v'; return 42; } let obj = { [key()]: value() }; return order + obj['answer']; }");
