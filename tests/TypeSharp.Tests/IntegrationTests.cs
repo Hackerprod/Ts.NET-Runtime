@@ -1,6 +1,7 @@
 using TypeSharp.Hosting;
 using TypeSharp.Hosting.Compilation;
 using TypeSharp.Hosting.HotReload;
+using TypeSharp.Hosting.StdLib;
 using TypeSharp.Interop.HostExports;
 using TypeSharp.Runtime.Generations;
 using TypeSharp.VM.Memory;
@@ -914,6 +915,297 @@ public class IntegrationTests
 
             var result = await runtime.InvokeAsync<double>("app", "main");
             Assert.Equal(32, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void StandardLibraryManifest_DeclaresSupportedAndUnsupportedSurface()
+    {
+        Assert.Equal("tsnet-stdlib-2026.07", StandardLibraryManifest.Version);
+
+        var supported = StandardLibraryManifest.Capabilities
+            .Where(c => c.Status == StandardCapabilityStatus.Supported)
+            .Select(c => c.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.Contains("IterableProtocol", supported);
+        Assert.Contains("Map", supported);
+        Assert.Contains("Set", supported);
+        Assert.Contains("Date", supported);
+
+        var futureSurface = StandardLibraryManifest.Find("ObjectJsonErrorPromiseProxyReflectWeakIntl");
+        Assert.NotNull(futureSurface);
+        Assert.Equal(StandardCapabilityStatus.Unsupported, futureSurface!.Status);
+    }
+
+    [Fact]
+    public async Task Map_PreservesInsertionOrderAndUsesSameValueZero()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_map_order_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                export function main(): number {
+                    const ordered = new Map<any, number>();
+                    ordered.set("b", 2);
+                    ordered.set("a", 1);
+                    ordered.set("b", 3);
+                    ordered.set(NaN, 4);
+                    ordered.set(NaN, 5);
+                    ordered.set(-0, 6);
+                    ordered.set(0, 7);
+
+                    const keys = ordered.keys();
+                    const values = ordered.values();
+                    const entries = ordered.entries();
+
+                    let orderScore = 0;
+                    if (keys[0] == "b" && values[0] == 3) {
+                        orderScore = orderScore + 1000;
+                    }
+                    if (keys[1] == "a" && values[1] == 1) {
+                        orderScore = orderScore + 100;
+                    }
+                    if (isNaN(keys[2]) && values[2] == 5) {
+                        orderScore = orderScore + 10;
+                    }
+                    if (keys[3] == 0 && values[3] == 7) {
+                        orderScore = orderScore + 1;
+                    }
+
+                    return orderScore + ordered.size + entries.length;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(1119, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Map_ForEach_UsesLiveOrderedCollection()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_map_foreach_live_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                export function main(): number {
+                    const map = new Map<number, number>();
+                    map.set(1, 10).set(2, 20);
+
+                    let total = 0;
+                    map.forEach((value, key) => {
+                        total = total + value + key;
+                        if (key == 1) {
+                            map.delete(2);
+                            map.set(3, 30);
+                        }
+                    });
+
+                    return total + map.size;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(46, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Set_PreservesInsertionOrderAndUsesSameValueZero()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_set_order_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                export function main(): number {
+                    const set = new Set<any>();
+                    set.add("b").add("a").add("b").add(NaN).add(NaN).add(-0).add(0);
+
+                    const values = set.values();
+                    const keys = set.keys();
+                    const entries = set.entries();
+
+                    let score = 0;
+                    if (values[0] == "b" && keys[0] == "b") {
+                        score = score + 1000;
+                    }
+                    if (values[1] == "a" && keys[1] == "a") {
+                        score = score + 100;
+                    }
+                    if (isNaN(values[2]) && isNaN(keys[2])) {
+                        score = score + 10;
+                    }
+                    if (values[3] == 0 && entries[3][0] == 0 && entries[3][1] == 0) {
+                        score = score + 1;
+                    }
+
+                    return score + set.size + entries.length;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(1119, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Set_ForEach_UsesLiveOrderedCollection()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_set_foreach_live_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                export function main(): number {
+                    const set = new Set<number>();
+                    set.add(1).add(2);
+
+                    let total = 0;
+                    set.forEach((value) => {
+                        total = total + value;
+                        if (value == 1) {
+                            set.delete(2);
+                            set.add(3);
+                        }
+                    });
+
+                    return total * 10 + set.size;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(42, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IterablePolicy_ConsumesMapAndSetConsistently()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_iterable_policy_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                export function main(): number {
+                    const map = new Map<number, number>();
+                    map.set(1, 10).set(2, 20);
+                    const set = new Set<number>();
+                    set.add(3).add(4);
+
+                    let mapTotal = 0;
+                    for (const entry of map) {
+                        mapTotal = mapTotal + entry[0] + entry[1];
+                    }
+
+                    let setTotal = 0;
+                    for (const value of set) {
+                        setTotal = setTotal + value;
+                    }
+
+                    const mapArray = Array.from(map);
+                    const setArray = Array.from(set);
+                    return mapTotal + setTotal + mapArray.length + setArray.length;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(44, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Date_SupportsUtcTimestampIsoAndInvalidSemantics()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_date_utc_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                export function valid(): number {
+                    const epoch = new Date(0);
+                    const fromText = new Date("1970-01-01T00:00:01.000Z");
+                    const fromParts = new Date(1970, 0, 1, 0, 0, 2, 0);
+                    let score = 0;
+                    if (epoch.getTime() == 0 && epoch.valueOf() == 0) {
+                        score = score + 1000;
+                    }
+                    if (epoch.toISOString() == "1970-01-01T00:00:00.000Z") {
+                        score = score + 100;
+                    }
+                    if (fromText.getTime() == 1000) {
+                        score = score + 10;
+                    }
+                    if (fromParts.toISOString() == "1970-01-01T00:00:02.000Z") {
+                        score = score + 1;
+                    }
+                    return score;
+                }
+
+                export function invalidTime(): boolean {
+                    return isNaN(new Date("not-a-date").getTime());
+                }
+
+                export function invalidIso(): string {
+                    return new Date("not-a-date").toISOString();
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var valid = await runtime.InvokeAsync<double>("app", "valid");
+            Assert.Equal(1111, valid);
+            Assert.True(await runtime.InvokeAsync<bool>("app", "invalidTime"));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => runtime.InvokeAsync<string>("app", "invalidIso"));
         }
         finally
         {

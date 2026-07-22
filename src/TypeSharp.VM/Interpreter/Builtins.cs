@@ -1,3 +1,4 @@
+using System.Globalization;
 using TypeSharp.VM.Memory;
 
 namespace TypeSharp.VM.Interpreter;
@@ -163,13 +164,38 @@ public static class Builtins
                     result.Add(entry.Value);
                 return new TsArrayValue(result);
             },
+            ["Map::keys"] = args =>
+            {
+                var result = new TsArray();
+                foreach (var entry in Map(args[0]).Entries)
+                    result.Add(entry.Key);
+                return new TsArrayValue(result);
+            },
+            ["Map::entries"] = args =>
+            {
+                var result = new TsArray();
+                foreach (var entry in Map(args[0]).Entries)
+                    result.Add(CreateEntryPair(entry.Key, entry.Value));
+                return new TsArrayValue(result);
+            },
 
             // Date instance members (receiver = args[0]).
-            ["Date::getTime"] = args =>
+            ["Date::getTime"] = args => DateTimestamp(args[0]),
+            ["Date::valueOf"] = args => DateTimestamp(args[0]),
+            ["Date::toISOString"] = args =>
             {
-                if (args[0] is TsObjectValue obj && obj.Value.GetField("__timestampMs") is TsFloat64Value timestamp)
-                    return timestamp;
-                throw new InvalidOperationException("Receiver is not a Date");
+                var timestamp = D(DateTimestamp(args[0]));
+                if (!double.IsFinite(timestamp))
+                    throw new InvalidOperationException("Invalid Date");
+
+                var milliseconds = (long)Math.Truncate(timestamp);
+                if (milliseconds < DateMinUnixMilliseconds || milliseconds > DateMaxUnixMilliseconds)
+                    throw new InvalidOperationException("Invalid Date");
+
+                return TsValue.FromString(DateTimeOffset
+                    .FromUnixTimeMilliseconds(milliseconds)
+                    .UtcDateTime
+                    .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture));
             },
 
             // Set instance members (receiver = args[0]).
@@ -199,6 +225,27 @@ public static class Builtins
             {
                 Set(args[0]).Clear();
                 return TsValue.Null;
+            },
+            ["Set::values"] = args =>
+            {
+                var result = new TsArray();
+                foreach (var value in Set(args[0]).Entries)
+                    result.Add(value);
+                return new TsArrayValue(result);
+            },
+            ["Set::keys"] = args =>
+            {
+                var result = new TsArray();
+                foreach (var value in Set(args[0]).Entries)
+                    result.Add(value);
+                return new TsArrayValue(result);
+            },
+            ["Set::entries"] = args =>
+            {
+                var result = new TsArray();
+                foreach (var value in Set(args[0]).Entries)
+                    result.Add(CreateEntryPair(value, value));
+                return new TsArrayValue(result);
             },
 
             // ── Global functions ──
@@ -461,6 +508,24 @@ public static class Builtins
     private static TsSet Set(TsValue v) => v is TsSetValue set
         ? set.Value
         : throw new InvalidOperationException("Receiver is not a Set");
+
+    private const long DateMinUnixMilliseconds = -62135596800000;
+    private const long DateMaxUnixMilliseconds = 253402300799999;
+
+    private static TsValue DateTimestamp(TsValue v)
+    {
+        if (v is TsObjectValue obj && obj.Value.GetField("__timestampMs") is TsFloat64Value timestamp)
+            return timestamp;
+        throw new InvalidOperationException("Receiver is not a Date");
+    }
+
+    private static TsArrayValue CreateEntryPair(TsValue key, TsValue value)
+    {
+        var pair = new TsArray(2);
+        pair.Add(key);
+        pair.Add(value);
+        return new TsArrayValue(pair);
+    }
 
     private static TsValue Num(double value) => TsValue.FromFloat64(value);
 

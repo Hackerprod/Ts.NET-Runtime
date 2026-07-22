@@ -217,6 +217,8 @@ public sealed class Binder
 
         var dateGlobal = new TsClassType("Date");
         dateGlobal.Methods["getTime"] = new TsMethod("getTime", TsType.Number, new List<TsParameter>());
+        dateGlobal.Methods["valueOf"] = new TsMethod("valueOf", TsType.Number, new List<TsParameter>());
+        dateGlobal.Methods["toISOString"] = new TsMethod("toISOString", TsType.String, new List<TsParameter>());
         _classTypes["Date"] = dateGlobal;
         _symbolTable.Define(new ClassSymbol("Date", dateGlobal, default));
 
@@ -5089,6 +5091,14 @@ public sealed class Binder
                 return new MethodSymbol("clear", TsType.Void, range) { DeclaringClassName = "Map" };
             case "values":
                 return new MethodSymbol("values", new TsArrayType(mapType.ValueType), range) { DeclaringClassName = "Map" };
+            case "keys":
+                return new MethodSymbol("keys", new TsArrayType(mapType.KeyType), range) { DeclaringClassName = "Map" };
+            case "entries":
+                return new MethodSymbol(
+                    "entries",
+                    new TsArrayType(new TsTupleType(new List<TsType> { mapType.KeyType, mapType.ValueType })),
+                    range)
+                { DeclaringClassName = "Map" };
             case "forEach":
             {
                 var forEach = new MethodSymbol("forEach", TsType.Void, range) { DeclaringClassName = "Map" };
@@ -5126,6 +5136,21 @@ public sealed class Binder
             }
             case "clear":
                 return new MethodSymbol("clear", TsType.Void, range) { DeclaringClassName = "Set" };
+            case "values":
+            case "keys":
+                return new MethodSymbol(name, new TsArrayType(setType.ElementType), range) { DeclaringClassName = "Set" };
+            case "entries":
+                return new MethodSymbol(
+                    "entries",
+                    new TsArrayType(new TsTupleType(new List<TsType> { setType.ElementType, setType.ElementType })),
+                    range)
+                { DeclaringClassName = "Set" };
+            case "forEach":
+            {
+                var forEach = new MethodSymbol("forEach", TsType.Void, range) { DeclaringClassName = "Set" };
+                forEach.Parameters.Add(new ParameterSymbol("callback", TsType.Any, range));
+                return forEach;
+            }
             default:
                 return null;
         }

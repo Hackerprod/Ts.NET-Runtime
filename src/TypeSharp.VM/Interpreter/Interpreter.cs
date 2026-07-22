@@ -1462,12 +1462,10 @@ public sealed class Interpreter
 
                     if (typeName == "Date")
                     {
-                        for (int i = 0; i < argCount; i++)
-                            frame.Pop();
-                        var date = ctx.Heap.AllocateObject("Date");
-                        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                        date.SetField("__timestampMs", TsValue.FromFloat64(timestamp));
-                        frame.Push(new TsObjectValue(date));
+                        var args = new TsValue[argCount];
+                        for (int i = argCount - 1; i >= 0; i--)
+                            args[i] = frame.Pop();
+                        frame.Push(CreateDate(ctx, args));
                         break;
                     }
 
@@ -2016,7 +2014,7 @@ public sealed class Interpreter
     {
         "Array::map", "Array::filter", "Array::forEach", "Array::reduce",
         "Array::some", "Array::every", "Array::find", "Array::findIndex",
-        "Array::sort", "Array::flatMap", "Array::from", "Map::forEach"
+        "Array::sort", "Array::flatMap", "Array::from", "Map::forEach", "Set::forEach"
     };
 
     // Array members that take callbacks execute here, where the interpreter
@@ -2050,8 +2048,25 @@ public sealed class Interpreter
                 throw new InvalidOperationException("'Map::forEach' requires a map receiver and callback");
 
             var callbackValue = args[1];
-            foreach (var entry in mapReceiver.Value.Entries)
+            for (int i = 0; i < mapReceiver.Value.Count; i++)
+            {
+                var entry = mapReceiver.Value.GetEntryAt(i);
                 Invoke(callbackValue, entry.Value, entry.Key, args[0]);
+            }
+            return TsValue.Null;
+        }
+
+        if (name == "Set::forEach")
+        {
+            if (args.Length < 2 || args[0] is not TsSetValue setReceiver)
+                throw new InvalidOperationException("'Set::forEach' requires a set receiver and callback");
+
+            var callbackValue = args[1];
+            for (int i = 0; i < setReceiver.Value.Count; i++)
+            {
+                var value = setReceiver.Value.GetAt(i);
+                Invoke(callbackValue, value, value, args[0]);
+            }
             return TsValue.Null;
         }
 
@@ -2263,6 +2278,69 @@ public sealed class Interpreter
                 return new TsUint8ArrayValue(new byte[Math.Max(AsInt32(source), 0)]);
             default:
                 return new TsUint8ArrayValue(Array.Empty<byte>());
+        }
+    }
+
+    private const long DateMinUnixMilliseconds = -62135596800000;
+    private const long DateMaxUnixMilliseconds = 253402300799999;
+
+    private static TsObjectValue CreateDate(ExecutionContext ctx, TsValue[] args)
+    {
+        var date = ctx.Heap.AllocateObject("Date");
+        date.SetField("__timestampMs", TsValue.FromFloat64(ComputeUtcDateMilliseconds(args)));
+        return new TsObjectValue(date);
+    }
+
+    private static double ComputeUtcDateMilliseconds(TsValue[] args)
+    {
+        if (args.Length == 0)
+            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        if (args.Length == 1)
+        {
+            if (args[0] is TsStringValue text)
+            {
+                return DateTimeOffset.TryParse(
+                    text.Value,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out var parsed)
+                    ? parsed.ToUnixTimeMilliseconds()
+                    : double.NaN;
+            }
+
+            var timestamp = AsFloat64(args[0]);
+            return double.IsFinite(timestamp) ? Math.Truncate(timestamp) : double.NaN;
+        }
+
+        try
+        {
+            var year = AsInt32(args[0]);
+            var monthZeroBased = AsInt32(args[1]);
+            var day = args.Length > 2 ? AsInt32(args[2]) : 1;
+            var hour = args.Length > 3 ? AsInt32(args[3]) : 0;
+            var minute = args.Length > 4 ? AsInt32(args[4]) : 0;
+            var second = args.Length > 5 ? AsInt32(args[5]) : 0;
+            var millisecond = args.Length > 6 ? AsInt32(args[6]) : 0;
+
+            if (monthZeroBased < 0 || monthZeroBased > 11)
+                return double.NaN;
+
+            var utc = new DateTimeOffset(
+                year,
+                monthZeroBased + 1,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                TimeSpan.Zero);
+            var timestamp = utc.ToUnixTimeMilliseconds();
+            return timestamp is >= DateMinUnixMilliseconds and <= DateMaxUnixMilliseconds ? timestamp : double.NaN;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return double.NaN;
         }
     }
 

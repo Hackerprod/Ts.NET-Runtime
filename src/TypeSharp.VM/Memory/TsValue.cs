@@ -504,40 +504,100 @@ public sealed class TsArray
 
 public sealed class TsMap
 {
-    private readonly Dictionary<TsValue, TsValue> _entries = new(TsValueMapKeyComparer.Instance);
+    private readonly List<KeyValuePair<TsValue, TsValue>> _entries = new();
+    private readonly TsValueMapKeyComparer _comparer = TsValueMapKeyComparer.Instance;
 
     public int Count => _entries.Count;
 
-    public IEnumerable<KeyValuePair<TsValue, TsValue>> Entries => _entries;
+    public IReadOnlyList<KeyValuePair<TsValue, TsValue>> Entries => _entries;
 
-    public TsValue Get(TsValue key) =>
-        _entries.TryGetValue(key, out var val) ? val : TsValue.Void;
+    public KeyValuePair<TsValue, TsValue> GetEntryAt(int index) => _entries[index];
 
-    public void Set(TsValue key, TsValue value) =>
-        _entries[key] = value;
+    public TsValue Get(TsValue key)
+    {
+        var index = IndexOfKey(key);
+        return index >= 0 ? _entries[index].Value : TsValue.Void;
+    }
 
-    public bool Contains(TsValue key) => _entries.ContainsKey(key);
+    public void Set(TsValue key, TsValue value)
+    {
+        var index = IndexOfKey(key);
+        if (index >= 0)
+        {
+            _entries[index] = new KeyValuePair<TsValue, TsValue>(_entries[index].Key, value);
+            return;
+        }
 
-    public bool Remove(TsValue key) => _entries.Remove(key);
+        _entries.Add(new KeyValuePair<TsValue, TsValue>(key, value));
+    }
+
+    public bool Contains(TsValue key) => IndexOfKey(key) >= 0;
+
+    public bool Remove(TsValue key)
+    {
+        var index = IndexOfKey(key);
+        if (index < 0)
+            return false;
+        _entries.RemoveAt(index);
+        return true;
+    }
 
     public void Clear() => _entries.Clear();
+
+    private int IndexOfKey(TsValue key)
+    {
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            if (_comparer.Equals(_entries[i].Key, key))
+                return i;
+        }
+
+        return -1;
+    }
 }
 
 public sealed class TsSet
 {
-    private readonly HashSet<TsValue> _entries = new(TsValueMapKeyComparer.Instance);
+    private readonly List<TsValue> _entries = new();
+    private readonly TsValueMapKeyComparer _comparer = TsValueMapKeyComparer.Instance;
 
     public int Count => _entries.Count;
 
-    public IEnumerable<TsValue> Entries => _entries;
+    public IReadOnlyList<TsValue> Entries => _entries;
 
-    public bool Add(TsValue value) => _entries.Add(value);
+    public TsValue GetAt(int index) => _entries[index];
 
-    public bool Contains(TsValue value) => _entries.Contains(value);
+    public bool Add(TsValue value)
+    {
+        if (Contains(value))
+            return false;
+        _entries.Add(value);
+        return true;
+    }
 
-    public bool Remove(TsValue value) => _entries.Remove(value);
+    public bool Contains(TsValue value) => IndexOf(value) >= 0;
+
+    public bool Remove(TsValue value)
+    {
+        var index = IndexOf(value);
+        if (index < 0)
+            return false;
+        _entries.RemoveAt(index);
+        return true;
+    }
 
     public void Clear() => _entries.Clear();
+
+    private int IndexOf(TsValue value)
+    {
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            if (_comparer.Equals(_entries[i], value))
+                return i;
+        }
+
+        return -1;
+    }
 }
 
 internal sealed class TsValueMapKeyComparer : IEqualityComparer<TsValue>
