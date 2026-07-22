@@ -8,8 +8,8 @@ interface LoadProfileContext {
 const profiles = capability("profiles");
 const clock = capability("clock");
 
-export async function loadProfile(ctx: LoadProfileContext): Promise<boolean> {
-    const profile = await profiles.find(ctx.accountId);
+export function loadProfile(ctx: LoadProfileContext): boolean {
+    const profile = profiles.find(ctx.accountId);
 
     if (profile === null) {
         ctx.reply({

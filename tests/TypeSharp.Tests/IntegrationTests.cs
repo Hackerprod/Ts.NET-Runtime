@@ -961,6 +961,46 @@ public class IntegrationTests
     }
 
     [Fact]
+    public void StandardTemplate_UsesRuntimeManifestSurfaceInsteadOfEs2020Lib()
+    {
+        var root = FindRepositoryRoot();
+        var tsconfig = File.ReadAllText(Path.Combine(root, "templates", "standard-ts", "tsconfig.json"));
+        var declarations = File.ReadAllText(Path.Combine(root, "templates", "standard-ts", "types", "typesharp-runtime.d.ts"));
+
+        Assert.Contains("\"noLib\": true", tsconfig);
+        Assert.DoesNotContain("\"lib\"", tsconfig);
+        Assert.DoesNotContain("interface Promise", declarations);
+        Assert.DoesNotContain("declare const JSON", declarations);
+        Assert.DoesNotContain("interface WeakMap", declarations);
+        Assert.DoesNotContain("interface WeakSet", declarations);
+        Assert.DoesNotContain("interface Proxy", declarations);
+        Assert.DoesNotContain("declare const Reflect", declarations);
+        Assert.DoesNotContain("declare const Intl", declarations);
+
+        foreach (var capability in StandardLibraryManifest.Capabilities.Where(c => c.Status == StandardCapabilityStatus.Supported))
+        {
+            switch (capability.Name)
+            {
+                case "Map":
+                    Assert.Contains("interface Map<K, V>", declarations);
+                    Assert.Contains("entries(): [K, V][]", declarations);
+                    break;
+                case "Set":
+                    Assert.Contains("interface Set<T>", declarations);
+                    Assert.Contains("entries(): [T, T][]", declarations);
+                    break;
+                case "Date":
+                    Assert.Contains("interface Date", declarations);
+                    Assert.Contains("toISOString(): string", declarations);
+                    break;
+                case "IterableProtocol":
+                    Assert.Contains("from<T>", declarations);
+                    break;
+            }
+        }
+    }
+
+    [Fact]
     public async Task ConstTypeParameters_PreserveInlineObjectAndArrayLiterals()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_const_type_params_" + Guid.NewGuid().ToString("N"));
@@ -2117,6 +2157,19 @@ public class IntegrationTests
         finally { Directory.Delete(dir, true); }
     }
 
+    private static string FindRepositoryRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "TypeSharp.sln")))
+                return dir.FullName;
+            dir = dir.Parent;
+        }
+
+        throw new InvalidOperationException("Could not locate repository root");
+    }
+
     private sealed class TrackingMigrator : IGenerationMigrator
     {
         public bool WasMigrated { get; private set; }
@@ -2545,6 +2598,19 @@ function guardAndNarrowsMultipleSymbols(leftFlag: boolean, rightFlag: boolean): 
             Assert.False(comp.Diagnostics.HasErrors, "Errors: " + string.Join("; ", comp.Diagnostics.GetErrors().Select(e => e.Message)));
         }
         finally { Directory.Delete(dir, true); }
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "TypeSharp.sln")))
+                return dir.FullName;
+            dir = dir.Parent;
+        }
+
+        throw new InvalidOperationException("Could not locate repository root");
     }
 }
 

@@ -13,6 +13,7 @@ public sealed class VMRuntimeLimits
     public long MaximumInstructions { get; set; } = 10_000_000;
     public long MaximumMemoryBytes { get; set; } = 64 * 1024 * 1024;
     public int MaximumRecursionDepth { get; set; } = 256;
+    public int HostStackSafetyFrameLimit { get; set; } = 1024;
 }
 
 public sealed class ExecutionContext : IDisposable
@@ -45,9 +46,12 @@ public sealed class ExecutionContext : IDisposable
 
     public void CheckRecursionDepth()
     {
-        if (CallStack.Count > Limits.MaximumRecursionDepth)
+        if (CallStack.Count > EffectiveMaximumCallFrames())
             throw new InvalidOperationException("Maximum recursion depth exceeded");
     }
+
+    public int EffectiveMaximumCallFrames() =>
+        Math.Max(1, Math.Min(Limits.MaximumRecursionDepth, Limits.HostStackSafetyFrameLimit));
 
     public void CheckMemory()
     {
@@ -169,10 +173,9 @@ public sealed class Interpreter
             if (func.IsGenerator)
                 return new TsGeneratorValue(module, frame);
 
-            ctx.CallStack.Push(frame);
             try
             {
-                return FinishFunctionResult(func, ExecuteFrame(frame, module, ctx));
+                return ExecuteManagedFrame(func, frame, module, ctx);
             }
             catch (TsThrownException thrown)
             {
@@ -186,6 +189,50 @@ public sealed class Interpreter
             if (ownsContext)
                 ctx.Dispose();
         }
+    }
+
+    private TsValue ExecuteManagedFrame(BytecodeFunction function, CallFrame frame, BytecodeModule module, ExecutionContext ctx)
+    {
+        PushManagedFrame(ctx, frame);
+        try
+        {
+            return FinishFunctionResult(function, ExecuteFrame(frame, module, ctx));
+        }
+        finally
+        {
+            PopManagedFrame(ctx, frame);
+        }
+    }
+
+    private TsValue? ExecuteManagedFrameRaw(CallFrame frame, BytecodeModule module, ExecutionContext ctx)
+    {
+        PushManagedFrame(ctx, frame);
+        try
+        {
+            return ExecuteFrame(frame, module, ctx);
+        }
+        finally
+        {
+            PopManagedFrame(ctx, frame);
+        }
+    }
+
+    private static void PushManagedFrame(ExecutionContext ctx, CallFrame frame)
+    {
+        if (ctx.CallStack.Count >= ctx.EffectiveMaximumCallFrames())
+            throw new InvalidOperationException(
+                $"Maximum recursion depth exceeded ({ctx.EffectiveMaximumCallFrames()} frame limit)");
+        ctx.CallStack.Push(frame);
+    }
+
+    private static void PopManagedFrame(ExecutionContext ctx, CallFrame expectedFrame)
+    {
+        if (ctx.CallStack.Count == 0)
+            return;
+
+        var popped = ctx.CallStack.Pop();
+        if (!ReferenceEquals(popped, expectedFrame))
+            throw new InvalidOperationException("VM call stack corruption detected");
     }
 
     private TsValue? ExecuteFrame(CallFrame frame, BytecodeModule module, ExecutionContext ctx)
@@ -1285,18 +1332,7 @@ public sealed class Interpreter
                             break;
                         }
 
-                        ctx.CallStack.Push(newFrame);
-                        TsValue? result;
-                        try
-                        {
-                            result = ExecuteFrame(newFrame, module, ctx);
-                        }
-                        finally
-                        {
-                            ctx.CallStack.Pop();
-                        }
-
-                        frame.Push(FinishFunctionResult(calleeFunc, result));
+                        frame.Push(ExecuteManagedFrame(calleeFunc, newFrame, module, ctx));
                     }
                     else
                     {
@@ -1407,17 +1443,7 @@ public sealed class Interpreter
                             frame.Push(new TsGeneratorValue(module, newFrame));
                             break;
                         }
-                        ctx.CallStack.Push(newFrame);
-                        TsValue? result;
-                        try
-                        {
-                            result = ExecuteFrame(newFrame, module, ctx);
-                        }
-                        finally
-                        {
-                            ctx.CallStack.Pop();
-                        }
-                        frame.Push(FinishFunctionResult(calleeFunc, result));
+                        frame.Push(ExecuteManagedFrame(calleeFunc, newFrame, module, ctx));
                     }
                     else if (HigherOrderIntrinsics.Contains(resolvedName)
                         || (resolvedName == calleeName && HigherOrderIntrinsics.Contains(calleeName)))
@@ -1519,15 +1545,7 @@ public sealed class Interpreter
                             ctorArgs[i] = frame.Pop();
                         var ctorFrame = CreateCallFrame(ctorFunc, frame, ctorArgs, ctx);
 
-                        ctx.CallStack.Push(ctorFrame);
-                        try
-                        {
-                            ExecuteFrame(ctorFrame, module, ctx);
-                        }
-                        finally
-                        {
-                            ctx.CallStack.Pop();
-                        }
+                        ExecuteManagedFrameRaw(ctorFrame, module, ctx);
                     }
                     else
                     {
@@ -2476,15 +2494,7 @@ public sealed class Interpreter
             if (calleeFunc.IsGenerator)
                 return new TsGeneratorValue(module, newFrame);
 
-            ctx.CallStack.Push(newFrame);
-            try
-            {
-                return FinishFunctionResult(calleeFunc, ExecuteFrame(newFrame, module, ctx));
-            }
-            finally
-            {
-                ctx.CallStack.Pop();
-            }
+            return ExecuteManagedFrame(calleeFunc, newFrame, module, ctx);
         }
 
         if (TryGetHostFunction(fnValue.FunctionName, out var host))
@@ -2535,7 +2545,7 @@ public sealed class Interpreter
             throw new TsThrownException(abruptValue ?? TsValue.Void);
 
         generator.Running = true;
-        ctx.CallStack.Push(frame);
+        PushManagedFrame(ctx, frame);
         try
         {
             var returned = ExecuteFrame(frame, resumeModule, ctx);
@@ -2553,7 +2563,7 @@ public sealed class Interpreter
         }
         finally
         {
-            ctx.CallStack.Pop();
+            PopManagedFrame(ctx, frame);
             generator.Running = false;
         }
     }

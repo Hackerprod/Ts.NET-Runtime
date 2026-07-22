@@ -7,7 +7,7 @@ declare module "@runtime/host" {
     }
 
     export interface ProfileService {
-        find(accountId: number): Promise<Profile | null>;
+        find(accountId: number): Profile | null;
     }
 
     export interface ClockService {

@@ -3065,6 +3065,59 @@ public class NegativeTests
     [Fact]
     public void RecursionLimit_Exceeded()
     {
+        var bytecodeModule = CompileRecursionProbeModule();
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter(
+            new VMRuntimeLimits { MaximumRecursionDepth = 4 });
+        var ex = Record.Exception(() => interpreter.Execute(bytecodeModule, "main"));
+        Assert.NotNull(ex);
+        Assert.Contains("recursion depth", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        var safe = interpreter.Execute(bytecodeModule, "safe");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(safe).Value);
+    }
+
+    [Fact]
+    public void RecursionLimit_ProbeProcess()
+    {
+        var bytecodeModule = CompileRecursionProbeModule();
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter(
+            new VMRuntimeLimits { MaximumRecursionDepth = 4 });
+
+        var ex = Record.Exception(() => interpreter.Execute(bytecodeModule, "main"));
+        Assert.NotNull(ex);
+        Assert.Contains("recursion depth", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        var safe = interpreter.Execute(bytecodeModule, "safe");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(safe).Value);
+    }
+
+    [Fact]
+    public void RecursionLimit_IsolatedProcess_DoesNotCrash()
+    {
+        var assemblyPath = typeof(NegativeTests).Assembly.Location;
+        var startInfo = new System.Diagnostics.ProcessStartInfo("dotnet")
+        {
+            WorkingDirectory = Path.GetDirectoryName(assemblyPath)!,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        startInfo.ArgumentList.Add("vstest");
+        startInfo.ArgumentList.Add(assemblyPath);
+        startInfo.ArgumentList.Add("--Tests:TypeSharp.VM.Tests.NegativeTests.RecursionLimit_ProbeProcess");
+
+        using var process = System.Diagnostics.Process.Start(startInfo)!;
+        Assert.True(process.WaitForExit(30_000), "recursion probe process did not exit within 30 seconds");
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+
+        Assert.True(process.ExitCode == 0,
+            $"recursion probe process failed with exit code {process.ExitCode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}");
+    }
+
+    private static BytecodeModule CompileRecursionProbeModule()
+    {
         var code = @"
             function recurse(n: int32): int32 {
                 return recurse(n + 1);
@@ -3072,9 +3125,11 @@ public class NegativeTests
             function main(): int32 {
                 return recurse(0);
             }
+            function safe(): int32 {
+                return 7;
+            }
         ";
 
-        var limits = new VMRuntimeLimits { MaximumRecursionDepth = 4 };
         var lexer = new TypeSharp.Syntax.Lexer(code);
         var tokens = lexer.Tokenize();
         var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
@@ -3083,12 +3138,7 @@ public class NegativeTests
         var boundTree = binder.Bind(syntaxTree);
         var irGen = new IRGenerator();
         var moduleIR = irGen.Generate(boundTree);
-        var bytecodeModule = BytecodeCompiler.Compile(moduleIR);
-
-        var interpreter = new TypeSharp.VM.Interpreter.Interpreter(limits);
-        var ex = Record.Exception(() => interpreter.Execute(bytecodeModule, "main"));
-        Assert.NotNull(ex);
-        Assert.Contains("recursion depth", ex.Message, StringComparison.OrdinalIgnoreCase);
+        return BytecodeCompiler.Compile(moduleIR);
     }
 
     [Fact]
