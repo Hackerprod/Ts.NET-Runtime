@@ -729,12 +729,14 @@ public sealed class TsTypeParameter : TsType
     public override string Name => ParameterName;
     public override bool IsValueType => false;
     public override bool IsReferenceType => true;
+    public bool IsConst { get; set; }
     public TsType? Constraint { get; set; }
     public TsType? DefaultType { get; set; }
 
-    public TsTypeParameter(string parameterName)
+    public TsTypeParameter(string parameterName, bool isConst = false)
     {
         ParameterName = parameterName;
+        IsConst = isConst;
     }
 }
 

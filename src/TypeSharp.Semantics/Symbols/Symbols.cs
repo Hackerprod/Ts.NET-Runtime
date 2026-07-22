@@ -46,6 +46,8 @@ public sealed class LocalSymbol : Symbol
     public bool IsModuleScoped { get; set; }
     public string? ModuleName { get; set; }
     public string? RuntimeName { get; set; }
+    public bool DeclaredWithoutInitializer { get; set; }
+    public bool HasKnownAssignment { get; set; }
 
     // Captured by a nested function: storage becomes a heap box so the
     // closure and the declaring frame share one mutable cell.

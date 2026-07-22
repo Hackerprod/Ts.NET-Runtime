@@ -32,12 +32,14 @@ public sealed class Binder
     private int _forOfCounter;
     private int _loopDepth;
     private int _breakableDepth;
+    private bool _bindingAssignmentTarget;
     private readonly Stack<(string Name, bool IsLoop)> _labels = new();
     private string _currentSourceFileName = "module";
 
     // Generic type parameters in scope, innermost last.
     private readonly List<Dictionary<string, TsTypeParameter>> _typeParameterScopes = new();
     private readonly List<Dictionary<string, TsType>> _typeValueScopes = new();
+    private readonly List<(LocalSymbol Symbol, SourceLocation Location)> _readsOfNeverInitializedLocals = new();
 
     // Closure support: every LocalSymbol/ParameterSymbol records the function
     // nesting depth where it was declared; identifiers resolved from a deeper
@@ -286,6 +288,7 @@ public sealed class Binder
         }
 
         RegisterTopLevelSymbols(sourceFile);
+        ReportNeverInitializedLocalReads();
         return new BoundSourceFile(sourceFile.FileName, members);
     }
 
@@ -337,12 +340,12 @@ public sealed class Binder
         {
             case ClassDeclarationSyntax cls when !_classTypes.ContainsKey(cls.Name):
                 var clsShell = new TsClassType(cls.Name);
-                clsShell.TypeParameters.AddRange(cls.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+                clsShell.TypeParameters.AddRange(cls.GenericParameters.Select(CreateTypeParameterType));
                 _classTypes[cls.Name] = clsShell;
                 break;
             case InterfaceDeclarationSyntax iface when !_interfaceTypes.ContainsKey(iface.Name):
                 var ifaceShell = new TsInterfaceType(iface.Name);
-                ifaceShell.TypeParameters.AddRange(iface.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+                ifaceShell.TypeParameters.AddRange(iface.GenericParameters.Select(CreateTypeParameterType));
                 _interfaceTypes[iface.Name] = ifaceShell;
                 break;
             case EnumDeclarationSyntax en when !_enumTypes.ContainsKey(en.Name):
@@ -354,7 +357,7 @@ public sealed class Binder
             case TypeAliasDeclarationSyntax { Type: ObjectTypeSyntax } alias
                 when !_interfaceTypes.ContainsKey(alias.Name):
                 var aliasShell = new TsInterfaceType(alias.Name);
-                aliasShell.TypeParameters.AddRange(alias.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+                aliasShell.TypeParameters.AddRange(alias.GenericParameters.Select(CreateTypeParameterType));
                 _interfaceTypes[alias.Name] = aliasShell;
                 break;
         }
@@ -434,7 +437,7 @@ public sealed class Binder
                                 IsPrivateName = method.IsPrivateName,
                                 RuntimeName = GetRuntimeMemberName(cls.Name, method.Name, method.IsPrivateName)
                             };
-                            classMethod.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+                            classMethod.TypeParameters.AddRange(method.GenericParameters.Select(CreateTypeParameterType));
                             classType.Methods[method.Name] = classMethod;
                             PopTypeParameters();
                             break;
@@ -507,7 +510,7 @@ public sealed class Binder
                         var interfaceMethod = new TsMethod(method.Name,
                             ResolveType(method.ReturnType) ?? TsType.Void,
                             method.Parameters.Select(CreateTypeParameter).ToList());
-                        interfaceMethod.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+                        interfaceMethod.TypeParameters.AddRange(method.GenericParameters.Select(CreateTypeParameterType));
                         ifaceType.Methods[method.Name] = interfaceMethod;
                         PopTypeParameters();
                     }
@@ -594,7 +597,7 @@ public sealed class Binder
             IsGenerator = lambda.IsGenerator,
             IsExported = exported
         };
-        sym.TypeParameters.AddRange(lambda.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+        sym.TypeParameters.AddRange(lambda.GenericParameters.Select(CreateTypeParameterType));
         for (int i = 0; i < lambda.Parameters.Count; i++)
         {
             var parameter = lambda.Parameters[i];
@@ -700,7 +703,7 @@ public sealed class Binder
         };
         if (_symbolTable.Lookup(func.Name) is FunctionSymbol priorOverloads)
             sym.Overloads.AddRange(priorOverloads.Overloads);
-        sym.TypeParameters.AddRange(func.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+        sym.TypeParameters.AddRange(func.GenericParameters.Select(CreateTypeParameterType));
         foreach (var parameter in func.Parameters)
             sym.Parameters.Add(CreateParameterSymbol(parameter));
         ApplyTypePredicateSignature(sym, func.ReturnType);
@@ -1063,7 +1066,7 @@ public sealed class Binder
                     IsPrivateName = method.IsPrivateName,
                     RuntimeName = GetRuntimeMemberName(classType.Name, method.Name, method.IsPrivateName)
                 };
-                methodSym.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+                methodSym.TypeParameters.AddRange(method.GenericParameters.Select(CreateTypeParameterType));
 
                 foreach (var p in method.Parameters)
                 {
@@ -1080,7 +1083,7 @@ public sealed class Binder
                     IsPrivateName = method.IsPrivateName,
                     RuntimeName = methodSym.RuntimeName
                 };
-                tsMethod.TypeParameters.AddRange(methodSym.TypeParameters.Select(p => new TsTypeParameter(p.Name)));
+                tsMethod.TypeParameters.AddRange(methodSym.TypeParameters.Select(CloneTypeParameter));
                 ValidateOverride(classType, methodSym, method.Range.Start);
                 classType.Methods[method.Name] = tsMethod;
 
@@ -1340,7 +1343,7 @@ public sealed class Binder
                 var returnType = ResolveType(method.ReturnType) ?? TsType.Void;
                 var tsMethod = new TsMethod(method.Name, returnType,
                     method.Parameters.Select(CreateTypeParameter).ToList());
-                tsMethod.TypeParameters.AddRange(method.GenericParameters.Select(p => new TsTypeParameter(p.Name)));
+                tsMethod.TypeParameters.AddRange(method.GenericParameters.Select(CreateTypeParameterType));
                 ifaceType.Methods[method.Name] = tsMethod;
                 PopTypeParameters();
             }
@@ -1511,7 +1514,7 @@ public sealed class Binder
                 IsRest = parameter.IsRest
             });
         }
-        copy.TypeParameters.AddRange(source.TypeParameters.Select(p => new TsTypeParameter(p.Name)));
+        copy.TypeParameters.AddRange(source.TypeParameters.Select(CloneTypeParameter));
         return copy;
     }
 
@@ -1729,7 +1732,9 @@ public sealed class Binder
 
         var symbol = new LocalSymbol(varDecl.Name, type, varDecl.Range, varDecl.IsConst)
         {
-            IsExported = varDecl.IsExported
+            IsExported = varDecl.IsExported,
+            DeclaredWithoutInitializer = initializer == null,
+            HasKnownAssignment = initializer != null
         };
         if (symbol.IsConst && initializer != null &&
             (IsCompileTimeConstant(initializer) || IsModuleConstantExpression(initializer)))
@@ -1739,6 +1744,17 @@ public sealed class Binder
             _exports[varDecl.ExportName ?? symbol.Name] = symbol;
 
         return new BoundVariableDeclaration(symbol, initializer);
+    }
+
+    private void ReportNeverInitializedLocalReads()
+    {
+        var reported = new HashSet<LocalSymbol>();
+        foreach (var (symbol, location) in _readsOfNeverInitializedLocals)
+        {
+            if (!symbol.DeclaredWithoutInitializer || symbol.HasKnownAssignment || !reported.Add(symbol))
+                continue;
+            _diagnostics.Error($"Variable '{symbol.Name}' is used before being assigned", location);
+        }
     }
 
     private static bool IsCompileTimeConstant(BoundNode node)
@@ -2986,6 +3002,11 @@ public sealed class Binder
         }
 
         RegisterPossibleCapture(symbol);
+        if (!_bindingAssignmentTarget &&
+            symbol is LocalSymbol { DeclaredWithoutInitializer: true, HasKnownAssignment: false } local)
+        {
+            _readsOfNeverInitializedLocals.Add((local, id.Range.Start));
+        }
         return new BoundVariableExpression(symbol);
     }
 
@@ -3133,7 +3154,8 @@ public sealed class Binder
 
         var genericArguments = new Dictionary<string, TsType>(StringComparer.Ordinal);
         ApplyExplicitGenericArguments(call, genericParameters, genericArguments);
-        var boundArgs = BindCallArguments(call.Arguments, expectedParams, genericArguments);
+        var boundArgs = BindCallArguments(call.Arguments, expectedParams, genericArguments, genericParameters);
+        ApplyInferredGenericConstraints(genericParameters, genericArguments, call.Range.Start);
         if (overloads.Count > 0 && !boundArgs.Any(arg => arg is BoundSpreadExpression))
         {
             if (TrySelectOverload(boundArgs, overloads, out var selectedOverload))
@@ -3235,7 +3257,8 @@ public sealed class Binder
     private List<BoundNode> BindCallArguments(
         IReadOnlyList<ExpressionSyntax> arguments,
         IReadOnlyList<CallParameter>? expectedParams,
-        Dictionary<string, TsType>? genericArguments = null)
+        Dictionary<string, TsType>? genericArguments = null,
+        IReadOnlyList<TsTypeParameter>? genericParameters = null)
     {
         var result = new List<BoundNode>(arguments.Count);
         int restIndex = expectedParams?.ToList().FindIndex(p => p.IsRest) ?? -1;
@@ -3252,13 +3275,24 @@ public sealed class Binder
                 ? TsType.Substitute(GetCallArgumentExpectedType(expectedParam.Value), genericArguments ?? new Dictionary<string, TsType>())
                 : null;
 
+            var useConstInference = expectedParam != null &&
+                genericArguments != null &&
+                genericParameters != null &&
+                ShouldUseConstInference(GetCallArgumentExpectedType(expectedParam.Value), genericParameters);
+
             if (arguments[i] is SpreadExpressionSyntax spread)
                 result.Add(BindSpread(spread));
+            else if (useConstInference)
+                result.Add(BindExpressionForConstInference(arguments[i]));
             else if (arguments[i] is LambdaExpressionSyntax lambda && expectedType is TsFunctionType fnType)
                 result.Add(BindInlineLambda(lambda, fnType));
-            else if (arguments[i] is ObjectLiteralExpressionSyntax objLit && expectedType != null)
+            else if (arguments[i] is ObjectLiteralExpressionSyntax objLit &&
+                     expectedType != null &&
+                     !ContainsUnresolvedTypeParameter(expectedType))
                 result.Add(BindObjectLiteral(objLit, expectedType));
-            else if (arguments[i] is ArrayLiteralExpressionSyntax arrLit && expectedType != null)
+            else if (arguments[i] is ArrayLiteralExpressionSyntax arrLit &&
+                     expectedType != null &&
+                     !ContainsUnresolvedTypeParameter(expectedType))
                 result.Add(BindArrayLiteral(arrLit, expectedType));
             else
                 result.Add(BindExpression(arguments[i]));
@@ -3274,6 +3308,87 @@ public sealed class Binder
         parameter.IsRest && parameter.Type is TsArrayType arrayType
             ? arrayType.ElementType
             : parameter.Type;
+
+    private static bool ContainsUnresolvedTypeParameter(TsType type) =>
+        type switch
+        {
+            TsTypeParameter => true,
+            TsArrayType array => ContainsUnresolvedTypeParameter(array.ElementType),
+            TsTupleType tuple => tuple.ElementTypes.Any(ContainsUnresolvedTypeParameter),
+            TsMapType map => ContainsUnresolvedTypeParameter(map.KeyType) ||
+                             ContainsUnresolvedTypeParameter(map.ValueType),
+            TsSetType set => ContainsUnresolvedTypeParameter(set.ElementType),
+            TsNullableType nullable => ContainsUnresolvedTypeParameter(nullable.ElementType),
+            TsPromiseType promise => ContainsUnresolvedTypeParameter(promise.ElementType),
+            TsUnionType union => union.Types.Any(ContainsUnresolvedTypeParameter),
+            TsIntersectionType intersection => intersection.Types.Any(ContainsUnresolvedTypeParameter),
+            TsGenericType generic => generic.TypeArguments.Any(ContainsUnresolvedTypeParameter),
+            TsFunctionType function => function.Parameters.Any(parameter => ContainsUnresolvedTypeParameter(parameter.Type)) ||
+                                       ContainsUnresolvedTypeParameter(function.ReturnType),
+            _ => false
+        };
+
+    private static bool ShouldUseConstInference(
+        TsType type,
+        IReadOnlyList<TsTypeParameter> genericParameters)
+    {
+        var constParameters = genericParameters
+            .Where(parameter => parameter.IsConst)
+            .ToDictionary(parameter => parameter.Name, StringComparer.Ordinal);
+        return constParameters.Count > 0 && ShouldUseConstInference(type, constParameters);
+    }
+
+    private static bool ShouldUseConstInference(
+        TsType type,
+        IReadOnlyDictionary<string, TsTypeParameter> constParameters) =>
+        type switch
+        {
+            TsTypeParameter parameter when constParameters.TryGetValue(parameter.Name, out var constParameter) =>
+                constParameter.Constraint is not TsArrayType { IsReadonly: false },
+            TsTypeParameter => false,
+            TsArrayType array => ShouldUseConstInference(array.ElementType, constParameters),
+            TsTupleType tuple => tuple.ElementTypes.Any(element => ShouldUseConstInference(element, constParameters)),
+            TsMapType map => ShouldUseConstInference(map.KeyType, constParameters) ||
+                             ShouldUseConstInference(map.ValueType, constParameters),
+            TsSetType set => ShouldUseConstInference(set.ElementType, constParameters),
+            TsNullableType nullable => ShouldUseConstInference(nullable.ElementType, constParameters),
+            TsPromiseType promise => ShouldUseConstInference(promise.ElementType, constParameters),
+            TsUnionType union => union.Types.Any(member => ShouldUseConstInference(member, constParameters)),
+            TsIntersectionType intersection => intersection.Types.Any(member => ShouldUseConstInference(member, constParameters)),
+            TsGenericType generic => generic.TypeArguments.Any(argument => ShouldUseConstInference(argument, constParameters)),
+            TsFunctionType function => function.Parameters.Any(parameter => ShouldUseConstInference(parameter.Type, constParameters)) ||
+                                       ShouldUseConstInference(function.ReturnType, constParameters),
+            _ => false
+        };
+
+    private void ApplyInferredGenericConstraints(
+        IReadOnlyList<TsTypeParameter> genericParameters,
+        Dictionary<string, TsType> genericArguments,
+        SourceLocation location)
+    {
+        foreach (var parameter in genericParameters)
+        {
+            if (!genericArguments.TryGetValue(parameter.Name, out var argument))
+            {
+                if (parameter.DefaultType != null)
+                    genericArguments[parameter.Name] = parameter.DefaultType;
+                continue;
+            }
+
+            if (parameter.Constraint == null || TsType.IsCompatibleWith(argument, parameter.Constraint))
+                continue;
+
+            if (parameter.IsConst)
+            {
+                genericArguments[parameter.Name] = parameter.Constraint;
+                continue;
+            }
+
+            _diagnostics.Error(
+                $"Type argument '{argument}' does not satisfy constraint '{parameter.Constraint}' for '{parameter.Name}'",
+                location);
+        }
+    }
 
     private static void InferGenericArguments(
         TsType expected,
@@ -3665,7 +3780,7 @@ public sealed class Binder
             IsPrivateName = method.IsPrivateName,
             RuntimeName = method.RuntimeName
         };
-        sym.TypeParameters.AddRange(method.TypeParameters.Select(p => new TsTypeParameter(p.Name)));
+        sym.TypeParameters.AddRange(method.TypeParameters.Select(CloneTypeParameter));
         foreach (var p in method.Parameters)
         {
             sym.Parameters.Add(new ParameterSymbol(p.Name, TsType.Substitute(p.Type, genericMap), range)
@@ -3686,7 +3801,10 @@ public sealed class Binder
             return BindDestructuringAssignment(assign);
         }
 
+        var previousBindingAssignmentTarget = _bindingAssignmentTarget;
+        _bindingAssignmentTarget = true;
         var target = BindExpression(assign.Target);
+        _bindingAssignmentTarget = previousBindingAssignmentTarget;
         var value = BindExpression(assign.Value);
 
         // Compound assignments (`x += y`) desugar to `x = x <op> y`.
@@ -3744,6 +3862,9 @@ public sealed class Binder
                 $"Cannot assign '{valueType}' to variable of type '{targetType}'",
                 assign.Range.Start);
         }
+
+        if (target is BoundVariableExpression assignedVar && assignedVar.Symbol is LocalSymbol assignedLocal)
+            assignedLocal.HasKnownAssignment = true;
 
         return new BoundAssignmentExpression(target, value);
     }
@@ -3977,6 +4098,12 @@ public sealed class Binder
     }
 
     private BoundObjectLiteralExpression BindObjectLiteral(ObjectLiteralExpressionSyntax objLit, TsType? expectedType = null)
+        => BindObjectLiteral(objLit, expectedType, constContext: false);
+
+    private BoundObjectLiteralExpression BindObjectLiteral(
+        ObjectLiteralExpressionSyntax objLit,
+        TsType? expectedType,
+        bool constContext)
     {
         var properties = new List<BoundObjectPropertyNode>();
         var structuralType = new TsClassType("Object");
@@ -4077,7 +4204,9 @@ public sealed class Binder
         {
             foreach (var prop in objLit.Properties)
             {
-                var value = BindExpression(prop.Value);
+                var value = constContext
+                    ? BindExpressionForConstInference(prop.Value)
+                    : BindExpression(prop.Value);
                 if (prop is ObjectSpreadPropertySyntax)
                 {
                     properties.Add(new BoundObjectPropertyNode(string.Empty, value, value.Type, isSpread: true));
@@ -4093,7 +4222,10 @@ public sealed class Binder
                 }
 
                 properties.Add(new BoundObjectPropertyNode(prop.Key, value, value.Type));
-                structuralType.Fields[prop.Key] = new TsField(prop.Key, value.Type);
+                structuralType.Fields[prop.Key] = new TsField(prop.Key, value.Type)
+                {
+                    IsReadonly = constContext
+                };
             }
         }
 
@@ -4390,7 +4522,21 @@ public sealed class Binder
         });
     }
 
+    private BoundNode BindExpressionForConstInference(ExpressionSyntax expression) =>
+        expression switch
+        {
+            ObjectLiteralExpressionSyntax objLit => BindObjectLiteral(objLit, expectedType: null, constContext: true),
+            ArrayLiteralExpressionSyntax arrLit => BindArrayLiteral(arrLit, expectedType: null, constContext: true),
+            _ => BindExpression(expression)
+        };
+
     private BoundArrayLiteralExpression BindArrayLiteral(ArrayLiteralExpressionSyntax arrLit, TsType? expectedType = null)
+        => BindArrayLiteral(arrLit, expectedType, constContext: false);
+
+    private BoundArrayLiteralExpression BindArrayLiteral(
+        ArrayLiteralExpressionSyntax arrLit,
+        TsType? expectedType,
+        bool constContext)
     {
         var expectedElementType = expectedType switch
         {
@@ -4406,19 +4552,26 @@ public sealed class Binder
                 elements.Add(BindSpread(spread));
             else if (expectedElementType != null)
                 elements.Add(BindExpressionWithExpectedType(arrLit.Elements[i], expectedElementType));
+            else if (constContext)
+                elements.Add(BindExpressionForConstInference(arrLit.Elements[i]));
             else
                 elements.Add(BindExpression(arrLit.Elements[i]));
         }
 
         var firstNormalElement = elements.FirstOrDefault(e => e is not BoundSpreadExpression);
-        var elementType = expectedElementType ?? WidenLiteralType(firstNormalElement?.Type ?? TsType.Any);
+        var elementType = expectedElementType ??
+            (constContext
+                ? NormalizeUnion(elements.Where(e => e is not BoundSpreadExpression).Select(e => e.Type))
+                : WidenLiteralType(firstNormalElement?.Type ?? TsType.Any));
 
         for (int i = expectedElementType != null ? 0 : 1; i < elements.Count; i++)
         {
             if (elements[i] is BoundSpreadExpression)
                 continue;
 
-            var candidateType = expectedElementType != null ? elements[i].Type : WidenLiteralType(elements[i].Type);
+            var candidateType = expectedElementType != null || constContext
+                ? elements[i].Type
+                : WidenLiteralType(elements[i].Type);
             if (!TsType.IsCompatibleWith(candidateType, elementType))
             {
                 _diagnostics.Error(
@@ -4427,7 +4580,7 @@ public sealed class Binder
             }
         }
 
-        return new BoundArrayLiteralExpression(elements, new TsArrayType(elementType));
+        return new BoundArrayLiteralExpression(elements, new TsArrayType(elementType, isReadonly: constContext));
     }
 
     private BoundIndexExpression BindIndexExpression(IndexExpressionSyntax indexExpr)
@@ -5022,12 +5175,29 @@ public sealed class Binder
         return DistinctTypes(keys);
     }
 
+    private TsTypeParameter CreateTypeParameterType(GenericParameterSyntax parameter)
+    {
+        var typeParameter = new TsTypeParameter(parameter.Name, parameter.IsConst);
+        if (parameter.Constraints.Count > 0)
+            typeParameter.Constraint = ResolveType(parameter.Constraints[0]);
+        if (parameter.DefaultType != null)
+            typeParameter.DefaultType = ResolveType(parameter.DefaultType);
+        return typeParameter;
+    }
+
+    private static TsTypeParameter CloneTypeParameter(TsTypeParameter parameter) =>
+        new(parameter.Name, parameter.IsConst)
+        {
+            Constraint = parameter.Constraint,
+            DefaultType = parameter.DefaultType
+        };
+
     private void PushTypeParameters(IEnumerable<GenericParameterSyntax> parameters)
     {
         var parameterList = parameters.ToList();
         var scope = new Dictionary<string, TsTypeParameter>(StringComparer.Ordinal);
         foreach (var p in parameterList)
-            scope[p.Name] = new TsTypeParameter(p.Name);
+            scope[p.Name] = new TsTypeParameter(p.Name, p.IsConst);
         _typeParameterScopes.Add(scope);
 
         foreach (var p in parameterList)

@@ -274,6 +274,18 @@ public class ParserTests
     }
 
     [Fact]
+    public void ParseConstGenericFunctionParameter()
+    {
+        var tree = Parse("function value<const T extends readonly string[]>(input: T): T { return input; }");
+        var function = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(tree.Members));
+
+        var generic = Assert.Single(function.GenericParameters);
+        Assert.Equal("T", generic.Name);
+        Assert.True(generic.IsConst);
+        Assert.Single(generic.Constraints);
+    }
+
+    [Fact]
     public void ParseGenericClassMethodWithNestedCallArguments()
     {
         var lexer = new Lexer("class Sender { send<T>(messageType: number, message: T): void { host(messageType, encode(message), true); } }");

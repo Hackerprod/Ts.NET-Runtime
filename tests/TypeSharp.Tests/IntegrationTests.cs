@@ -943,6 +943,130 @@ public class IntegrationTests
     }
 
     [Fact]
+    public void ModernTypeScriptFixtures_ClassifySupportedFeatures()
+    {
+        var supported = ModernTypeScriptManifest.Features
+            .Where(feature => feature.Status == StandardCapabilityStatus.Supported)
+            .Select(feature => (feature.Version, feature.Name, feature.Kind))
+            .ToHashSet();
+
+        Assert.Contains(("4.9", "satisfies operator", ModernTypeScriptFeatureKind.CheckerOnly), supported);
+        Assert.Contains(("5.0", "standard decorators", ModernTypeScriptFeatureKind.RuntimeEmit), supported);
+        Assert.Contains(("5.0", "const type parameters", ModernTypeScriptFeatureKind.CheckerOnly), supported);
+        Assert.Contains(("5.7", "checks for never-initialized variables", ModernTypeScriptFeatureKind.CheckerOnly), supported);
+
+        Assert.Contains(ModernTypeScriptManifest.Features,
+            feature => feature.Kind == ModernTypeScriptFeatureKind.ModuleResolution &&
+                       feature.Status == StandardCapabilityStatus.Unsupported);
+    }
+
+    [Fact]
+    public async Task ConstTypeParameters_PreserveInlineObjectAndArrayLiterals()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_const_type_params_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                function preserve<const T>(value: T): T {
+                    return value;
+                }
+
+                export function main(): string {
+                    const result = preserve({ names: ["Alice", "Bob"] });
+                    const first: "Alice" | "Bob" = result.names[0];
+                    return first;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<string>("app", "main");
+            Assert.Equal("Alice", result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ConstTypeParameters_FallBackToMutableConstraint()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_const_type_params_mutable_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                function mutable<const T extends string[]>(value: T): T {
+                    return value;
+                }
+
+                export function main(): number {
+                    const values = mutable(["a", "b"]);
+                    values.push("c");
+                    return values.length;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(3, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void NeverInitializedVariable_IsRejectedInsideNestedFunction()
+    {
+        const string source = """
+            function main(): void {
+                let result: number;
+                function printResult(): number {
+                    return result;
+                }
+            }
+            """;
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        binder.Bind(parser.Parse());
+
+        Assert.Contains(binder.Diagnostics.GetErrors(),
+            diagnostic => diagnostic.Message.Contains("Variable 'result' is used before being assigned", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AssignedLaterVariable_IsNotClassifiedAsNeverInitialized()
+    {
+        const string source = """
+            function main(): number {
+                let result: number;
+                function printResult(): number {
+                    return result;
+                }
+                result = 7;
+                return printResult();
+            }
+            """;
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        binder.Bind(parser.Parse());
+
+        Assert.DoesNotContain(binder.Diagnostics.GetErrors(),
+            diagnostic => diagnostic.Message.Contains("Variable 'result' is used before being assigned", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Map_PreservesInsertionOrderAndUsesSameValueZero()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_map_order_" + Guid.NewGuid().ToString("N"));

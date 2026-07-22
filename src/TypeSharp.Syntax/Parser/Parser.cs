@@ -687,8 +687,15 @@ public sealed class Parser
         while (!Check(TokenKind.GreaterThan) && !IsAtEnd())
         {
             int loopStart = _position;
+            bool isConst = false;
+            var start = Peek().Location;
+            if (Check(TokenKind.ConstKeyword))
+            {
+                isConst = true;
+                start = Advance().Location;
+            }
             var name = ExpectIdentifier();
-            var param = new GenericParameterSyntax(name, Peek().Location);
+            var param = new GenericParameterSyntax(name, start, isConst);
             if (Check(TokenKind.ExtendsKeyword))
             {
                 Advance();

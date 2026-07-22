@@ -1210,13 +1210,15 @@ public sealed class ParameterSyntax : SyntaxNode
 public sealed class GenericParameterSyntax : SyntaxNode
 {
     public string Name { get; }
+    public bool IsConst { get; }
     public List<TypeSyntax> Constraints { get; } = new();
     public TypeSyntax? DefaultType { get; set; }
 
-    public GenericParameterSyntax(string name, SourceRange range)
+    public GenericParameterSyntax(string name, SourceRange range, bool isConst = false)
         : base(SyntaxNodeType.GenericParameter, range)
     {
         Name = name;
+        IsConst = isConst;
     }
 
     public override IEnumerable<SyntaxNode> GetChildren()
