@@ -1246,6 +1246,14 @@ public sealed class Interpreter
                     frame.Push(TsValue.FromInt32(AsInt32(left) >> AsInt32(right)));
                     break;
                 }
+                case Opcodes.ShrU32: // SHR_U32 / JavaScript >>>
+                {
+                    var right = frame.Pop();
+                    var left = frame.Pop();
+                    var shift = AsInt32(right) & 31;
+                    frame.Push(TsValue.FromFloat64((uint)AsInt32(left) >> shift));
+                    break;
+                }
                 case Opcodes.ShlI64: // SHL_I64
                 {
                     var right = frame.Pop();

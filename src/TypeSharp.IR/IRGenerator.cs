@@ -2305,6 +2305,7 @@ public sealed class IRGenerator
             TokenKind.Caret => Opcode.Xor_I32,
             TokenKind.ShiftLeft => Opcode.Shl_I32,
             TokenKind.ShiftRight => Opcode.Shr_I32,
+            TokenKind.ShiftRightUnsigned => Opcode.Shr_U32,
             TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };
@@ -2327,6 +2328,7 @@ public sealed class IRGenerator
             TokenKind.Caret => Opcode.Xor_I64,
             TokenKind.ShiftLeft => Opcode.Shl_I64,
             TokenKind.ShiftRight => Opcode.Shr_I64,
+            TokenKind.ShiftRightUnsigned => Opcode.Shr_U32,
             TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };
@@ -2349,6 +2351,7 @@ public sealed class IRGenerator
             TokenKind.Caret => Opcode.Xor_U64,
             TokenKind.ShiftLeft => Opcode.Shl_U64,
             TokenKind.ShiftRight => Opcode.Shr_U64,
+            TokenKind.ShiftRightUnsigned => Opcode.Shr_U32,
             TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };
@@ -2371,6 +2374,7 @@ public sealed class IRGenerator
             TokenKind.Caret => Opcode.Xor_I32,
             TokenKind.ShiftLeft => Opcode.Shl_I32,
             TokenKind.ShiftRight => Opcode.Shr_I32,
+            TokenKind.ShiftRightUnsigned => Opcode.Shr_U32,
             TokenKind.StarStar => Opcode.Pow_F64,
             _ => Opcode.Nop
         };

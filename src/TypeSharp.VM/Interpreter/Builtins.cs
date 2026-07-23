@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using TypeSharp.VM.Memory;
 
 namespace TypeSharp.VM.Interpreter;
@@ -59,6 +60,10 @@ public static class Builtins
             ["console::log"] = args => { Console.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Null; },
             ["console::error"] = args => { Console.Error.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Null; },
             ["console::warn"] = args => { Console.Error.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Null; },
+
+            ["JSON::stringify"] = args => TsValue.FromString(args.Length == 0
+                ? "undefined"
+                : JsonSerializer.Serialize(ToJsonCompatible(args[0]))),
 
             // ── Array construction + statics ──
             ["Array::ctor"] = args =>
@@ -552,6 +557,39 @@ public static class Builtins
         double dl = D(left), dr = D(right);
         return !double.IsNaN(dl) && dl == dr;
     }
+
+    private static object? ToJsonCompatible(TsValue value) => value switch
+    {
+        TsVoid => null,
+        TsNull => null,
+        TsBoolValue boolean => boolean.Value,
+        TsInt32Value number => number.Value,
+        TsInt64Value number => number.Value,
+        TsUInt64Value number => number.Value,
+        TsBigIntValue number => number.Value.ToString(CultureInfo.InvariantCulture),
+        TsFloat32Value number => number.Value,
+        TsFloat64Value number => number.Value,
+        TsDecimalValue number => number.Value,
+        TsStringValue text => text.Value,
+        TsArrayValue array => Enumerable.Range(0, array.Value.Count)
+            .Select(index => ToJsonCompatible(array.Value.Get(index)))
+            .ToList(),
+        TsUint8ArrayValue bytes => Enumerable.Range(0, bytes.Length)
+            .Select(index => bytes.Get(index))
+            .ToList(),
+        TsMapValue map => map.Value.Entries.ToDictionary(
+            entry => S(entry.Key),
+            entry => ToJsonCompatible(entry.Value),
+            StringComparer.Ordinal),
+        TsSetValue set => set.Value.Entries
+            .Select(ToJsonCompatible)
+            .ToList(),
+        TsObjectValue obj => obj.Value.Fields.ToDictionary(
+            pair => pair.Key,
+            pair => ToJsonCompatible(pair.Value),
+            StringComparer.Ordinal),
+        _ => value.ToString()
+    };
 
     private static byte ToByte(TsValue value) => value switch
     {

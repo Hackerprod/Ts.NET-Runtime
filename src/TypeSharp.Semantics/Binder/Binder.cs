@@ -224,6 +224,11 @@ public sealed class Binder
         _classTypes["Date"] = dateGlobal;
         _symbolTable.Define(new ClassSymbol("Date", dateGlobal, default));
 
+        var jsonGlobal = new TsClassType("JSON");
+        jsonGlobal.Methods["stringify"] = new TsMethod("stringify", TsType.String, new List<TsParameter>());
+        _classTypes["JSON"] = jsonGlobal;
+        _symbolTable.Define(new ClassSymbol("JSON", jsonGlobal, default));
+
         DefineGlobalFunction("parseInt", TsType.Number);
         DefineGlobalFunction("parseFloat", TsType.Number);
         DefineGlobalFunction("isNaN", TsType.Bool);
@@ -311,11 +316,7 @@ public sealed class Binder
                     RegisterTopLevelSymbol(en.Name);
                     break;
                 case TypeAliasDeclarationSyntax alias:
-                    var resolved = ResolveNamedType(new NamedTypeSyntax(alias.Name, alias.Range));
-                    _moduleSymbols[alias.Name] = new TypeAliasSymbol(alias.Name, resolved, alias.Range)
-                    {
-                        IsExported = IsExported(alias)
-                    };
+                    _moduleSymbols[alias.Name] = CreateTypeAliasSymbol(alias);
                     break;
                 case VariableDeclarationSyntax variable:
                     RegisterTopLevelSymbol(variable.Name);
@@ -666,7 +667,9 @@ public sealed class Binder
             return existing;
 
         PushTypeParameters(func.GenericParameters);
-        var declaredReturnType = ResolveType(func.ReturnType) ?? TsType.Void;
+        var declaredReturnType = func.ReturnType != null
+            ? ResolveType(func.ReturnType)
+            : TsType.Any;
         var returnType = func.IsGenerator
             ? TsType.Any
             : NormalizeFunctionReturnType(declaredReturnType, func.IsAsync);
@@ -1247,10 +1250,19 @@ public sealed class Binder
         if (!IsExported(alias))
             return;
 
-        var resolved = ResolveNamedType(new NamedTypeSyntax(alias.Name, alias.Range));
-        _exports[GetExportName(alias, alias.Name)] = new TypeAliasSymbol(alias.Name, resolved, alias.Range)
+        _exports[GetExportName(alias, alias.Name)] = CreateTypeAliasSymbol(alias, isExported: true);
+    }
+
+    private TypeAliasSymbol CreateTypeAliasSymbol(TypeAliasDeclarationSyntax alias, bool? isExported = null)
+    {
+        var resolved = alias.GenericParameters.Count > 0
+            ? TsType.Any
+            : ResolveNamedType(new NamedTypeSyntax(alias.Name, alias.Range));
+
+        return new TypeAliasSymbol(alias.Name, resolved, alias.Range)
         {
-            IsExported = true
+            IsExported = isExported ?? IsExported(alias),
+            Declaration = alias
         };
     }
 
@@ -1453,7 +1465,10 @@ public sealed class Binder
                 _enumTypes[en.Name] = en.EnumType;
                 break;
             case TypeAliasSymbol alias:
-                _typeAliases[alias.Name] = alias.AliasedType;
+                if (alias.Declaration?.GenericParameters.Count > 0)
+                    _typeAliasDeclarations[alias.Name] = alias.Declaration;
+                else
+                    _typeAliases[alias.Name] = alias.AliasedType;
                 break;
         }
     }
@@ -1475,7 +1490,11 @@ public sealed class Binder
             ClassSymbol cls => new ClassSymbol(alias, cls.ClassType, location) { IsExported = cls.IsExported },
             InterfaceSymbol iface => new InterfaceSymbol(alias, iface.InterfaceType, location) { IsExported = iface.IsExported },
             EnumSymbol en => new EnumSymbol(alias, en.EnumType, location) { IsExported = en.IsExported },
-            TypeAliasSymbol typeAlias => new TypeAliasSymbol(alias, typeAlias.AliasedType, location) { IsExported = typeAlias.IsExported },
+            TypeAliasSymbol typeAlias => new TypeAliasSymbol(alias, typeAlias.AliasedType, location)
+            {
+                IsExported = typeAlias.IsExported,
+                Declaration = typeAlias.Declaration
+            },
             LocalSymbol local => new LocalSymbol(alias, local.Type, location, local.IsConst)
             {
                 IsExported = local.IsExported,
@@ -2347,7 +2366,11 @@ public sealed class Binder
         if (binary.OperatorToken.Kind == TokenKind.PipePipe)
         {
             var result = TryGetFalsePathNullCheckNarrowings(binary.Left);
-            result.AddRange(TryGetFalsePathNullCheckNarrowings(binary.Right));
+            var right = result.Count == 0
+                ? TryGetFalsePathNullCheckNarrowings(binary.Right)
+                : BindWithTemporaryNarrowings(result, useTrueType: false,
+                    () => TryGetFalsePathNullCheckNarrowings(binary.Right));
+            result.AddRange(right);
             return result;
         }
 
@@ -2366,7 +2389,11 @@ public sealed class Binder
         if (binary.OperatorToken.Kind == TokenKind.AmpersandAmpersand)
         {
             var result = TryGetTruePathNullCheckNarrowings(binary.Left);
-            result.AddRange(TryGetTruePathNullCheckNarrowings(binary.Right));
+            var right = result.Count == 0
+                ? TryGetTruePathNullCheckNarrowings(binary.Right)
+                : BindWithTemporaryNarrowings(result, useTrueType: true,
+                    () => TryGetTruePathNullCheckNarrowings(binary.Right));
+            result.AddRange(right);
             return result;
         }
 
@@ -2453,21 +2480,24 @@ public sealed class Binder
         var candidates = sourceType is TsUnionType union
             ? union.Types
             : new List<TsType> { sourceType };
+        var discriminableCandidates = candidates
+            .Where(candidate => candidate is TsClassType or TsInterfaceType or TsGenericType)
+            .ToList();
+        if (discriminableCandidates.Count == 0)
+            return null;
 
-        var matching = candidates
+        var matching = discriminableCandidates
             .Where(candidate => TryGetReadableMemberType(candidate, memberAccess.MemberName, out var memberType) &&
+                                memberType is TsLiteralType &&
                                 TsType.IsCompatibleWith(literalType, memberType) &&
                                 TsType.IsCompatibleWith(memberType, literalType))
             .ToList();
 
-        if (matching.Count == 0)
-            return null;
-
-        var nonMatching = candidates
+        var nonMatching = discriminableCandidates
             .Where(candidate => !matching.Contains(candidate))
             .ToList();
 
-        if (matching.Count == candidates.Count && nonMatching.Count == 0 && candidates.Count > 1)
+        if (matching.Count == discriminableCandidates.Count && nonMatching.Count == 0 && discriminableCandidates.Count > 1)
             return null;
 
         var narrowed = NormalizeUnion(matching);
@@ -2641,7 +2671,10 @@ public sealed class Binder
         switch (type)
         {
             case TsNullableType nullable:
-                nonNullType = nullable.ElementType;
+                if (TryRemoveNullish(nullable.ElementType, out var nullableElement))
+                    nonNullType = nullableElement;
+                else
+                    nonNullType = nullable.ElementType;
                 return true;
             case TsUnionType union:
                 var narrowed = new List<TsType>();
@@ -3289,7 +3322,7 @@ public sealed class Binder
             else if (arguments[i] is ObjectLiteralExpressionSyntax objLit &&
                      expectedType != null &&
                      !ContainsUnresolvedTypeParameter(expectedType))
-                result.Add(BindObjectLiteral(objLit, expectedType));
+                result.Add(BindObjectLiteral(objLit, GetContextualObjectLiteralType(expectedType)));
             else if (arguments[i] is ArrayLiteralExpressionSyntax arrLit &&
                      expectedType != null &&
                      !ContainsUnresolvedTypeParameter(expectedType))
@@ -3501,6 +3534,8 @@ public sealed class Binder
             objType = nullable.ElementType;
         else if (member.IsNullConditional && TryRemoveNullish(objType, out var nonNullReceiverType))
             objType = nonNullReceiverType;
+        else if (objType is TsLiteralType literalReceiver)
+            objType = literalReceiver.BaseType;
         IReadOnlyDictionary<string, TsType> genericMap = new Dictionary<string, TsType>();
         if (objType is TsGenericType generic)
         {
@@ -3560,8 +3595,15 @@ public sealed class Binder
         else if (objType is TsUnionType unionType)
         {
             var memberTypes = new List<TsType>();
+            var hasNullish = false;
             foreach (var candidate in unionType.Types)
             {
+                if (candidate is TsNullType or TsUndefinedType)
+                {
+                    hasNullish = true;
+                    continue;
+                }
+
                 if (!TryGetReadableMemberType(candidate, member.MemberName, out var candidateMemberType))
                 {
                     memberTypes.Clear();
@@ -3573,6 +3615,8 @@ public sealed class Binder
             if (memberTypes.Count > 0)
             {
                 var resultMemberType = NormalizeUnion(memberTypes);
+                if (hasNullish)
+                    resultMemberType = new TsNullableType(resultMemberType);
                 memberSym = new PropertySymbol(member.MemberName, resultMemberType, member.Range);
             }
         }
@@ -4257,9 +4301,7 @@ public sealed class Binder
 
     private BoundNode BindExpressionWithExpectedType(ExpressionSyntax expression, TsType expectedType)
     {
-        var unwrappedExpectedType = expectedType is TsNullableType nullable
-            ? nullable.ElementType
-            : expectedType;
+        var unwrappedExpectedType = GetContextualObjectLiteralType(expectedType);
 
         return expression switch
         {
@@ -4269,6 +4311,23 @@ public sealed class Binder
             ArrayLiteralExpressionSyntax array => BindArrayLiteral(array, unwrappedExpectedType),
             _ => BindExpression(expression)
         };
+    }
+
+    private static TsType GetContextualObjectLiteralType(TsType expectedType)
+    {
+        if (expectedType is TsNullableType nullable)
+            return nullable.ElementType;
+
+        if (expectedType is TsUnionType union)
+        {
+            var nonNullish = union.Types
+                .Where(type => type is not TsNullType and not TsUndefinedType and not TsNeverType)
+                .ToList();
+            if (nonNullish.Count == 1)
+                return nonNullish[0];
+        }
+
+        return expectedType;
     }
 
     private BoundLambdaExpression BindInlineLambda(LambdaExpressionSyntax lambda, TsFunctionType? contextualType = null)
@@ -4630,7 +4689,7 @@ public sealed class Binder
     }
 
     private static bool IsBuiltinStaticNamespace(string name) =>
-        name is "Math" or "Number" or "console" or "Array" or "Date" or "Uint8Array";
+        name is "Math" or "Number" or "console" or "Array" or "Date" or "Uint8Array" or "JSON";
 
     private static bool IsIndexKeyCompatible(TsType actual, TsType expected)
     {

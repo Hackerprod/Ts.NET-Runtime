@@ -378,6 +378,7 @@ public static class BytecodeCompiler
             case Opcode.Not_U64: writer.Write(Opcodes.NotU64); break;
             case Opcode.Shl_U64: writer.Write(Opcodes.ShlU64); break;
             case Opcode.Shr_U64: writer.Write(Opcodes.ShrU64); break;
+            case Opcode.Shr_U32: writer.Write(Opcodes.ShrU32); break;
 
             // ── I32 comparison ──
             case Opcode.CmpEq_I32: writer.Write(Opcodes.CmpEqI32); break;

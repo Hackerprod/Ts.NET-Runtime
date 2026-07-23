@@ -1,5 +1,6 @@
 using TypeSharp.Syntax;
 using TypeSharp.Semantics.Binder;
+using TypeSharp.Syntax.SyntaxTree;
 
 namespace TypeSharp.Semantics.Symbols;
 
@@ -194,6 +195,7 @@ public sealed class TypeAliasSymbol : Symbol
     public override SymbolKind Kind => SymbolKind.TypeAlias;
     public TypeSystem.TsType AliasedType => Type;
     public bool IsExported { get; set; }
+    public TypeAliasDeclarationSyntax? Declaration { get; set; }
 
     public TypeAliasSymbol(string name, TypeSystem.TsType type, SourceRange location)
         : base(name, type, location) { }

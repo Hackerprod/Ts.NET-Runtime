@@ -157,6 +157,7 @@ public static class Opcodes
     public const byte NotU64                   = 0x6D;
     public const byte ShlU64                   = 0x6E;
     public const byte ShrU64                   = 0x6F;
+    public const byte ShrU32                   = 0xBF;
 
     public const byte Branch                   = 0x70;
     public const byte BranchTrue               = 0x71;
@@ -327,6 +328,7 @@ public static class OpcodeFormats
 
         // U64/BigInt bitwise + shifts
         Reg(0x6A); Reg(0x6B); Reg(0x6C); Reg(0x6D); Reg(0x6E); Reg(0x6F);
+        Reg(0xBF); // SHR_U32 (JavaScript >>>)
 
         // ── Control flow ──
         Reg(0x70, OperandKind.Branch);  // BRANCH

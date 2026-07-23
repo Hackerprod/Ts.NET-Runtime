@@ -18,7 +18,7 @@ public enum Opcode
     Xor_I32, Xor_I64, Xor_U64,
     Not_I32, Not_I64, Not_U64,
     Shl_I32, Shl_I64, Shl_U64,
-    Shr_I32, Shr_I64, Shr_U64,
+    Shr_I32, Shr_I64, Shr_U64, Shr_U32,
 
     // Comparison
     CmpEq_I32, CmpEq_I64, CmpEq_U64, CmpEq_F32, CmpEq_F64, CmpEq_Decimal,

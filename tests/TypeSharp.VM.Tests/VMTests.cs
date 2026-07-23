@@ -2654,6 +2654,18 @@ public class InteropTests
     }
 
     [Fact]
+    public void UnsignedRightShift_UsesJavaScriptUInt32Semantics()
+    {
+        var result = Run("""
+            function main(): number {
+                return (-1 >>> 0) + (0x80000000 >>> 31);
+            }
+        """);
+
+        Assert.Equal(4294967296d, Convert.ToDouble(result!.RawValue));
+    }
+
+    [Fact]
     public void LoopBreakAndContinue_WorkInForLoops()
     {
         var result = Run("""

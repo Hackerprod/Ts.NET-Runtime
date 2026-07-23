@@ -1793,6 +1793,218 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task EsModules_PreserveImportedGenericTypeAliasesAndInterfaceMembers()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_esm_generic_alias_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "framework.ts"), """
+                export type HandlerResult = void | boolean;
+                export interface Services {
+                    readonly items: ItemService;
+                }
+                export interface ItemService {
+                    getInventory(): Inventory;
+                }
+                export interface Inventory {
+                    readonly catalogItems: CatalogItem[];
+                }
+                export interface CatalogItem {
+                    readonly defIndex: int32;
+                }
+                export interface HandlerContext<TRequest, TResponse> {
+                    readonly request: TRequest;
+                    readonly services: Services;
+                    encode<TMessage>(message: TMessage): Uint8Array;
+                }
+                export type RouteHandler<TRequest, TResponse> = (ctx: HandlerContext<TRequest, TResponse>) => HandlerResult;
+                """);
+
+            File.WriteAllText(Path.Combine(dir, "consumer.ts"), """
+                import { CatalogItem, HandlerContext, RouteHandler } from "./framework";
+
+                interface Request { readonly expected: int32; }
+                interface Response { readonly ok: boolean; }
+
+                const handler: RouteHandler<Request, Response> = (ctx: HandlerContext<Request, Response>) => {
+                    const item: CatalogItem = ctx.services.items.getInventory().catalogItems[0];
+                    return item.defIndex == ctx.request.expected;
+                };
+
+                export function main(): int32 {
+                    return 1;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("consumer", "main");
+            Assert.Equal(1, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task TypeFlow_NarrowsFunctionReturnedUnionNullAcrossShortCircuit()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_flow_null_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                interface State {
+                    readonly value: int32;
+                }
+
+                function currentState(enabled: boolean): State | null {
+                    return enabled ? { value: 7 } : null;
+                }
+
+                export function main(): int32 {
+                    const state = currentState(true);
+                    if (state === null || state.value === 0) {
+                        return 0;
+                    }
+
+                    return state.value;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(7, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LiteralStringMemberAccess_UsesStringBuiltins()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_literal_string_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                export function main(): int32 {
+                    const text = ("  ready  " ?? "").trim();
+                    return text.length;
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(5, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task UnannotatedFunctionReturn_CanFlowIntoTypedObjectParameter()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_unannotated_return_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                interface Upsert {
+                    readonly id: int32;
+                    readonly name: string;
+                }
+
+                function buildUpsert(id: int32) {
+                    return { id, name: "team" };
+                }
+
+                function save(upsert: Upsert): int32 {
+                    return upsert.id;
+                }
+
+                export function main(): int32 {
+                    return save(buildUpsert(9));
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(9, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task TypeFlow_NarrowsTernaryDerivedNullableAcrossOrGuard()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_flow_ternary_nullable_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "app.ts"), """
+                interface Parent {
+                    readonly id: int32;
+                }
+                interface Child {
+                    readonly value: int32;
+                }
+
+                function maybeParent(flag: boolean): Parent | null {
+                    return flag ? { id: 1 } : null;
+                }
+                function findChild(parent: Parent): Child | null {
+                    return parent.id === 1 ? { value: 11 } : null;
+                }
+                function readChild(parent: Parent, child: Child): int32 {
+                    return parent.id + child.value;
+                }
+
+                export function main(): int32 {
+                    const parent = maybeParent(true);
+                    const child = parent === null ? null : findChild(parent);
+                    if (parent === null || child === null) {
+                        return 0;
+                    }
+
+                    return readChild(parent, child);
+                }
+                """);
+
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceDirectory(dir)
+                .BuildAsync();
+
+            var result = await runtime.InvokeAsync<double>("app", "main");
+            Assert.Equal(12, result);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task EsModules_RejectStarReexportCollision()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_esm_collision_" + Guid.NewGuid().ToString("N"));
