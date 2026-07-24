@@ -421,6 +421,34 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void MemberEqualityDoesNotNarrowPlainObjectToNever()
+    {
+        const string source = "type State = { port: int32; }; function main(): int32 { let state: State = { port: 0 }; if (state.port === 0) { state.port = 27015; } return state.port; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(27015, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void MemberEqualityDoesNotUseWidenedUnionMemberAsDiscriminant()
+    {
+        const string source = "type Broad = { kind: string; port: int32; }; type Ready = { kind: 'ready'; port: int32; }; type State = Broad | Ready; function main(): string { let state: State = { kind: 'ready', port: 0 } as State; if (state.kind === 'ready') { state.kind = 'other'; } return state.kind; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal("other", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
     public void UnionRejectsMemberThatIsNotCommonBeforeNarrowing()
     {
         const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function main(): void { let shape: Shape = { kind: 'circle', radius: 4 } as Shape; shape.radius; }";

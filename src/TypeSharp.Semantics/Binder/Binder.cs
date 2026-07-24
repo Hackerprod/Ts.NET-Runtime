@@ -2477,14 +2477,32 @@ public sealed class Binder
             return null;
         }
 
-        var candidates = sourceType is TsUnionType union
-            ? union.Types
-            : new List<TsType> { sourceType };
+        if (sourceType is not TsUnionType union)
+            return null;
+
+        var candidates = union.Types;
         var discriminableCandidates = candidates
             .Where(candidate => candidate is TsClassType or TsInterfaceType or TsGenericType)
             .ToList();
-        if (discriminableCandidates.Count == 0)
+        // A member comparison only discriminates a union of object variants. A
+        // plain interface such as `{ port: number }` can validly compare and
+        // then assign `port`; narrowing its receiver to `never` makes that
+        // ordinary control flow impossible to compile.
+        if (discriminableCandidates.Count < 2 ||
+            discriminableCandidates.Count != union.Types.Count)
+        {
             return null;
+        }
+
+        // A widened member such as `kind: string` is not a discriminant. Every
+        // union variant must expose a literal member before a comparison can
+        // exclude any variant from the receiver's control-flow type.
+        if (discriminableCandidates.Any(candidate =>
+                !TryGetReadableMemberType(candidate, memberAccess.MemberName, out var memberType) ||
+                memberType is not TsLiteralType))
+        {
+            return null;
+        }
 
         var matching = discriminableCandidates
             .Where(candidate => TryGetReadableMemberType(candidate, memberAccess.MemberName, out var memberType) &&
@@ -2497,7 +2515,7 @@ public sealed class Binder
             .Where(candidate => !matching.Contains(candidate))
             .ToList();
 
-        if (matching.Count == discriminableCandidates.Count && nonMatching.Count == 0 && discriminableCandidates.Count > 1)
+        if (matching.Count == 0 || matching.Count == discriminableCandidates.Count)
             return null;
 
         var narrowed = NormalizeUnion(matching);
