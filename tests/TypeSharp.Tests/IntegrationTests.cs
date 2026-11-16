@@ -83,6 +83,30 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task EndToEnd_DivisionByZeroLiteral_ThrowsAtRuntime()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_div_zero_literal_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "main.ts");
+        await File.WriteAllTextAsync(file, "export function main(): int32 { return 10 / 0; }");
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(file)
+                .BuildAsync();
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                runtime.InvokeAsync<int>("main", "main"));
+            Assert.Contains("Division by zero", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ExplicitGenericCallArgumentsDriveReturnType()
     {
         var dir = Path.Combine(Path.GetTempPath(), "typesharp_generic_call_" + Guid.NewGuid().ToString("N")[..8]);

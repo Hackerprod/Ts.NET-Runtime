@@ -28,17 +28,28 @@ public sealed class ConstantFolding : IROptimization
                         var op = block.Instructions[i + 2];
                         if (IsArithmetic(op.Opcode))
                         {
-                            int result = op.Opcode switch
+                            int? result = op.Opcode switch
                             {
                                 Opcode.Add_I32 => curr.Operand0 + next.Operand0,
                                 Opcode.Sub_I32 => curr.Operand0 - next.Operand0,
                                 Opcode.Mul_I32 => curr.Operand0 * next.Operand0,
-                                Opcode.Div_I32 when next.Operand0 != 0 => curr.Operand0 / next.Operand0,
-                                Opcode.Mod_I32 when next.Operand0 != 0 => curr.Operand0 % next.Operand0,
-                                _ => curr.Operand0
+                                Opcode.Div_I32 when next.Operand0 != 0
+                                    && !(curr.Operand0 == int.MinValue && next.Operand0 == -1)
+                                    => curr.Operand0 / next.Operand0,
+                                // DESVIACIÓN D1 (ver implementation-c.md): el plan prescribía
+                                // plegar int.MinValue % -1 a 0, pero la ejecución en .NET 9
+                                // demuestra que lanza OverflowException (igual que la
+                                // división) y el intérprete hace el mismo % plano. No plegar.
+                                Opcode.Mod_I32 when next.Operand0 != 0
+                                    && !(curr.Operand0 == int.MinValue && next.Operand0 == -1)
+                                    => curr.Operand0 % next.Operand0,
+                                _ => null
                             };
 
-                            block.Instructions[i] = new Instruction(Opcode.LoadConst_I32, result);
+                            if (result is null)
+                                continue;   // no plegar: dejar LoadConst; LoadConst; op intactos
+
+                            block.Instructions[i] = new Instruction(Opcode.LoadConst_I32, result.Value);
                             block.Instructions.RemoveRange(i + 1, 2);
                             changed = true;
                         }
@@ -108,7 +119,7 @@ public sealed class PeepholeOptimization : IROptimization
                 if (IsLoad(curr.Opcode) && next.Opcode == Opcode.StoreLocal &&
                     curr.Operand0 == next.Operand0 && IsLocalOp(curr.Opcode))
                 {
-                    block.Instructions.RemoveAt(i);
+                    block.Instructions.RemoveRange(i, 2);
                     changed = true;
                     i--;
                     continue;

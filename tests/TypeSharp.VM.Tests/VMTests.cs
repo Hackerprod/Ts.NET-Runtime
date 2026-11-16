@@ -2,6 +2,7 @@ using TypeSharp.VM.Bytecode;
 using TypeSharp.VM.Interpreter;
 using TypeSharp.VM.Memory;
 using TypeSharp.IR;
+using TypeSharp.IR.Optimizations;
 using TypeSharp.Interop.HostExports;
 using TypeSharp.Interop.Marshalling;
 using TypeSharp.Interop.Proxies;
@@ -3501,5 +3502,135 @@ public class ConcurrencyTests
         var irGen = new IRGenerator();
         var moduleIR = irGen.Generate(boundTree);
         return BytecodeCompiler.Compile(moduleIR);
+    }
+}
+
+public class IROptimizerTests
+{
+    private static TsValue? RunOptimized(string code, string entryPoint = "main", TsValue[]? args = null)
+    {
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(syntaxTree);
+
+        var irGen = new IRGenerator();
+        var moduleIR = irGen.Generate(boundTree);
+
+        var pipeline = new IRPipeline();
+        foreach (var func in moduleIR.Functions)
+            pipeline.Optimize(func);
+
+        var bytecodeModule = BytecodeCompiler.Compile(moduleIR);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        return interpreter.Execute(bytecodeModule, entryPoint, args);
+    }
+
+    private static List<Instruction> OptimizeInstructions(params Instruction[] instructions)
+    {
+        var func = new FunctionIR("test", TsType.Int32, new List<ParameterInfo>());
+        var block = func.CreateBlock();
+        block.Instructions.AddRange(instructions);
+        new IRPipeline().Optimize(func);
+        return func.Blocks.SelectMany(b => b.Instructions).ToList();
+    }
+
+    [Fact]
+    public void DivisionByZero_ConstantFolded_ThrowsAtRuntime()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            RunOptimized("function main(): int32 { return 10 / 0; }"));
+        Assert.Contains("Division by zero", error.Message);
+    }
+
+    [Fact]
+    public void ModuloByZero_ConstantFolded_ThrowsAtRuntime()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            RunOptimized("function main(): int32 { return 10 % 0; }"));
+        Assert.Contains("Division by zero", error.Message);
+    }
+
+    [Fact]
+    public void SelfAssignment_Peephole_ReturnsAssignedValue()
+    {
+        var result = RunOptimized("function main(): int32 { let x: int32 = 5; x = x; return x; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ValidDivision_StillFoldsToSingleConstant()
+    {
+        var optimized = OptimizeInstructions(
+            new Instruction(Opcode.LoadConst_I32, 10),
+            new Instruction(Opcode.LoadConst_I32, 2),
+            new Instruction(Opcode.Div_I32));
+
+        Assert.Single(optimized);
+        Assert.Equal(Opcode.LoadConst_I32, optimized[0].Opcode);
+        Assert.Equal(5, optimized[0].Operand0);
+    }
+
+    [Fact]
+    public void DivisionByZero_NotFoldedAtIRLevel()
+    {
+        var optimized = OptimizeInstructions(
+            new Instruction(Opcode.LoadConst_I32, 10),
+            new Instruction(Opcode.LoadConst_I32, 0),
+            new Instruction(Opcode.Div_I32));
+
+        Assert.Equal(3, optimized.Count);
+        Assert.Contains(optimized, i => i.Opcode == Opcode.Div_I32);
+    }
+
+    [Fact]
+    public void MinValueDividedByMinusOne_NotFoldedAtIRLevel()
+    {
+        var optimized = OptimizeInstructions(
+            new Instruction(Opcode.LoadConst_I32, int.MinValue),
+            new Instruction(Opcode.LoadConst_I32, -1),
+            new Instruction(Opcode.Div_I32));
+
+        Assert.Equal(3, optimized.Count);
+        Assert.Contains(optimized, i => i.Opcode == Opcode.Div_I32);
+    }
+
+    // DESVIACIÓN D1 (ver implementation-c.md): el plan (§2.1/§3.3.7) prescribía
+    // plegar int.MinValue % -1 a 0, afirmando que no lanza. La ejecución en .NET 9
+    // demuestra lo contrario: int.MinValue % -1 lanza OverflowException (igual que
+    // la división), y el intérprete hace el mismo % plano, así que plegarlo a 0
+    // cambiaría lanzar-por-ejecución por devolver 0. Por eso el módulo con -1
+    // TAMPOCO se pliega, simétrico a la división.
+    [Fact]
+    public void MinValueModuloMinusOne_NotFoldedAtIRLevel()
+    {
+        var optimized = OptimizeInstructions(
+            new Instruction(Opcode.LoadConst_I32, int.MinValue),
+            new Instruction(Opcode.LoadConst_I32, -1),
+            new Instruction(Opcode.Mod_I32));
+
+        Assert.Equal(3, optimized.Count);
+        Assert.Contains(optimized, i => i.Opcode == Opcode.Mod_I32);
+    }
+
+    [Fact]
+    public void ParameterSelfAssignment_LoadArgStoreLocal_Untouched()
+    {
+        var result = RunOptimized(
+            "function main(p: int32): int32 { p = p; return p; }",
+            args: new[] { TsValue.FromInt32(42) });
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void AssignmentBetweenDifferentLocals_Untouched()
+    {
+        var result = RunOptimized("function main(): int32 { let x: int32 = 5; let y: int32 = 7; x = y; return x; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
     }
 }
