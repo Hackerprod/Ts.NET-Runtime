@@ -3069,6 +3069,248 @@ function guardAndNarrowsMultipleSymbols(leftFlag: boolean, rightFlag: boolean): 
 
         throw new InvalidOperationException("Could not locate repository root");
     }
+
+    // Ciclo 02 §4.1/§4.2/§4.5: dos módulos que exportan las mismas
+    // entradas (handle/tick/main) y la misma función no-entrada (save),
+    // con valores distintos por módulo. modA lleva además el contador
+    // de inicializador, guardia de que el renombrado de entradas no
+    // rompe los inicializadores de módulo.
+    private static async Task<(string ModAFile, string ModBFile)> WriteDuplicateEntryPointModulesAsync(string dir)
+    {
+        var modAFile = Path.Combine(dir, "modA.ts");
+        var modBFile = Path.Combine(dir, "modB.ts");
+        await File.WriteAllTextAsync(modAFile, """
+            let initCount: int32 = 0;
+
+            class InitCounter {
+                static {
+                    initCount = initCount + 1;
+                }
+            }
+
+            export function handle(value: int32): int32 {
+                return value + 1;
+            }
+
+            export function tick(): int32 {
+                return 10;
+            }
+
+            export function main(): int32 {
+                return 100;
+            }
+
+            export function save(value: int32): int32 {
+                return value + 100;
+            }
+
+            export function uniqueA(): int32 {
+                return 1000;
+            }
+
+            export function readInitCount(): int32 {
+                return initCount;
+            }
+            """);
+        await File.WriteAllTextAsync(modBFile, """
+            export function handle(value: int32): int32 {
+                return value + 2;
+            }
+
+            export function tick(): int32 {
+                return 20;
+            }
+
+            export function main(): int32 {
+                return 200;
+            }
+
+            export function save(value: int32): int32 {
+                return value + 200;
+            }
+
+            export function uniqueB(): int32 {
+                return 2000;
+            }
+            """);
+        return (modAFile, modBFile);
+    }
+
+    [Fact]
+    public async Task InvokeAsyncResolvesDuplicateEntryPointsPerModule()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_entry_dup_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var (modAFile, modBFile) = await WriteDuplicateEntryPointModulesAsync(dir);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(modAFile)
+                .AddSourceFile(modBFile)
+                .BuildAsync();
+
+            // Los IDs de módulo derivados son los nombres de archivo sin extensión.
+            Assert.Contains("modA", runtime.ActiveGeneration!.Modules.Keys);
+            Assert.Contains("modB", runtime.ActiveGeneration.Modules.Keys);
+
+            // Invocar en ambas órdenes y repetir: el resultado por módulo
+            // no debe depender del orden de invocación.
+            Assert.Equal(12, await runtime.InvokeAsync<int>("modB", "handle", 10));
+            Assert.Equal(11, await runtime.InvokeAsync<int>("modA", "handle", 10));
+            Assert.Equal(11, await runtime.InvokeAsync<int>("modA", "handle", 10));
+            Assert.Equal(12, await runtime.InvokeAsync<int>("modB", "handle", 10));
+            Assert.Equal(20, await runtime.InvokeAsync<int>("modB", "tick"));
+            Assert.Equal(10, await runtime.InvokeAsync<int>("modA", "tick"));
+            Assert.Equal(200, await runtime.InvokeAsync<int>("modB", "main"));
+            Assert.Equal(100, await runtime.InvokeAsync<int>("modA", "main"));
+            Assert.Equal(210, await runtime.InvokeAsync<int>("modB", "save", 10));
+            Assert.Equal(110, await runtime.InvokeAsync<int>("modA", "save", 10));
+            Assert.Equal(2000, await runtime.InvokeAsync<int>("modB", "uniqueB"));
+            Assert.Equal(1000, await runtime.InvokeAsync<int>("modA", "uniqueA"));
+            Assert.Equal(1, await runtime.InvokeAsync<int>("modA", "readInitCount"));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public async Task InvokeAsyncResolvesDuplicateEntryPointsPerModuleRegardlessOfRegistrationOrder()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_entry_dup_order_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var (modAFile, modBFile) = await WriteDuplicateEntryPointModulesAsync(dir);
+
+        try
+        {
+            // Archivos añadidos en orden inverso respecto al test principal.
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(modBFile)
+                .AddSourceFile(modAFile)
+                .BuildAsync();
+
+            Assert.Contains("modA", runtime.ActiveGeneration!.Modules.Keys);
+            Assert.Contains("modB", runtime.ActiveGeneration.Modules.Keys);
+
+            Assert.Equal(11, await runtime.InvokeAsync<int>("modA", "handle", 10));
+            Assert.Equal(12, await runtime.InvokeAsync<int>("modB", "handle", 10));
+            Assert.Equal(10, await runtime.InvokeAsync<int>("modA", "tick"));
+            Assert.Equal(20, await runtime.InvokeAsync<int>("modB", "tick"));
+            Assert.Equal(100, await runtime.InvokeAsync<int>("modA", "main"));
+            Assert.Equal(200, await runtime.InvokeAsync<int>("modB", "main"));
+            Assert.Equal(110, await runtime.InvokeAsync<int>("modA", "save", 10));
+            Assert.Equal(210, await runtime.InvokeAsync<int>("modB", "save", 10));
+            Assert.Equal(1000, await runtime.InvokeAsync<int>("modA", "uniqueA"));
+            Assert.Equal(2000, await runtime.InvokeAsync<int>("modB", "uniqueB"));
+            Assert.Equal(1, await runtime.InvokeAsync<int>("modA", "readInitCount"));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public async Task InvokeWithoutModuleReturnsOneDuplicateEntryPoint()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_entry_dup_nomodule_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var (modAFile, modBFile) = await WriteDuplicateEntryPointModulesAsync(dir);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(modAFile)
+                .AddSourceFile(modBFile)
+                .BuildAsync();
+
+            // Con entradas duplicadas, Invoke sin módulo devuelve el valor
+            // de UNO de los dos módulos (el primero en el orden de
+            // iteración, no especificado; puede variar entre procesos) y
+            // no lanza (§2.4). La aserción es "uno de los dos" por
+            // diseño, no por falta de precisión del test.
+            var tickResult = runtime.Invoke("tick");
+            Assert.True(tickResult is TsInt32Value tickValue && (tickValue.Value is 10 or 20));
+            var handle = runtime.CreateFunctionHandle("tick");
+            var handleResult = handle.Invoke();
+            Assert.True(handleResult is TsInt32Value handleValue && (handleValue.Value is 10 or 20));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public async Task InvokeAsyncResolvesDuplicateNonEntryFunctionPerModule()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_entry_dup_save_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var modCFile = Path.Combine(dir, "modC.ts");
+        var modDFile = Path.Combine(dir, "modD.ts");
+        await File.WriteAllTextAsync(modCFile, """
+            export function save(value: int32): int32 {
+                return value + 1000;
+            }
+
+            export function entryC(): int32 {
+                return 1;
+            }
+            """);
+        await File.WriteAllTextAsync(modDFile, """
+            export function save(value: int32): int32 {
+                return value + 2000;
+            }
+
+            export function entryD(): int32 {
+                return 2;
+            }
+            """);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(modCFile)
+                .AddSourceFile(modDFile)
+                .BuildAsync();
+
+            Assert.Equal(2010, await runtime.InvokeAsync<int>("modD", "save", 10));
+            Assert.Equal(1010, await runtime.InvokeAsync<int>("modC", "save", 10));
+            Assert.Equal(2, await runtime.InvokeAsync<int>("modD", "entryD"));
+            Assert.Equal(1, await runtime.InvokeAsync<int>("modC", "entryC"));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public async Task InvokeAsyncMissingFunctionReportsModuleScope()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_entry_dup_missing_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var (modAFile, modBFile) = await WriteDuplicateEntryPointModulesAsync(dir);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(modAFile)
+                .AddSourceFile(modBFile)
+                .BuildAsync();
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => runtime.InvokeAsync<int>("modA", "missingFunction"));
+            Assert.Contains("modA", ex.Message);
+            Assert.Contains("missingFunction", ex.Message);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
 }
 
 public class MathHostService

@@ -221,4 +221,49 @@ public class LinkerTests
         Assert.Equal(new[] { 0, 1 }, ReadStringOperands(leftEntry));
         BytecodeVerifier.Verify(linked);
     }
+
+    [Fact]
+    public void ResolveLinkedEntryPointResolvesDuplicateEntryPointsPerModule()
+    {
+        // Ciclo 02 §4.4: el resolvedor devuelve, por módulo, el nombre
+        // que la función tiene en el módulo enlazado. El helper
+        // TwoModuleGeneration construye módulos "left"/"right" (no
+        // "modA"/"modB" como esboza el plan); los nombres esperados
+        // siguen esa misma convención.
+        var generation = TwoModuleGeneration(module => new[]
+        {
+            TrivialFunction("handle"),
+            TrivialFunction(module == "left" ? "onlyLeft" : "onlyRight"),
+        });
+        var left = generation.Modules["left"];
+        var right = generation.Modules["right"];
+
+        // 1. La entrada duplicada se resuelve al nombre renombrado
+        // propio de cada módulo.
+        Assert.Equal("$module_left_handle",
+            TypeSharpRuntime.ResolveLinkedEntryPoint(generation, left, "handle"));
+        Assert.Equal("$module_right_handle",
+            TypeSharpRuntime.ResolveLinkedEntryPoint(generation, right, "handle"));
+
+        // 2. La función única no se renombra: nombre plano.
+        Assert.Equal("onlyLeft",
+            TypeSharpRuntime.ResolveLinkedEntryPoint(generation, left, "onlyLeft"));
+        Assert.Equal("onlyRight",
+            TypeSharpRuntime.ResolveLinkedEntryPoint(generation, right, "onlyRight"));
+
+        // 3. Un módulo que no define la función: error con ámbito de módulo.
+        var missing = Assert.Throws<InvalidOperationException>(
+            () => TypeSharpRuntime.ResolveLinkedEntryPoint(generation, left, "missing"));
+        Assert.Contains("left", missing.Message);
+        Assert.Contains("missing", missing.Message);
+
+        // 4. El módulo enlazado contiene los renombrados y ninguna
+        // función plana "handle"; verifica sin lanzar.
+        var (callReserved, valueReserved) = RealReserved();
+        var linked = TypeSharpRuntime.CreateLinkedModule(generation, callReserved, valueReserved);
+        Assert.Contains("$module_left_handle", linked.FunctionIndex.Keys);
+        Assert.Contains("$module_right_handle", linked.FunctionIndex.Keys);
+        Assert.DoesNotContain("handle", linked.FunctionIndex.Keys);
+        BytecodeVerifier.Verify(linked);
+    }
 }

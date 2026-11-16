@@ -302,12 +302,13 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         {
             if (mod.Bytecode.FunctionIndex.ContainsKey(functionName))
             {
+                var linkedName = ResolveLinkedEntryPoint(generation, mod, functionName);
                 var linkedModule = CreateLinkedModule(generation, _callReservedNames, _valueReservedNames);
                 var context = _interpreter.CreateContext(generation.ModuleGlobals);
                 try
                 {
                     EnsureModuleInitializers(generation, linkedModule, context);
-                    return _interpreter.Execute(linkedModule, functionName, args, context);
+                    return _interpreter.Execute(linkedModule, linkedName, args, context);
                 }
                 finally
                 {
@@ -331,12 +332,13 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             module = await ImportAsync(moduleName);
         }
 
+        var linkedName = ResolveLinkedEntryPoint(lease.Generation, module, functionName);
         var linkedModule = CreateLinkedModule(lease.Generation, _callReservedNames, _valueReservedNames);
         var context = _interpreter.CreateContext(lease.Generation.ModuleGlobals);
         try
         {
             EnsureModuleInitializers(lease.Generation, linkedModule, context);
-            var result = _interpreter.Execute(linkedModule, functionName, tsArgs, context);
+            var result = _interpreter.Execute(linkedModule, linkedName, tsArgs, context);
             var managed = await TypeSharp.Interop.Marshalling.Marshaller
                 .ToManagedAsync(result ?? TsValue.Null, typeof(T), context.CancellationToken)
                 .ConfigureAwait(false);
@@ -422,16 +424,35 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
                 StringComparer.Ordinal);
     }
 
+    // Resuelve el nombre que una función de un módulo tiene en el módulo
+    // enlazado (§2.2): si está duplicada en la generación, el nombre
+    // renombrado propio de ese módulo; si no, el nombre plano. Usa las
+    // mismas funciones que CreateLinkedModule, así que la coherencia con
+    // el enlazado es estructural, no por duplicación de lógica.
+    // Suposición de pertenencia (M2; Q8): el módulo debe pertenecer a la
+    // generación; si no pertenece (camino ImportAsync, §6.9), el nombre
+    // devuelto puede no existir en el enlazado y la ejecución fallará
+    // como hoy. No se comprueba la pertenencia aquí (fuera de alcance:
+    // no se rediseña ImportAsync en este ciclo).
+    internal static string ResolveLinkedEntryPoint(
+        RuntimeGeneration generation, TsModule module, string functionName)
+    {
+        if (!module.Bytecode.FunctionIndex.ContainsKey(functionName))
+        {
+            throw new InvalidOperationException(
+                $"Function '{functionName}' not found in module '{module.Name}'");
+        }
+
+        var duplicateFunctionNames = FindDuplicateFunctionNames(generation.Modules.Values);
+        var renameMap = BuildPrivateFunctionRenameMap(module, duplicateFunctionNames);
+        return renameMap.TryGetValue(functionName, out var renamed) ? renamed : functionName;
+    }
+
     internal static bool ShouldRenameLinkedFunction(string functionName, IReadOnlySet<string> duplicateFunctionNames)
     {
         if (functionName.StartsWith("$lambda_", StringComparison.Ordinal))
         {
             return true;
-        }
-
-        if (functionName is "handle" or "tick" or "main")
-        {
-            return false;
         }
 
         return duplicateFunctionNames.Contains(functionName);
