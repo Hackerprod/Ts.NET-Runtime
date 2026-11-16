@@ -501,6 +501,62 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void DiscriminatedUnionNarrowsSingleVariantAfterThreeWayChain()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Triangle = { kind: 'triangle'; height: int32; }; type Shape = Circle | Square | Triangle; function assertNever(value: never): int32 { throw 'unexpected'; } function main(): int32 { let shape: Shape = { kind: 'circle', radius: 4 } as Shape; if (shape.kind == 'circle') { return shape.radius; } if (shape.kind == 'square') { return shape.size; } if (shape.kind == 'triangle') { return shape.height; } return assertNever(shape); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(4, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DiscriminatedUnionNarrowsSingleVariantAfterNotEqualGuard()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function assertNever(value: never): int32 { throw 'unexpected'; } function main(): int32 { let shape: Shape = { kind: 'square', size: 5 } as Shape; if (shape.kind != 'square') { return shape.radius; } if (shape.kind == 'square') { return shape.size; } return assertNever(shape); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DiscriminatedUnionNarrowsSingleVariantInElseBranch()
+    {
+        const string source = "type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function assertNever(value: never): int32 { throw 'unexpected'; } function main(): int32 { let shape: Shape = { kind: 'square', size: 5 } as Shape; if (shape.kind == 'circle') { return shape.radius; } else if (shape.kind == 'square') { return shape.size; } else { return assertNever(shape); } }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void PlainInterfaceMemberEqualityDoesNotNarrowToNever()
+    {
+        const string source = "function main(): number { let config: { port: number } = { port: 8080 }; if (config.port == 8080) { return config.port; } return config.port; }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(parser.Parse());
+        Assert.Empty(binder.Diagnostics.GetErrors());
+
+        var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(
+            BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree)), "main");
+        Assert.Equal(8080, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
     public void InOperatorNarrowsUnionByPropertyPresence()
     {
         var result = Run("type Circle = { kind: 'circle'; radius: int32; }; type Square = { kind: 'square'; size: int32; }; type Shape = Circle | Square; function main(): int32 { let shape: Shape = { kind: 'square', size: 5 } as Shape; if ('size' in shape) { return shape.size; } return 0; }");

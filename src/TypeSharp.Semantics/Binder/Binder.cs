@@ -2477,10 +2477,20 @@ public sealed class Binder
             return null;
         }
 
-        if (sourceType is not TsUnionType union)
+        List<TsType> candidates;
+        if (sourceType is TsUnionType union)
+        {
+            candidates = union.Types;
+        }
+        else if (sourceType is TsClassType or TsInterfaceType or TsGenericType)
+        {
+            candidates = new List<TsType> { sourceType };
+        }
+        else
+        {
             return null;
+        }
 
-        var candidates = union.Types;
         var discriminableCandidates = candidates
             .Where(candidate => candidate is TsClassType or TsInterfaceType or TsGenericType)
             .ToList();
@@ -2488,8 +2498,8 @@ public sealed class Binder
         // plain interface such as `{ port: number }` can validly compare and
         // then assign `port`; narrowing its receiver to `never` makes that
         // ordinary control flow impossible to compile.
-        if (discriminableCandidates.Count < 2 ||
-            discriminableCandidates.Count != union.Types.Count)
+        if (discriminableCandidates.Count < 1 ||
+            discriminableCandidates.Count != candidates.Count)
         {
             return null;
         }
@@ -2515,7 +2525,7 @@ public sealed class Binder
             .Where(candidate => !matching.Contains(candidate))
             .ToList();
 
-        if (matching.Count == 0 || matching.Count == discriminableCandidates.Count)
+        if (matching.Count == 0)
             return null;
 
         var narrowed = NormalizeUnion(matching);
