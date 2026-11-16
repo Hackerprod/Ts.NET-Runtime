@@ -9,6 +9,7 @@ using TypeSharp.Interop.Proxies;
 using TypeSharp.Semantics.Binder;
 using TypeSharp.Semantics.Symbols;
 using TypeSharp.Semantics.TypeSystem;
+using TypeSharp.Syntax.Diagnostics;
 using Xunit;
 
 namespace TypeSharp.VM.Tests;
@@ -177,6 +178,90 @@ public class InterpreterTests
     {
         var result = Run("class Bag { [key: string]: int32; } function main(): int32 { let bag = new Bag(); bag['a'] = 9; return bag['a']; }");
         Assert.Equal(9, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void CyclicInheritance_SelfExtends_ReportsDiagnostic()
+    {
+        const string source = "class A extends A {}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().ToList();
+        Assert.Single(errors);
+        Assert.Equal(DiagnosticCode.TS2019, errors[0].Code);
+        Assert.Contains("Class 'A' cannot extend 'A'", errors[0].Message, StringComparison.Ordinal);
+        Assert.Contains("circular inheritance", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CyclicInheritance_MutualExtends_ReportsDiagnostic()
+    {
+        const string source = "class A extends B {} class B extends A {}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().ToList();
+        Assert.Single(errors);
+        Assert.Equal(DiagnosticCode.TS2019, errors[0].Code);
+        Assert.Contains("Class 'B' cannot extend 'A'", errors[0].Message, StringComparison.Ordinal);
+        Assert.Contains("circular inheritance", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CyclicInheritance_ThreeClassCycle_ReportsDiagnostic()
+    {
+        const string source = "class A extends B {} class B extends C {} class C extends A {}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().ToList();
+        Assert.Single(errors);
+        Assert.Equal(DiagnosticCode.TS2019, errors[0].Code);
+        Assert.Contains("Class 'C' cannot extend 'A'", errors[0].Message, StringComparison.Ordinal);
+        Assert.Contains("circular inheritance", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CyclicInheritance_AbstractSelfExtends_ReportsDiagnostic()
+    {
+        const string source = "abstract class A extends A {}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().ToList();
+        Assert.Single(errors);
+        Assert.Equal(DiagnosticCode.TS2019, errors[0].Code);
+        Assert.Contains("Class 'A' cannot extend 'A'", errors[0].Message, StringComparison.Ordinal);
+        Assert.Contains("circular inheritance", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CyclicInheritance_ForwardReference_IsNotACycle()
+    {
+        const string source = "class A extends B {} class B {}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+
+        binder.Bind(parser.Parse());
+
+        var errors = binder.Diagnostics.GetErrors().ToList();
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void CyclicInheritance_ValidChain_StillExecutes()
+    {
+        var result = Run("class A { greet(): string { return \"a\"; } } class B extends A {} class C extends B {} function main(): string { let c = new C(); return c.greet(); }");
+        Assert.Equal("a", Assert.IsType<TsStringValue>(result).Value);
     }
 
     [Fact]

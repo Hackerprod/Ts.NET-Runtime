@@ -37,6 +37,7 @@ public enum DiagnosticCode
     TS2016 = 2016,
     TS2017 = 2017,
     TS2018 = 2018,
+    TS2019 = 2019,
 
     // Compilation (3xxx)
     TS3001 = 3001,

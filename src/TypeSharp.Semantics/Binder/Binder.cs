@@ -14,6 +14,11 @@ public sealed class Binder
     private readonly SymbolTable _symbolTable;
     private readonly DiagnosticBag _diagnostics;
     private readonly Dictionary<string, TsClassType> _classTypes = new();
+    // Classes for which a circular-inheritance diagnostic was already reported,
+    // by object IDENTITY (TsType.Equals is by name: a default-comparer HashSet
+    // would confuse distinct classes with the same name).
+    private readonly HashSet<TsClassType> _classesWithCyclicBase =
+        new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, TsInterfaceType> _interfaceTypes = new();
     private readonly Dictionary<string, TsEnumType> _enumTypes = new();
     private readonly Dictionary<string, TsType> _typeAliases = new();
@@ -364,6 +369,46 @@ public sealed class Binder
         }
     }
 
+    // Returns true if the base was assigned; false if not assigned
+    // (base is not a class, or assigning it would create a cycle).
+    // On a cycle, emits exactly one diagnostic and does NOT assign:
+    // BaseType stays null and the chain terminates.
+    private bool TrySetBaseType(TsClassType classType, TypeSyntax baseTypeSyntax)
+    {
+        if (ResolveType(baseTypeSyntax) is not TsClassType baseClass)
+            return false; // Not a class (interface, primitive, generic TsGenericType, ...):
+                          // current behavior preserved: not assigned, no diagnostic.
+
+        // Walk with a REFERENCE-identity visited set (TsType.Equals is by name).
+        var seen = new HashSet<TsClassType>(ReferenceEqualityComparer.Instance);
+        for (var current = baseClass; current != null; current = current.BaseType)
+        {
+            if (ReferenceEquals(current, classType))
+            {
+                // Cycle: the base's chain reaches back to the class itself.
+                // Covers the direct case (A extends A) and mutual/longer ones (A->B->A, A->B->C->A).
+                if (_classesWithCyclicBase.Add(classType))
+                    _diagnostics.Error(
+                        $"Class '{classType.Name}' cannot extend '{baseClass.Name}': circular inheritance",
+                        baseTypeSyntax.Range.Start,
+                        DiagnosticCode.TS2019);
+                return false; // Do NOT assign: BaseType stays null and the chain terminates.
+            }
+            if (!seen.Add(current))
+            {
+                // Pre-existing cycle in the base's chain that does NOT include classType.
+                // Unreachable if this helper is the only assignment point:
+                // close as false (do not extend a cyclic chain) without a diagnostic,
+                // because the cycle is not this class's fault. The walk never hangs:
+                // `seen` itself is the walk's guard.
+                return false;
+            }
+        }
+
+        classType.BaseType = baseClass;
+        return true;
+    }
+
     private void PreDeclareTypeMembers(SyntaxNode member)
     {
         switch (member)
@@ -399,8 +444,8 @@ public sealed class Binder
 
                 PushTypeParameters(cls.GenericParameters);
 
-                if (cls.BaseType != null && ResolveType(cls.BaseType) is TsClassType baseClass)
-                    classType.BaseType = baseClass;
+                if (cls.BaseType != null)
+                    TrySetBaseType(classType, cls.BaseType);
 
                 foreach (var classMember in cls.Members)
                 {
@@ -917,11 +962,7 @@ public sealed class Binder
         }
 
         if (baseTypeSyntax != null && classType.BaseType == null)
-        {
-            var baseType = ResolveType(baseTypeSyntax);
-            if (baseType is TsClassType baseClass)
-                classType.BaseType = baseClass;
-        }
+            TrySetBaseType(classType, baseTypeSyntax);
 
         var sym = new ClassSymbol(name, classType, range)
         {
