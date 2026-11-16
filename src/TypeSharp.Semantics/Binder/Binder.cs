@@ -3204,9 +3204,73 @@ public sealed class Binder
     private BoundUnaryExpression BindUnary(UnaryExpressionSyntax unary)
     {
         var operand = BindExpression(unary.Operand);
+        if (unary.OperatorToken.Kind is TokenKind.PlusPlus or TokenKind.MinusMinus)
+            ReportUnsupportedIncrementTarget(unary, operand);
         var resultType = InferUnaryResultType(operand.Type, unary.OperatorToken.Kind);
 
         return new BoundUnaryExpression(unary.OperatorToken.Kind, operand, unary.IsPrefix, resultType);
+    }
+
+    // ++/-- can only write to a local/parameter, a field (static or not),
+    // a property without accessors, or an element. Anything else would
+    // silently do nothing in the IR, so it is a compile error here.
+    // Precedence: null-conditional first (generic message), then the exact
+    // readonly predicate mirrored from BindAssignment (readonly message),
+    // then properties with accessors (generic message).
+    private void ReportUnsupportedIncrementTarget(UnaryExpressionSyntax unary, BoundNode operand)
+    {
+        if (operand is BoundVariableExpression { Symbol: LocalSymbol or ParameterSymbol })
+            return;
+
+        if (operand is BoundMemberAccessExpression member)
+        {
+            if (member.IsNullConditional)
+            {
+                _diagnostics.Error(
+                    $"Operator '{unary.OperatorToken.Text}' requires a variable, field or element",
+                    unary.OperatorToken.Location);
+                return;
+            }
+
+            bool isReadonly = member.Member switch
+            {
+                FieldSymbol field => field.IsReadonly,
+                PropertySymbol property => property.IsReadonly || property.HasGetter && !property.HasSetter,
+                _ => false
+            };
+            if (isReadonly)
+            {
+                _diagnostics.Error(
+                    $"Cannot assign to readonly member '{member.Member.Name}'",
+                    unary.OperatorToken.Location);
+                return;
+            }
+
+            if (member.Member is FieldSymbol)
+                return;
+            if (member.Member is PropertySymbol prop && !prop.HasGetter && !prop.HasSetter && !prop.IsStatic)
+                return;
+
+            _diagnostics.Error(
+                $"Operator '{unary.OperatorToken.Text}' requires a variable, field or element",
+                unary.OperatorToken.Location);
+            return;
+        }
+
+        if (operand is BoundIndexExpression index)
+        {
+            if (index.IsNullConditional)
+            {
+                _diagnostics.Error(
+                    $"Operator '{unary.OperatorToken.Text}' requires a variable, field or element",
+                    unary.OperatorToken.Location);
+            }
+            return;
+        }
+
+        _diagnostics.Error(
+            $"Operator '{unary.OperatorToken.Text}' requires a variable, field or element",
+            unary.OperatorToken.Location);
     }
 
     private BoundNode BindCall(CallExpressionSyntax call)

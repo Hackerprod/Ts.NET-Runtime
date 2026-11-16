@@ -1727,46 +1727,173 @@ public sealed class IRGenerator
 
     private void GenerateIncrement(BoundUnaryExpression unary)
     {
-        if (unary.Operand is not BoundVariableExpression target ||
-            target.Symbol is not (LocalSymbol or ParameterSymbol))
+        if (unary.Operand is BoundVariableExpression target &&
+            target.Symbol is (LocalSymbol or ParameterSymbol))
         {
-            // Unsupported target: evaluate the operand so the stack stays balanced.
-            GenerateExpression(unary.Operand);
+            if (IsBoxedSymbol(target.Symbol))
+            {
+                GenerateBoxedIncrement(unary, target.Symbol);
+                return;
+            }
+
+            int slot = target.Symbol is LocalSymbol local
+                ? GetLocalIndex(local)
+                : GetParameterIndex((ParameterSymbol)target.Symbol);
+
+            var slotType = target.Symbol.Type;
+            bool isInt64 = slotType == TsType.Int64;
+            bool isFloat = slotType == TsType.Float64 || slotType == TsType.Number || slotType == TsType.Float32;
+            var addOp = IncrementAddOp(slotType, unary.Operator);
+
+            EmitLoadLocal(slot);
+            if (unary.IsPrefix)
+            {
+                EmitConstOne(isInt64, isFloat);
+                _currentBlock!.Instructions.Add(new Instruction(addOp));
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+                EmitStoreLocal(slot);
+            }
+            else
+            {
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+                EmitConstOne(isInt64, isFloat);
+                _currentBlock!.Instructions.Add(new Instruction(addOp));
+                EmitStoreLocal(slot);
+            }
             return;
         }
 
-        if (IsBoxedSymbol(target.Symbol))
+        if (unary.Operand is BoundMemberAccessExpression member &&
+            !member.IsNullConditional &&
+            IsWritableFieldMember(member.Member))
         {
-            GenerateBoxedIncrement(unary, target.Symbol);
+            GenerateMemberIncrement(unary, member);
             return;
         }
 
-        int slot = target.Symbol is LocalSymbol local
-            ? GetLocalIndex(local)
-            : GetParameterIndex((ParameterSymbol)target.Symbol);
+        if (unary.Operand is BoundIndexExpression index && !index.IsNullConditional)
+        {
+            GenerateIndexIncrement(unary, index);
+            return;
+        }
 
-        var slotType = target.Symbol.Type;
-        bool isInt64 = slotType == TsType.Int64;
-        bool isFloat = slotType == TsType.Float64 || slotType == TsType.Number || slotType == TsType.Float32;
-        var addOp = unary.Operator == TokenKind.PlusPlus
+        // Unsupported target: evaluate the operand so the stack stays balanced.
+        GenerateExpression(unary.Operand);
+    }
+
+    // A member is writable through LoadField/StoreField when it is a field
+    // (static or not) or a property without getter or setter that is not
+    // static. Properties with accessors are rejected by the binder with a
+    // diagnostic; a static property without accessors has no assigned path
+    // (the static path applies only to FieldSymbol) and falls through to
+    // the unsupported-target fallback below.
+    private static bool IsWritableFieldMember(Symbol member) => member switch
+    {
+        FieldSymbol => true,
+        PropertySymbol prop => !prop.HasGetter && !prop.HasSetter && !prop.IsStatic,
+        _ => false
+    };
+
+    // Same opcode selection as the local/parameter path: int64 -> I64,
+    // float64/number/float32 -> F64, everything else (including decimal,
+    // bigint, uint32, uint64, int16, any) -> I32.
+    private static Opcode IncrementAddOp(TsType operandType, TokenKind op)
+    {
+        bool isInt64 = operandType == TsType.Int64;
+        bool isFloat = operandType == TsType.Float64 || operandType == TsType.Number || operandType == TsType.Float32;
+        return op == TokenKind.PlusPlus
             ? (isInt64 ? Opcode.Add_I64 : isFloat ? Opcode.Add_F64 : Opcode.Add_I32)
             : (isInt64 ? Opcode.Sub_I64 : isFloat ? Opcode.Sub_F64 : Opcode.Sub_I32);
+    }
 
-        EmitLoadLocal(slot);
+    private void GenerateMemberIncrement(BoundUnaryExpression unary, BoundMemberAccessExpression member)
+    {
+        var operandType = unary.Operand.Type;
+        bool isInt64 = operandType == TsType.Int64;
+        bool isFloat = operandType == TsType.Float64 || operandType == TsType.Number || operandType == TsType.Float32;
+        var addOp = IncrementAddOp(operandType, unary.Operator);
+
+        if (member.Member is FieldSymbol { IsStatic: true } staticField)
+        {
+            string globalName = staticField.RuntimeName ?? $"$static:{staticField.Name}";
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadGlobal, 0, 0, globalName));
+            if (unary.IsPrefix)
+            {
+                EmitConstOne(isInt64, isFloat);
+                _currentBlock!.Instructions.Add(new Instruction(addOp));
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+            }
+            else
+            {
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+                EmitConstOne(isInt64, isFloat);
+                _currentBlock!.Instructions.Add(new Instruction(addOp));
+            }
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreGlobal, 0, 0, globalName));
+            return;
+        }
+
+        string fieldName = GetRuntimeFieldName(member.Member);
+        int tmpObj = _tempCounter++;
+        int tmpVal = _tempCounter++;
+
+        GenerateExpression(member.Object);
+        EmitStoreLocal(tmpObj);
+        EmitLoadLocal(tmpObj);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, fieldName));
         if (unary.IsPrefix)
         {
             EmitConstOne(isInt64, isFloat);
             _currentBlock!.Instructions.Add(new Instruction(addOp));
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
-            EmitStoreLocal(slot);
         }
         else
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
             EmitConstOne(isInt64, isFloat);
             _currentBlock!.Instructions.Add(new Instruction(addOp));
-            EmitStoreLocal(slot);
         }
+        EmitStoreLocal(tmpVal);
+        EmitLoadLocal(tmpObj);
+        EmitLoadLocal(tmpVal);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, fieldName));
+    }
+
+    private void GenerateIndexIncrement(BoundUnaryExpression unary, BoundIndexExpression index)
+    {
+        var operandType = unary.Operand.Type;
+        bool isInt64 = operandType == TsType.Int64;
+        bool isFloat = operandType == TsType.Float64 || operandType == TsType.Number || operandType == TsType.Float32;
+        var addOp = IncrementAddOp(operandType, unary.Operator);
+
+        int tmpObj = _tempCounter++;
+        int tmpIdx = _tempCounter++;
+        int tmpVal = _tempCounter++;
+
+        GenerateExpression(index.Object);
+        EmitStoreLocal(tmpObj);
+        GenerateExpression(index.Index);
+        EmitStoreLocal(tmpIdx);
+        EmitLoadLocal(tmpObj);
+        EmitLoadLocal(tmpIdx);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadElement));
+        if (unary.IsPrefix)
+        {
+            EmitConstOne(isInt64, isFloat);
+            _currentBlock!.Instructions.Add(new Instruction(addOp));
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+        }
+        else
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+            EmitConstOne(isInt64, isFloat);
+            _currentBlock!.Instructions.Add(new Instruction(addOp));
+        }
+        EmitStoreLocal(tmpVal);
+        EmitLoadLocal(tmpObj);
+        EmitLoadLocal(tmpIdx);
+        EmitLoadLocal(tmpVal);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreElement));
     }
 
     private void GenerateBoxedIncrement(BoundUnaryExpression unary, Symbol symbol)

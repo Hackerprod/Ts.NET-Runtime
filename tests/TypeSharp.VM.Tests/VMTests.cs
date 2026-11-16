@@ -1829,6 +1829,191 @@ public class InterpreterTests
     }
 
     [Fact]
+    public void MemberIncrement_Postfix_ReturnsOldValueAndUpdatesField()
+    {
+        var result = Run("function main(): int32 { let o = { count: 5 }; let r: int32 = o.count++; return r * 100 + o.count; }");
+        Assert.Equal(506, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void MemberIncrement_Prefix_ReturnsNewValueAndUpdatesField()
+    {
+        var result = Run("function main(): int32 { let o = { count: 5 }; let r: int32 = ++o.count; return r * 100 + o.count; }");
+        Assert.Equal(606, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void MemberDecrement_Postfix_ReturnsOldValueAndUpdatesField()
+    {
+        var result = Run("function main(): int32 { let o = { count: 5 }; let r: int32 = o.count--; return r * 100 + o.count; }");
+        Assert.Equal(504, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void MemberDecrement_Prefix_ReturnsNewValueAndUpdatesField()
+    {
+        var result = Run("function main(): int32 { let o = { count: 4 }; let r: int32 = --o.count; return r * 100 + o.count; }");
+        Assert.Equal(303, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void IndexIncrement_Postfix_WithVariableIndex()
+    {
+        var result = Run("function main(): int32 { let arr = [10, 20, 30]; let i: int32 = 1; let r: int32 = arr[i]++; return r * 100 + arr[1]; }");
+        Assert.Equal(2021, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void IndexIncrement_Prefix_WithVariableIndex()
+    {
+        var result = Run("function main(): int32 { let arr = [10, 20, 30]; let i: int32 = 1; let r: int32 = ++arr[i]; return r * 100 + arr[1]; }");
+        Assert.Equal(2121, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ThisIncrement_Postfix_InsideMethod()
+    {
+        var code = @"
+            class Counter {
+                count: int32;
+                constructor(initial: int32) {
+                    this.count = initial;
+                }
+                bump(): int32 {
+                    return this.count++;
+                }
+                getCount(): int32 {
+                    return this.count;
+                }
+            }
+            function main(): int32 {
+                const c = new Counter(5);
+                let r: int32 = c.bump();
+                return r * 100 + c.getCount();
+            }
+        ";
+        var result = Run(code, "main");
+        Assert.Equal(506, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void NestedMemberIncrement_Postfix()
+    {
+        var result = Run("function main(): int32 { let a = { b: { c: 7 } }; let r: int32 = a.b.c++; return r * 100 + a.b.c; }");
+        Assert.Equal(708, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void MemberIncrement_EvaluatesObjectOnce()
+    {
+        var result = Run(@"
+            function getObj(t: any): any {
+                t.calls = t.calls + 1;
+                return t.obj;
+            }
+            function main(): int32 {
+                let tracker = { calls: 0, obj: { count: 5 } };
+                getObj(tracker).count++;
+                return tracker.calls as int32;
+            }
+        ");
+        Assert.NotNull(result);
+        Assert.Equal(1, Convert.ToInt32(result!.RawValue));
+    }
+
+    [Fact]
+    public void IndexIncrement_EvaluatesIndexOnce()
+    {
+        var result = Run(@"
+            function next(t: any): int32 {
+                t.calls = t.calls + 1;
+                return 1;
+            }
+            function main(): int32 {
+                let arr = [10, 20, 30];
+                let tracker = { calls: 0 };
+                arr[next(tracker)]++;
+                return tracker.calls * 100 + arr[1];
+            }
+        ");
+        Assert.Equal(121, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalIncrement_Unchanged_PrefixAndPostfix()
+    {
+        var result = Run("function main(): int32 { let i: int32 = 5; let a: int32 = i++; let b: int32 = ++i; return a * 100 + b; }");
+        Assert.Equal(507, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ForLoop_BodyMemberIncrement()
+    {
+        var result = Run("function main(): int32 { let arr = [0, 0, 0]; for (let i: int32 = 0; i < 3; i++) { arr[i]++; } return arr[0] + arr[1] * 10 + arr[2] * 100; }");
+        Assert.Equal(111, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ForIterator_MemberIncrement()
+    {
+        var result = Run("function main(): int32 { let o = { n: 0 }; for (let i: int32 = 0; i < 3; o.n++) { i = i + 1; } return o.n; }");
+        Assert.Equal(3, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticFieldIncrement_Postfix()
+    {
+        var result = Run("class Counter { static value: int32; static { Counter.value = 4; } } function main(): int32 { let r: int32 = Counter.value++; return r * 100 + Counter.value; }");
+        Assert.Equal(405, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Increment_UnsupportedTarget_ReportsDiagnostic()
+    {
+        const string callSource = "function f(): int32 { return 1; } function main(): int32 { return f()++; }";
+        var callParser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(callSource).Tokenize());
+        var callBinder = new TypeSharp.Semantics.Binder.Binder();
+        callBinder.Bind(callParser.Parse());
+        var callErrors = callBinder.Diagnostics.GetErrors().ToList();
+        Assert.Single(callErrors);
+        Assert.Contains("Operator '++' requires a variable, field or element", callErrors[0].Message, StringComparison.Ordinal);
+
+        const string readonlySource = "class C { get v(): int32 { return 1; } } function main(): int32 { const c = new C(); return c.v++; }";
+        var readonlyParser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(readonlySource).Tokenize());
+        var readonlyBinder = new TypeSharp.Semantics.Binder.Binder();
+        readonlyBinder.Bind(readonlyParser.Parse());
+        var readonlyErrors = readonlyBinder.Diagnostics.GetErrors().ToList();
+        Assert.Single(readonlyErrors);
+        Assert.Contains("Cannot assign to readonly member 'v'", readonlyErrors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MemberIncrement_NumberField()
+    {
+        // Note (cycle 7, §3.16 adaptation): the plan's object-literal form
+        // `let o = { v: 1.5 }` does NOT give the field type `number` — the
+        // literal binds as TsLiteralType(1.5, Number) and structural fields
+        // are not widened, so the increment takes the Add_I32 branch and
+        // returns 3.5 (1.5 + 2). A class field declared `v: number` does
+        // have type `number`, so this form tests the F64 member path.
+        var result = Run(@"
+            class Box {
+                v: number;
+                constructor() {
+                    this.v = 1.5;
+                }
+            }
+            function main(): number {
+                const o = new Box();
+                let r: number = o.v++;
+                return r + o.v;
+            }
+        ");
+        Assert.NotNull(result);
+        Assert.True(Math.Abs(Convert.ToDouble(result!.RawValue) - 4.0) < 1e-9);
+    }
+
+    [Fact]
     public void Delete_Array_PreservesHoles()
     {
         var result = Run(@"
