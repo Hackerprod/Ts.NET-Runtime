@@ -786,10 +786,10 @@ public sealed class IRGenerator
 
             case BoundExpressionStatement exprStmt:
                 GenerateExpression(exprStmt.Expression);
-                // Every non-assignment expression leaves a value on the stack;
-                // discard it so statement-position expressions don't leak slots.
-                if (exprStmt.Expression is not BoundAssignmentExpression)
-                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
+                // Every expression leaves a value on the stack; discard it so
+                // statement-position expressions don't leak slots. (Ciclo 8:
+                // las asignaciones también dejan su valor, neto +1.)
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
                 break;
 
             case BoundReturnStatement ret:
@@ -1125,7 +1125,13 @@ public sealed class IRGenerator
 
         _currentBlock = iteratorBlock;
         if (forStmt.Iterator != null)
+        {
             GenerateExpression(forStmt.Iterator);
+            // Ciclo 8: el iterador deja su valor en la pila (i++, llamadas,
+            // asignaciones, desestructuraciones); descartarlo para no filtrar
+            // un slot por iteración.
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
+        }
         EmitBranch(conditionBlock.Id);
 
         _currentBlock = afterBlock;
@@ -2192,6 +2198,7 @@ public sealed class IRGenerator
             if (memberAccess.Member is FieldSymbol { IsStatic: true } staticField)
             {
                 GenerateExpression(assign.Value);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreGlobal, 0, 0,
                     staticField.RuntimeName ?? $"$static:{staticField.Name}"));
                 return;
@@ -2199,16 +2206,40 @@ public sealed class IRGenerator
 
             if (memberAccess.Member is PropertySymbol prop && prop.HasSetter)
             {
+                // Ciclo 8: el Call al setter desapila receptor + valor y apila
+                // Void, así que un Dup pelado antes del Call dejaría [obj, Void].
+                // Se guarda una copia del valor en un temporal, se descarta el
+                // Void con Pop y se recarga el valor asignado como valor de la
+                // expresión. Receptor y valor se evalúan una sola vez.
+                int tmpVal = _tempCounter++;
                 if (!prop.IsStatic)
                     GenerateExpression(memberAccess.Object);
                 GenerateExpression(assign.Value);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+                EmitStoreLocal(tmpVal);
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, prop.IsStatic ? 1 : 2,
                     prop.SetterName ?? $"{prop.DeclaringClassName}::set:{prop.Name}"));
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
+                EmitLoadLocal(tmpVal);
                 return;
             }
 
+            // Ciclo 8 (corrección al plan §2.2, ver implementation-c.md):
+            // StoreField desapila valor y objeto, así que un Dup pelado sobre
+            // [obj, val, val] haría que el Store consumiera el valor duplicado
+            // como si fuera el objeto. Se guarda el valor en un temporal y se
+            // reconstruye [val, obj, val] antes del Store (mismo patrón que
+            // GenerateMemberIncrement del ciclo 7). Objeto y valor se evalúan
+            // una sola vez, en el mismo orden que antes.
+            int tmpMemberObj = _tempCounter++;
+            int tmpMemberVal = _tempCounter++;
             GenerateExpression(memberAccess.Object);
+            EmitStoreLocal(tmpMemberObj);
             GenerateExpression(assign.Value);
+            EmitStoreLocal(tmpMemberVal);
+            EmitLoadLocal(tmpMemberVal);
+            EmitLoadLocal(tmpMemberObj);
+            EmitLoadLocal(tmpMemberVal);
             var runtimeName = memberAccess.Member is FieldSymbol field
                 ? field.RuntimeName ?? field.Name
                 : memberAccess.Member.Name;
@@ -2216,15 +2247,40 @@ public sealed class IRGenerator
         }
         else if (assign.Target is BoundIndexExpression indexTarget)
         {
+            // Ciclo 8 (corrección al plan §2.2, ver implementation-c.md):
+            // StoreElement desapila valor, índice y objetivo; un Dup pelado
+            // sobre [obj, idx, val, val] consumiría el duplicado como
+            // objetivo. Se reconstruye [val, obj, idx, val] con temporales
+            // (mismo patrón que GenerateIndexIncrement del ciclo 7).
+            int tmpIndexObj = _tempCounter++;
+            int tmpIndexIdx = _tempCounter++;
+            int tmpIndexVal = _tempCounter++;
             GenerateExpression(indexTarget.Object);
+            EmitStoreLocal(tmpIndexObj);
             GenerateExpression(indexTarget.Index);
+            EmitStoreLocal(tmpIndexIdx);
             GenerateExpression(assign.Value);
+            EmitStoreLocal(tmpIndexVal);
+            EmitLoadLocal(tmpIndexVal);
+            EmitLoadLocal(tmpIndexObj);
+            EmitLoadLocal(tmpIndexIdx);
+            EmitLoadLocal(tmpIndexVal);
             _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreElement));
         }
         else if (assign.Target is BoundVariableExpression boxedTarget && IsBoxedSymbol(boxedTarget.Symbol))
         {
+            // Ciclo 8 (corrección al plan §2.2, ver implementation-c.md):
+            // igual que el camino miembro: StoreField desapila valor y
+            // objeto (la caja); se reconstruye [val, box, val].
+            int tmpBoxSlot = _tempCounter++;
+            int tmpBoxVal = _tempCounter++;
             EmitLoadLocal(GetBoxSlot(boxedTarget.Symbol.Name));
+            EmitStoreLocal(tmpBoxSlot);
             GenerateExpression(assign.Value);
+            EmitStoreLocal(tmpBoxVal);
+            EmitLoadLocal(tmpBoxVal);
+            EmitLoadLocal(tmpBoxSlot);
+            EmitLoadLocal(tmpBoxVal);
             _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "v"));
         }
         else
@@ -2233,6 +2289,11 @@ public sealed class IRGenerator
 
             if (assign.Target is BoundVariableExpression varExpr)
             {
+                // Ciclo 8: la asignación vale el valor asignado (neto +1); el
+                // Dup conserva una copia a través del Store, que consume la
+                // de arriba. Sin variable reconocida (objetivo inválido) no
+                // hay Store ni Dup: el valor ya queda como neto +1.
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
                 if (varExpr.Symbol is LocalSymbol local)
                 {
                     if (IsModuleGlobalSymbol(local))
@@ -2254,7 +2315,12 @@ public sealed class IRGenerator
             GenerateVariableDeclaration(temporary);
 
         foreach (var assignment in assign.Assignments)
+        {
             GenerateAssignment(assignment);
+            // Ciclo 8: cada asignación interior deja neto +1; descartarlo para
+            // que la desestructuración deje solo su Result (+1) como valor.
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
+        }
 
         GenerateExpression(assign.Result);
     }

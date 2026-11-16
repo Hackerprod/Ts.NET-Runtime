@@ -2437,6 +2437,366 @@ public class InterpreterTests
             Run("function main(): string { const o: any = {}; o.self = o; try { JSON.stringify(o); } catch (e) { return \"caught\"; } return \"no-throw\"; }"));
         Assert.Equal("Converting circular structure to JSON", error.Message);
     }
+
+    // Ciclo 8: RunWithLimits existe porque el límite de instrucciones por defecto
+    // (10M) es insuficiente para los bucles de 1.1M de iteraciones de los tests
+    // de fuga de pila (§3.29-§3.36): ~11M de instrucciones por bucle.
+    private static TsValue? RunWithLimits(string code, string entryPoint = "main", TsValue[]? args = null)
+    {
+        var lexer = new TypeSharp.Syntax.Lexer(code);
+        var tokens = lexer.Tokenize();
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var syntaxTree = parser.Parse();
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(syntaxTree);
+
+        var irGen = new IRGenerator();
+        var moduleIR = irGen.Generate(boundTree);
+
+        var bytecodeModule = BytecodeCompiler.Compile(moduleIR);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter(new VMRuntimeLimits { MaximumInstructions = 100_000_000 });
+        return interpreter.Execute(bytecodeModule, entryPoint, args);
+    }
+
+    // Ciclo 8 — E: la asignación produce valor (semántica JavaScript).
+
+    [Fact]
+    public void Assignment_Chained_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let a: int32 = 0; let b: int32 = 0; a = b = 5; return a; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_InInitializer_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; let y: int32 = (x = 5); return y; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_InReturn_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; return (x = 7); }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_ChainedThree_ReturnsSum()
+    {
+        var result = Run("function main(): int32 { let a: int32 = 0; let b: int32 = 0; let c: int32 = 0; a = b = c = 9; return a + b + c; }");
+        Assert.Equal(27, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_ChainedMember_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let o = { n: 0 }; let x: int32 = 0; x = o.n = 4; return x * 100 + o.n; }");
+        Assert.Equal(404, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_ChainedIndex_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let a = [0, 0]; let x: int32 = 0; x = a[1] = 6; return x * 100 + a[1]; }");
+        Assert.Equal(606, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_CompoundInValue_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 10; let y: int32 = (x += 5); return y; }");
+        Assert.Equal(15, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_AsStatement_Control()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; x = 5; return x; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_InCondition_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; if ((x = 3) == 3) { return 1; } return 0; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_AsArgument_ReturnsValue()
+    {
+        var result = Run("function g(n: int32): int32 { return n; } function main(): int32 { let x: int32 = 0; return g(x = 21); }");
+        Assert.Equal(21, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_StaticFieldInValue_ReturnsValue()
+    {
+        var result = Run("class Counter { static value: int32; static { Counter.value = 4; } } function main(): int32 { let y: int32 = (Counter.value = 9); return y * 100 + Counter.value; }");
+        Assert.Equal(909, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_ModuleGlobalInValue_ReturnsValue()
+    {
+        var result = Run("let x: int32 = 0; function main(): int32 { let y: int32 = (x = 5); return y; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_BoxedLocalInValue_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 1; let f = () => { return (x = 5); }; let y: int32 = f(); return y * 100 + x; }");
+        Assert.Equal(505, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_MemberAsArgument_ReturnsValue()
+    {
+        var result = Run("function g(n: int32): int32 { return n; } function main(): int32 { let o = { n: 0 }; return g(o.n = 21); }");
+        Assert.Equal(21, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_IndexInCondition_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let a = [0, 0]; if ((a[1] = 3) == 3) { return 1; } return 0; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_InArrayLiteral_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; let a = [1, (x = 5), 3]; return a[1] * 100 + x; }");
+        Assert.Equal(505, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_InObjectLiteral_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; let o = { n: (x = 7) }; return o.n * 100 + x; }");
+        Assert.Equal(707, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_AsSwitchDiscriminant_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; switch (x = 2) { case 2: return 20 + x; default: return 0; } }");
+        Assert.Equal(22, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_AsThrowOperand_ReturnsValue()
+    {
+        // El resultado es TsInt64Value(909), no TsInt32Value: e es any y
+        // GenerateBinary ensancha a I64 cuando un operando es any (ciclo 8, R1).
+        var result = Run("function main(): int32 { let x: int32 = 0; try { throw (x = 9); } catch (e: any) { return e * 100 + x; } return 0; }");
+        Assert.Equal(909, Convert.ToInt32(result!.RawValue));
+    }
+
+    [Fact]
+    public void Assignment_InWhileCondition_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; let n: int32 = 0; while ((x = x + 1) < 3) { n = n + 1; } return n * 100 + x; }");
+        Assert.Equal(203, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_InDoWhileCondition_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; let n: int32 = 0; do { n = n + 1; } while ((x = x + 1) < 2); return n * 100 + x; }");
+        Assert.Equal(202, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_InTernaryCondition_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; let r: int32 = (x = 5) == 5 ? 1 : 0; return r * 100 + x; }");
+        Assert.Equal(105, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_ChainedMembersThree_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let o = { n: 0 }; let p = { n: 0 }; let q = { n: 0 }; o.n = p.n = q.n = 8; return o.n * 100 + p.n * 10 + q.n; }");
+        Assert.Equal(888, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_InDefaultParameter_ReturnsValue()
+    {
+        var result = Run("let x: int32 = 0; function f(a: int32 = (x = 5)): int32 { return a; } function main(): int32 { return f(); }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    // Ciclo 8 — U: la asignación a propiedad con setter vale el valor asignado.
+
+    [Fact]
+    public void SetterAssignment_InInitializer_ReturnsAssignedValue()
+    {
+        var result = Run("class C { #v: int32; constructor() { this.#v = 0; } set p(n: int32) { this.#v = n; } get p(): int32 { return this.#v; } } function main(): int32 { let c = new C(); let y: int32 = (c.p = 5); return y; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void SetterAssignment_InReturn_ReturnsAssignedValue()
+    {
+        var result = Run("class C { #v: int32; constructor() { this.#v = 0; } set p(n: int32) { this.#v = n; } get p(): int32 { return this.#v; } } function main(): int32 { let c = new C(); return (c.p = 5); }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void SetterAssignment_Chained_ReturnsAssignedValue()
+    {
+        var result = Run("class C { #v: int32; constructor() { this.#v = 0; } set p(n: int32) { this.#v = n; } get p(): int32 { return this.#v; } } function main(): int32 { let c = new C(); let x: int32 = 0; x = (c.p = 5); return x * 100 + c.p; }");
+        Assert.Equal(505, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void SetterAssignment_AsStatement_Control()
+    {
+        var result = Run("class C { #v: int32; constructor() { this.#v = 0; } set p(n: int32) { this.#v = n; } get p(): int32 { return this.#v; } } function main(): int32 { let c = new C(); c.p = 5; return c.p; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    // Ciclo 8 — S + U: bucles de 1.1M de iteraciones; ninguna asignación en
+    // posición de sentencia o de iterador puede filtrar slots de pila.
+
+    [Fact]
+    public void ForIterator_Increment_LeaksNoSlot()
+    {
+        var result = RunWithLimits("function main(): int32 { for (let i: int32 = 0; i < 1100000; i++) { } return 7; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ForIterator_Assignment_LeaksNoSlot()
+    {
+        var result = RunWithLimits("function main(): int32 { let i: int32 = 0; for (i = 0; i < 1100000; i = i + 1) { } return 7; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ForIterator_CallReturningValue_LeaksNoSlot()
+    {
+        var result = RunWithLimits("function f(): int32 { return 1; } function main(): int32 { let i: int32 = 0; for (i = 0; i < 1100000; f()) { i++; } return i; }");
+        Assert.Equal(1100000, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void WhileLoop_SetterAssignments_LeakNoSlot()
+    {
+        var result = RunWithLimits("class C { #v: int32; constructor() { this.#v = 0; } set p(n: int32) { this.#v = n; } get p(): int32 { return this.#v; } } function main(): int32 { let c = new C(); let i: int32 = 0; while (i < 1100000) { c.p = i; i++; } return c.p; }");
+        Assert.Equal(1099999, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void WhileLoop_StaticSetterAssignments_LeakNoSlot()
+    {
+        // Solo disciplina de pila del camino setter estático: el getter
+        // estático devuelve Void hoy (defecto separado, fuera de alcance),
+        // así que este test no afirma el valor leído del setter estático.
+        var result = RunWithLimits("class C { static v: int32; static set p(n: int32) { C.v = n; } static get p(): int32 { return C.v; } } function main(): int32 { let i: int32 = 0; while (i < 1100000) { C.p = i; i++; } return 7; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void WhileLoop_PlainAssignments_LeakNoSlot()
+    {
+        var result = RunWithLimits("function main(): int32 { let x: int32 = 0; let i: int32 = 0; while (i < 1100000) { x = i; i++; } return x; }");
+        Assert.Equal(1099999, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void WhileLoop_DestructuringStatement_LeaksNoSlot()
+    {
+        // Origen prealocado fuera del bucle: un literal nuevo por iteración
+        // moriría por Memory limit exceeded antes de llegar al tope de pila.
+        var result = RunWithLimits("function main(): int32 { let a: int32 = 0; let b: int32 = 0; let src = [1, 2]; let i: int32 = 0; while (i < 1100000) { [a, b] = src; i++; } return a * 10 + b; }");
+        Assert.Equal(12, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void WhileLoop_InvalidTargetAssignment_LeaksNoSlot()
+    {
+        var result = RunWithLimits("function f(): int32 { return 1; } function main(): int32 { let i: int32 = 0; while (i < 1100000) { f() = 5; i++; } return 7; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    // Ciclo 8 — desestructuración en posición de valor.
+
+    [Fact]
+    public void DestructuringAssignment_AsStatement_Control()
+    {
+        var result = Run("function main(): int32 { let a: int32 = 0; let b: int32 = 0; [a, b] = [1, 2]; return a * 10 + b; }");
+        Assert.Equal(12, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DestructuringAssignment_InValue_ReturnsSource()
+    {
+        var result = Run("function main(): int32 { let a: int32 = 0; let b: int32 = 0; let r = ([a, b] = [1, 2]); return r[0] * 100 + r[1] * 10 + a; }");
+        Assert.Equal(121, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DestructuringAssignment_MemberTargetsInValue_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let o = { a: 0, b: 0 }; let r = ([o.a, o.b] = [3, 4]); return o.a * 10 + o.b; }");
+        Assert.Equal(34, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void DestructuringAssignment_InReturn_ReturnsFirstElement()
+    {
+        var result = Run("function main(): int32 { let a: int32 = 0; let b: int32 = 0; return ([a, b] = [1, 2])[0]; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    // Ciclo 8 — objetivo inválido, N33 y contra-tests.
+
+    [Fact]
+    public void InvalidTargetAssignment_AsStatement_Control()
+    {
+        var result = Run("function f(): int32 { return 1; } function main(): int32 { f() = 5; return 7; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InvalidTargetAssignment_InValue_ReturnsValue()
+    {
+        var result = Run("function f(): int32 { return 1; } function main(): int32 { let y: int32 = (f() = 5); return y; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void CompoundAssignment_EvaluatesTargetTwice_DocumentsN33()
+    {
+        // Documenta la doble evaluación de += (N33), FUERA de alcance del
+        // ciclo 8: el desazucarado del binder evalúa el objetivo dos veces
+        // (calls = 2, arr[1] = 21). Un ciclo futuro que arregle N33 debe
+        // actualizar este test.
+        var result = Run("let t = { calls: 0 }; function next(): int32 { t.calls = t.calls + 1; return 1; } function main(): int32 { let arr = [10, 20, 30]; arr[next()] += 1; return t.calls * 100 + arr[1]; }");
+        Assert.Equal(221, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void CompoundAssignment_AsStatement_Control()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 5; x += 1; return x; }");
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Assignment_InForInitializer_ReturnsValue()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 0; for (let y: int32 = (x = 4); y < 5; y++) { } return x; }");
+        Assert.Equal(4, Assert.IsType<TsInt32Value>(result).Value);
+    }
 }
 
 public class TypeCheckingTests
