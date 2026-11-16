@@ -2369,6 +2369,251 @@ public class IntegrationTests
         finally { Directory.Delete(dir, true); }
     }
 
+    // Ciclo 01: el linker renombra TODAS las constantes de cadena al
+    // desambiguar funciones duplicadas. Este test reproduce el bug por
+    // la vía del LITERAL: antes del arreglo, scenario* -> 101 (el campo
+    // sobrevive porque su StoreField y su LoadField comparten el mismo
+    // índice renombrado dentro de la función; solo el literal se
+    // corrompe) y literal* -> "$module_*_save". Después del arreglo:
+    // 111 y "save". method* (7/9), classMethod* (5/6) y lambda* (21)
+    // son guardias de regresión: pasan antes y después, porque en el
+    // caso de method* el StoreField y el CallVirt también comparten el
+    // índice renombrado dentro de la misma función. La corrupción de
+    // campo y de método se reproduce de verdad entre módulos, en el
+    // test LinkerDuplicateFunctionNamePreservesCrossModuleFieldsAndMethods.
+    [Fact]
+    public async Task LinkerDuplicateFunctionNamePreservesFieldsLiteralsAndMethods()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_linker_save_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var leftFile = Path.Combine(dir, "left.ts");
+        var rightFile = Path.Combine(dir, "right.ts");
+        await File.WriteAllTextAsync(leftFile, """
+            export function save(value: int32): int32 {
+                return value + 1;
+            }
+
+            export function scenarioLeft(): int32 {
+                const box = { save: 100 };
+                const fieldOk = box.save == 100 ? 1 : 0;
+                const literalOk = "sa" + "ve" == "save" ? 1 : 0;
+                const callOk = save(10) == 11 ? 1 : 0;
+                return fieldOk * 100 + literalOk * 10 + callOk;
+            }
+
+            export function literalLeft(): string {
+                return "save";
+            }
+
+            export function methodLeft(): int32 {
+                const obj = { save: () => 7 };
+                return obj.save();
+            }
+
+            class BoxLeft {
+                save(): int32 {
+                    return 5;
+                }
+            }
+
+            export function classMethodLeft(): int32 {
+                const box = new BoxLeft();
+                return box.save();
+            }
+
+            export function lambdaLeft(): int32 {
+                const f = (x: int32): int32 => x * 3;
+                return f(7);
+            }
+            """);
+        await File.WriteAllTextAsync(rightFile, """
+            export function save(value: int32): int32 {
+                return value + 2;
+            }
+
+            export function scenarioRight(): int32 {
+                const box = { save: 200 };
+                const fieldOk = box.save == 200 ? 1 : 0;
+                const literalOk = "sa" + "ve" == "save" ? 1 : 0;
+                const callOk = save(10) == 12 ? 1 : 0;
+                return fieldOk * 100 + literalOk * 10 + callOk;
+            }
+
+            export function literalRight(): string {
+                return "save";
+            }
+
+            export function methodRight(): int32 {
+                const obj = { save: () => 9 };
+                return obj.save();
+            }
+
+            class BoxRight {
+                save(): int32 {
+                    return 6;
+                }
+            }
+
+            export function classMethodRight(): int32 {
+                const box = new BoxRight();
+                return box.save();
+            }
+
+            export function lambdaRight(): int32 {
+                const f = (x: int32): int32 => x * 3;
+                return f(7);
+            }
+            """);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(leftFile)
+                .AddSourceFile(rightFile)
+                .BuildAsync();
+
+            // Los IDs de módulo derivados son los nombres de archivo sin extensión.
+            Assert.Contains("left", runtime.ActiveGeneration!.Modules.Keys);
+            Assert.Contains("right", runtime.ActiveGeneration.Modules.Keys);
+
+            Assert.Equal(111, await runtime.InvokeAsync<int>("left", "scenarioLeft"));
+            Assert.Equal(111, await runtime.InvokeAsync<int>("right", "scenarioRight"));
+            Assert.Equal("save", await runtime.InvokeAsync<string>("left", "literalLeft"));
+            Assert.Equal("save", await runtime.InvokeAsync<string>("right", "literalRight"));
+            Assert.Equal(7, await runtime.InvokeAsync<int>("left", "methodLeft"));
+            Assert.Equal(9, await runtime.InvokeAsync<int>("right", "methodRight"));
+            Assert.Equal(5, await runtime.InvokeAsync<int>("left", "classMethodLeft"));
+            Assert.Equal(6, await runtime.InvokeAsync<int>("right", "classMethodRight"));
+            Assert.Equal(21, await runtime.InvokeAsync<int>("left", "lambdaLeft"));
+            Assert.Equal(21, await runtime.InvokeAsync<int>("right", "lambdaRight"));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public async Task LinkerDuplicateFunctionNameIsOrderIndependent()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_linker_order_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var leftFile = Path.Combine(dir, "left.ts");
+        var rightFile = Path.Combine(dir, "right.ts");
+        await File.WriteAllTextAsync(leftFile, """
+            export function save(value: int32): int32 {
+                return value + 1;
+            }
+
+            export function scenarioLeft(): int32 {
+                const box = { save: 100 };
+                const fieldOk = box.save == 100 ? 1 : 0;
+                const literalOk = "sa" + "ve" == "save" ? 1 : 0;
+                const callOk = save(10) == 11 ? 1 : 0;
+                return fieldOk * 100 + literalOk * 10 + callOk;
+            }
+            """);
+        await File.WriteAllTextAsync(rightFile, """
+            export function save(value: int32): int32 {
+                return value + 2;
+            }
+
+            export function scenarioRight(): int32 {
+                const box = { save: 200 };
+                const fieldOk = box.save == 200 ? 1 : 0;
+                const literalOk = "sa" + "ve" == "save" ? 1 : 0;
+                const callOk = save(10) == 12 ? 1 : 0;
+                return fieldOk * 100 + literalOk * 10 + callOk;
+            }
+            """);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(leftFile)
+                .AddSourceFile(rightFile)
+                .BuildAsync();
+
+            // Orden inverso al test hermano, y repetido dos veces.
+            Assert.Equal(111, await runtime.InvokeAsync<int>("right", "scenarioRight"));
+            Assert.Equal(111, await runtime.InvokeAsync<int>("left", "scenarioLeft"));
+            Assert.Equal(111, await runtime.InvokeAsync<int>("right", "scenarioRight"));
+            Assert.Equal(111, await runtime.InvokeAsync<int>("left", "scenarioLeft"));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    // Ciclo 01: la corrupción de campo y de método solo se ve ENTRE
+    // módulos. Dentro de un módulo, el StoreField y el LoadField (o el
+    // CallVirt) de "save" comparten el mismo índice renombrado y la
+    // corrupción es invisible; entre módulos los prefijos difieren
+    // ("$module_left_save" frente a "$module_right_save") y el acceso
+    // falla. Antes del arreglo: readBoxField -> 0 y callObjMethod
+    // lanza InvalidOperationException ("Function '$module_right_save'
+    // not found for receiver object:Object argCount=1"). Después del
+    // arreglo: 1 y 7. Verificado con sonda antes de escribir el test.
+    [Fact]
+    public async Task LinkerDuplicateFunctionNamePreservesCrossModuleFieldsAndMethods()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "typesharp_linker_xmod_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var leftFile = Path.Combine(dir, "left.ts");
+        var rightFile = Path.Combine(dir, "right.ts");
+        await File.WriteAllTextAsync(leftFile, """
+            export function save(value: int32): int32 {
+                return value + 1;
+            }
+
+            export function makeBox() {
+                return { save: 100 };
+            }
+
+            export function makeObj(): { save: () => int32 } {
+                return { save: () => 7 };
+            }
+            """);
+        await File.WriteAllTextAsync(rightFile, """
+            import { makeBox, makeObj } from "./left";
+
+            export function save(value: int32): int32 {
+                return value + 2;
+            }
+
+            export function readBoxField(): int32 {
+                const box = makeBox();
+                return box.save == 100 ? 1 : 0;
+            }
+
+            export function callObjMethod(): int32 {
+                const obj = makeObj();
+                return obj.save();
+            }
+            """);
+
+        try
+        {
+            await using var runtime = await new TypeSharpRuntimeBuilder()
+                .AddSourceFile(leftFile)
+                .AddSourceFile(rightFile)
+                .BuildAsync();
+
+            Assert.Contains("left", runtime.ActiveGeneration!.Modules.Keys);
+            Assert.Contains("right", runtime.ActiveGeneration.Modules.Keys);
+
+            Assert.Equal(1, await runtime.InvokeAsync<int>("right", "readBoxField"));
+            Assert.Equal(7, await runtime.InvokeAsync<int>("right", "callObjMethod"));
+            Assert.Equal(7, await runtime.InvokeAsync<int>("right", "callObjMethod"));
+            Assert.Equal(1, await runtime.InvokeAsync<int>("right", "readBoxField"));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
     private static string FindRepositoryRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

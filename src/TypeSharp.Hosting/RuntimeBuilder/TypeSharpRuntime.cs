@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics;
@@ -192,6 +193,15 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
     private int _nextGenerationId;
     private bool _disposed;
 
+    // Nombres reservados para el enlazado (§3.3 del plan): los builtins y
+    // los intrínsecos ganan a las funciones de módulo en ambas vías de
+    // resolución, así que nunca se renombran; los hosts solo están
+    // reservados para operandos de Call (en InvokeCallable el módulo se
+    // comprueba antes que el host). Se calculan una vez por runtime: no
+    // existe ninguna vía de registro de hosts posterior a BuildAsync.
+    private readonly IReadOnlySet<string> _callReservedNames;
+    private readonly IReadOnlySet<string> _valueReservedNames;
+
     public ModuleRegistry Modules => _moduleManager.Registry;
     public HotReloadManager? HotReload => _hotReloadManager;
     public RuntimeGeneration? ActiveGeneration => _activeGeneration;
@@ -220,6 +230,13 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         _limits = limits;
         _hotReloadOptions = hotReloadOptions ?? new HotReloadOptions();
         _nextGenerationId = 0;
+
+        var valueReserved = new HashSet<string>(Builtins.Names, StringComparer.Ordinal);
+        valueReserved.UnionWith(Interpreter.HigherOrderIntrinsicNames);
+        _valueReservedNames = valueReserved;
+        var callReserved = new HashSet<string>(valueReserved, StringComparer.Ordinal);
+        callReserved.UnionWith(_interpreter.HostFunctionNames);
+        _callReservedNames = callReserved;
 
         if (_hotReloadManager != null)
         {
@@ -285,7 +302,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         {
             if (mod.Bytecode.FunctionIndex.ContainsKey(functionName))
             {
-                var linkedModule = CreateLinkedModule(generation);
+                var linkedModule = CreateLinkedModule(generation, _callReservedNames, _valueReservedNames);
                 var context = _interpreter.CreateContext(generation.ModuleGlobals);
                 try
                 {
@@ -314,7 +331,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             module = await ImportAsync(moduleName);
         }
 
-        var linkedModule = CreateLinkedModule(lease.Generation);
+        var linkedModule = CreateLinkedModule(lease.Generation, _callReservedNames, _valueReservedNames);
         var context = _interpreter.CreateContext(lease.Generation.ModuleGlobals);
         try
         {
@@ -355,7 +372,10 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         }
     }
 
-    private static BytecodeModule CreateLinkedModule(RuntimeGeneration generation)
+    internal static BytecodeModule CreateLinkedModule(
+        RuntimeGeneration generation,
+        IReadOnlySet<string> callReservedNames,
+        IReadOnlySet<string> valueReservedNames)
     {
         var functions = new List<BytecodeFunction>();
         var duplicateFunctionNames = FindDuplicateFunctionNames(generation.Modules.Values);
@@ -364,14 +384,14 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             var renameMap = BuildPrivateFunctionRenameMap(module, duplicateFunctionNames);
             foreach (var function in module.Bytecode.Functions)
             {
-                functions.Add(CloneLinkedFunction(function, renameMap));
+                functions.Add(CloneLinkedFunction(function, renameMap, callReservedNames, valueReservedNames));
             }
         }
 
         return new BytecodeModule($"generation-{generation.Id}", functions.ToArray());
     }
 
-    private static HashSet<string> FindDuplicateFunctionNames(IEnumerable<TsModule> modules)
+    internal static HashSet<string> FindDuplicateFunctionNames(IEnumerable<TsModule> modules)
     {
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var module in modules)
@@ -389,7 +409,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             .ToHashSet(StringComparer.Ordinal);
     }
 
-    private static Dictionary<string, string> BuildPrivateFunctionRenameMap(
+    internal static Dictionary<string, string> BuildPrivateFunctionRenameMap(
         TsModule module,
         IReadOnlySet<string> duplicateFunctionNames)
     {
@@ -402,7 +422,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
                 StringComparer.Ordinal);
     }
 
-    private static bool ShouldRenameLinkedFunction(string functionName, IReadOnlySet<string> duplicateFunctionNames)
+    internal static bool ShouldRenameLinkedFunction(string functionName, IReadOnlySet<string> duplicateFunctionNames)
     {
         if (functionName.StartsWith("$lambda_", StringComparison.Ordinal))
         {
@@ -417,24 +437,31 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         return duplicateFunctionNames.Contains(functionName);
     }
 
-    private static BytecodeFunction CloneLinkedFunction(
+    internal static BytecodeFunction CloneLinkedFunction(
         BytecodeFunction function,
-        IReadOnlyDictionary<string, string> renameMap)
+        IReadOnlyDictionary<string, string> renameMap,
+        IReadOnlySet<string> callReservedNames,
+        IReadOnlySet<string> valueReservedNames)
     {
         var name = renameMap.TryGetValue(function.Name, out var renamed)
             ? renamed
             : function.Name;
-        var stringConstants = function.StringConstants
-            .Select(value => renameMap.TryGetValue(value, out var replacement) ? replacement : value)
-            .ToArray();
+
+        // El arreglo parchea el bytecode clonado; nunca se toca el del
+        // módulo fuente (§3.5): el byte[] se clona y la tabla se copia.
+        var instructions = function.Instructions.ToArray();
+        var stringConstants = function.StringConstants.ToList();
+        PatchFunctionReferenceOperands(
+            function.Name, instructions, stringConstants,
+            renameMap, callReservedNames, valueReservedNames);
 
         return new BytecodeFunction(
             name,
-            function.Instructions,
+            instructions,
             function.ParameterCount,
             function.LocalCount,
             function.IsAsync,
-            stringConstants,
+            stringConstants.ToArray(),
             function.IntegerConstants,
             function.DoubleConstants,
             function.DecimalConstants,
@@ -443,7 +470,82 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             function.RestParameterIndex);
     }
 
-    private static string ToLinkSafeName(string value)
+    // Reescribe SOLO los operandos-índice de Call / LoadFunc / MakeClosure
+    // cuyo nombre esté en el mapa de renombrado de este módulo y no esté
+    // reservado para ese opcode (§3.3). El resto de la tabla de
+    // constantes queda intacto: los índices originales nunca se
+    // reescriben, los nombres renombrados se añaden al final (§3.4).
+    // Pase (a): recoger los operandos a parchear. Pase (b): añadir los
+    // nombres renombrados al final de la tabla. Pase (c): parchear solo
+    // las posiciones recogidas.
+    private static void PatchFunctionReferenceOperands(
+        string functionName,
+        byte[] instructions,
+        List<string> stringConstants,
+        IReadOnlyDictionary<string, string> renameMap,
+        IReadOnlySet<string> callReservedNames,
+        IReadOnlySet<string> valueReservedNames)
+    {
+        // Pase (a): recoger (offset, índice original, nombre renombrado).
+        // La lectura de nombres se hace siempre sobre los índices
+        // originales y antes de modificar nada.
+        var patches = new List<(int Offset, int OriginalIndex, string RenamedName)>();
+        var ip = 0;
+        while (ip < instructions.Length)
+        {
+            var opcode = instructions[ip];
+            if (!OpcodeFormats.TryGet(opcode, out var format))
+            {
+                throw new InvalidOperationException(
+                    $"Unknown opcode 0x{opcode:X2} at offset {ip} while linking function '{functionName}'");
+            }
+
+            if (opcode is Opcodes.Call or Opcodes.LoadFunc or Opcodes.MakeClosure)
+            {
+                // El índice de cadena es el PRIMER Int32 del operando;
+                // el segundo Int32 (nº de args / nº de capturas) no se toca.
+                var index = BinaryPrimitives.ReadInt32LittleEndian(instructions.AsSpan(ip + 1));
+                var name = stringConstants[index];
+                var reserved = opcode == Opcodes.Call ? callReservedNames : valueReservedNames;
+                if (renameMap.TryGetValue(name, out var renamed) && !reserved.Contains(name))
+                {
+                    patches.Add((ip + 1, index, renamed));
+                }
+            }
+
+            ip += OpcodeFormats.InstructionSize(opcode);
+        }
+
+        // Pase (b): añadir los nombres renombrados distintos al final de
+        // la tabla (reutilizando el índice si el nombre ya existe como
+        // literal) y construir índice original -> índice nuevo.
+        var remap = new Dictionary<int, int>();
+        foreach (var patch in patches)
+        {
+            if (remap.ContainsKey(patch.OriginalIndex))
+            {
+                continue;
+            }
+
+            var existing = stringConstants.IndexOf(patch.RenamedName);
+            if (existing < 0)
+            {
+                existing = stringConstants.Count;
+                stringConstants.Add(patch.RenamedName);
+            }
+
+            remap[patch.OriginalIndex] = existing;
+        }
+
+        // Pase (c): parchear solo las posiciones recogidas.
+        foreach (var patch in patches)
+        {
+            BinaryPrimitives.WriteInt32LittleEndian(
+                instructions.AsSpan(patch.Offset), remap[patch.OriginalIndex]);
+        }
+    }
+
+    internal static string ToLinkSafeName(string value)
     {
         var safe = new string(value.Select(ch =>
             char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_').ToArray());

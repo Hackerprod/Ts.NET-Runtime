@@ -11,6 +11,8 @@ public static class Builtins
 {
     private static readonly Dictionary<string, Func<TsValue[], TsValue>> Table = Build();
 
+    public static IReadOnlyCollection<string> Names => Table.Keys;
+
     public static bool TryGet(string name, out Func<TsValue[], TsValue> builtin) =>
         Table.TryGetValue(name, out builtin!);
 

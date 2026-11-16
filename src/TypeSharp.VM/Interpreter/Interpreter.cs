@@ -124,6 +124,9 @@ public sealed class Interpreter
     public TsHeap Heap => _heap;
     public ExecutionProfile Profile => _profile;
 
+    public static IReadOnlySet<string> HigherOrderIntrinsicNames => HigherOrderIntrinsics;
+    internal IReadOnlyCollection<string> HostFunctionNames => _hostFunctions.Keys;
+
     public Interpreter(VMRuntimeLimits? limits = null)
     {
         _limits = limits ?? new VMRuntimeLimits();
