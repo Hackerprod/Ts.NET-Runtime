@@ -2148,6 +2148,110 @@ public class InterpreterTests
         ");
         Assert.Equal(3, ((TsInt32Value)result!).Value);
     }
+    // ── Ciclo 06: JSON.stringify sobre estructuras cíclicas o muy profundas ──
+
+    [Fact]
+    public void JsonStringify_CyclicObject_Throws()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): string { const o: any = {}; o.self = o; return JSON.stringify(o); }"));
+        Assert.Equal("Converting circular structure to JSON", error.Message);
+    }
+
+    [Fact]
+    public void JsonStringify_CyclicArray_Throws()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): string { const a: any[] = []; a.push(a); return JSON.stringify(a); }"));
+        Assert.Equal("Converting circular structure to JSON", error.Message);
+    }
+
+    [Fact]
+    public void JsonStringify_IndirectCycle_Throws()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): string { const a: any = {}; const b: any = {}; a.b = b; b.a = a; return JSON.stringify(a); }"));
+        Assert.Equal("Converting circular structure to JSON", error.Message);
+    }
+
+    [Fact]
+    public void JsonStringify_CyclicMap_Throws()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): string { const m = new Map(); m.set(\"self\", m); return JSON.stringify(m); }"));
+        Assert.Equal("Converting circular structure to JSON", error.Message);
+    }
+
+    [Fact]
+    public void JsonStringify_CyclicSet_Throws()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): string { const s = new Set(); s.add(s); return JSON.stringify(s); }"));
+        Assert.Equal("Converting circular structure to JSON", error.Message);
+    }
+
+    [Fact]
+    public void JsonStringify_DeepNestingBeyondLimit_Throws()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): string { let x: any = 1; for (let i: int32 = 0; i < 1001; i++) { x = [x]; } return JSON.stringify(x); }"));
+        Assert.Equal("Maximum JSON serialization depth exceeded", error.Message);
+    }
+
+    [Fact]
+    public void JsonStringify_DeepNestingAtLimit_Serializes()
+    {
+        var result = Run("function main(): string { let x: any = 1; for (let i: int32 = 0; i < 1000; i++) { x = [x]; } return JSON.stringify(x); }");
+        var json = Assert.IsType<TsStringValue>(result).Value;
+        Assert.Equal(1000, json.Count(c => c == '['));
+        Assert.EndsWith("1" + new string(']', 1000), json);
+    }
+
+    [Fact]
+    public void JsonStringify_ModerateDepth_Serializes()
+    {
+        // Regresión contra el MaxDepth=64 por defecto de System.Text.Json:
+        // hoy 100 niveles lanzan JsonException cruda; tras el arreglo serializan.
+        var result = Run("function main(): string { let x: any = 1; for (let i: int32 = 0; i < 100; i++) { x = [x]; } return JSON.stringify(x); }");
+        var json = Assert.IsType<TsStringValue>(result).Value;
+        Assert.Equal(100, json.Count(c => c == '['));
+    }
+
+    [Fact]
+    public void JsonStringify_DiamondGraph_SerializesTwice()
+    {
+        var result = Run("function main(): string { const shared: any = { v: 1 }; const o: any = { a: shared, b: shared }; return JSON.stringify(o); }");
+        var json = Assert.IsType<TsStringValue>(result).Value;
+        Assert.Contains("\"a\":{\"v\":1}", json);
+        Assert.Contains("\"b\":{\"v\":1}", json);
+    }
+
+    [Fact]
+    public void JsonStringify_PlainObject_Serializes()
+    {
+        var result = Run("function main(): string { const o: any = { a: 1 }; return JSON.stringify(o); }");
+        Assert.Equal("{\"a\":1}", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void JsonStringify_ArrayAndNested_Serializes()
+    {
+        var result = Run("function main(): string { const o: any = { n: [1, 2], s: \"x\", b: true, z: null }; return JSON.stringify(o); }");
+        var json = Assert.IsType<TsStringValue>(result).Value;
+        Assert.Contains("\"n\":[1,2]", json);
+        Assert.Contains("\"s\":\"x\"", json);
+        Assert.Contains("\"b\":true", json);
+        Assert.Contains("\"z\":null", json);
+    }
+
+    [Fact]
+    public void JsonStringify_CycleError_EscapesScriptTryCatch()
+    {
+        // Decisión §2.4: el error de VM escapa al host; el try/catch del script NO lo captura.
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): string { const o: any = {}; o.self = o; try { JSON.stringify(o); } catch (e) { return \"caught\"; } return \"no-throw\"; }"));
+        Assert.Equal("Converting circular structure to JSON", error.Message);
+    }
 }
 
 public class TypeCheckingTests

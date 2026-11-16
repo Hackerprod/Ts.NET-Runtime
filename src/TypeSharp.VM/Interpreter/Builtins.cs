@@ -65,7 +65,9 @@ public static class Builtins
 
             ["JSON::stringify"] = args => TsValue.FromString(args.Length == 0
                 ? "undefined"
-                : JsonSerializer.Serialize(ToJsonCompatible(args[0]))),
+                : JsonSerializer.Serialize(
+                    ToJsonCompatible(args[0], new HashSet<object>(ReferenceEqualityComparer.Instance), 0),
+                    new JsonSerializerOptions { MaxDepth = 1001 })),
 
             // ── Array construction + statics ──
             ["Array::ctor"] = args =>
@@ -560,7 +562,7 @@ public static class Builtins
         return !double.IsNaN(dl) && dl == dr;
     }
 
-    private static object? ToJsonCompatible(TsValue value) => value switch
+    private static object? ToJsonCompatible(TsValue value, HashSet<object> ancestors, int depth) => value switch
     {
         TsVoid => null,
         TsNull => null,
@@ -573,25 +575,51 @@ public static class Builtins
         TsFloat64Value number => number.Value,
         TsDecimalValue number => number.Value,
         TsStringValue text => text.Value,
-        TsArrayValue array => Enumerable.Range(0, array.Value.Count)
-            .Select(index => ToJsonCompatible(array.Value.Get(index)))
-            .ToList(),
+        TsArrayValue array => ConvertComposite(array.Value, ancestors, depth, () =>
+            Enumerable.Range(0, array.Value.Count)
+                .Select(index => ToJsonCompatible(array.Value.Get(index), ancestors, depth + 1))
+                .ToList()),
         TsUint8ArrayValue bytes => Enumerable.Range(0, bytes.Length)
             .Select(index => bytes.Get(index))
             .ToList(),
-        TsMapValue map => map.Value.Entries.ToDictionary(
-            entry => S(entry.Key),
-            entry => ToJsonCompatible(entry.Value),
-            StringComparer.Ordinal),
-        TsSetValue set => set.Value.Entries
-            .Select(ToJsonCompatible)
-            .ToList(),
-        TsObjectValue obj => obj.Value.Fields.ToDictionary(
-            pair => pair.Key,
-            pair => ToJsonCompatible(pair.Value),
-            StringComparer.Ordinal),
+        TsMapValue map => ConvertComposite(map.Value, ancestors, depth, () =>
+            map.Value.Entries.ToDictionary(
+                entry => S(entry.Key),
+                entry => ToJsonCompatible(entry.Value, ancestors, depth + 1),
+                StringComparer.Ordinal)),
+        TsSetValue set => ConvertComposite(set.Value, ancestors, depth, () =>
+            set.Value.Entries
+                .Select(v => ToJsonCompatible(v, ancestors, depth + 1))
+                .ToList()),
+        TsObjectValue obj => ConvertComposite(obj.Value, ancestors, depth, () =>
+            obj.Value.Fields.ToDictionary(
+                pair => pair.Key,
+                pair => ToJsonCompatible(pair.Value, ancestors, depth + 1),
+                StringComparer.Ordinal)),
         _ => value.ToString()
     };
+
+    // Guarda compartida de las cuatro ramas compuestas de ToJsonCompatible:
+    // primero ciclo (el contenedor ya está entre los ancestros), luego
+    // profundidad (depth >= 1000). El contenedor se quita en finally para
+    // que un mismo objeto referenciado dos veces sin ciclo (diamante) se
+    // serialice dos veces.
+    private static T ConvertComposite<T>(object container, HashSet<object> ancestors, int depth, Func<T> convert)
+    {
+        if (ancestors.Contains(container))
+            throw new InvalidOperationException("Converting circular structure to JSON");
+        if (depth >= 1000)
+            throw new InvalidOperationException("Maximum JSON serialization depth exceeded");
+        ancestors.Add(container);
+        try
+        {
+            return convert();
+        }
+        finally
+        {
+            ancestors.Remove(container);
+        }
+    }
 
     private static byte ToByte(TsValue value) => value switch
     {
