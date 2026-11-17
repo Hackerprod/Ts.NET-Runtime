@@ -837,6 +837,17 @@ public sealed class Binder
     private static CallParameter ToCallParameter(ParameterSymbol symbol) =>
         new(symbol.Name, symbol.Type, symbol.HasDefault || symbol.Type is TsNullableType, symbol.IsRest);
 
+    // Ciclo 10 (W, W-2): el tipo función de una referencia a función/método,
+    // construido desde sus parámetros declarados y su tipo de retorno.
+    private static TsFunctionType FunctionTypeOf(IReadOnlyList<ParameterSymbol> parameters, TsType returnType) => new(
+        parameters.Select(p => new TsParameter(p.Name, p.Type)
+        {
+            HasDefault = p.HasDefault,
+            DefaultValue = p.DefaultValue,
+            IsRest = p.IsRest
+        }).ToList(),
+        returnType);
+
     private static CallParameter ToCallParameter(TsParameter parameter) =>
         new(parameter.Name, parameter.Type, parameter.HasDefault || parameter.Type is TsNullableType, parameter.IsRest);
 
@@ -3109,6 +3120,10 @@ public sealed class Binder
         {
             _readsOfNeverInitializedLocals.Add((local, id.Range.Start));
         }
+        // Ciclo 10 (W, W-3): una función referenciada como valor se tipa como
+        // función (parámetros + retorno); Symbol.Type sigue siendo el retorno.
+        if (symbol is FunctionSymbol funcSym)
+            return new BoundVariableExpression(symbol, FunctionTypeOf(funcSym.Parameters, funcSym.Type));
         return new BoundVariableExpression(symbol);
     }
 
@@ -3297,6 +3312,24 @@ public sealed class Binder
             return new BoundArrayConstructionExpression(args, new TsArrayType(TsType.Any));
         }
 
+        // Ciclo 10 (W, W-6): llamar a una clase sin `new` es un error de
+        // compilación; en ejecución el guarda de InvokeCallable lanza.
+        // Array(...) retorna antes por su rama propia; String/Boolean/BigInt/
+        // Number son FunctionSymbol (conversiones globales), no ClassSymbol.
+        // Desviación del plan (§2.3 W-6): el fragmento del plan dejaba
+        // `returnType` en `Void`, pero entonces `return C(42)` desde
+        // `main(): int32` añade ADEMÁS el diagnóstico en cascada
+        // "Cannot return 'void'..." (BindReturn, Binder.cs:1887) y el test
+        // §3.40 ("exactamente 1 error") no se cumple (medido: 2 errores).
+        // La corrección mínima es tipar la llamada errónea como `any`
+        // (recuperación de error estándar: IsCompatibleWith(any, T) es
+        // siempre true), así que solo queda el diagnóstico de clase.
+        if (callee is BoundVariableExpression { Symbol: ClassSymbol cls })
+        {
+            _diagnostics.Error($"Class '{cls.Name}' cannot be invoked without 'new'", call.Range.Start);
+            returnType = TsType.Any;
+        }
+
         if (callee is BoundVariableExpression varExpr && varExpr.Symbol is FunctionSymbol funcSym)
         {
             returnType = funcSym.Type;
@@ -3306,18 +3339,39 @@ public sealed class Binder
                 ? null
                 : funcSym.Parameters.Select(ToCallParameter).ToList();
         }
-        else if (callee.Type is TsFunctionType fnType)
-        {
-            returnType = fnType.ReturnType;
-            expectedParams = fnType.Parameters.Select(ToCallParameter).ToList();
-        }
         else if (callee is BoundMemberAccessExpression memberExpr && memberExpr.Member is MethodSymbol methodSym)
         {
+            // Ciclo 10 (W): esta rama va ANTES que la rama TsFunctionType de
+            // abajo, a propósito. Tras W-4 un acceso a método lleva tipo
+            // TsFunctionType como tipo de la expresión, así que la rama por
+            // tipo robaría las llamadas directas a métodos: perdería los
+            // genericParameters (las llamadas genéricas explícitas
+            // diagnosticarían "Type arguments can only be used...") y
+            // construiría expectedParams = [] en vez de null para métodos
+            // sin parámetros (los builtins de aridad variable diagnosticarían
+            // "Expected 0 argument(s)..."). La rama por símbolo conserva el
+            // comportamiento de la base para la llamada directa; la rama por
+            // tipo queda para alias, locales y campos/propiedades.
             returnType = methodSym.Type;
             genericParameters = methodSym.TypeParameters;
             expectedParams = methodSym.Parameters.Count > 0
                 ? methodSym.Parameters.Select(ToCallParameter).ToList()
                 : null;
+        }
+        else if (callee.Type is TsFunctionType fnType)
+        {
+            returnType = fnType.ReturnType;
+            expectedParams = fnType.Parameters.Select(ToCallParameter).ToList();
+        }
+        else if (callee is BoundMemberAccessExpression anyMemberExpr
+            && (anyMemberExpr.Member is FieldSymbol or PropertySymbol)
+            && anyMemberExpr.Type is TsAnyType)
+        {
+            // Ciclo 10 (W, W-5): llamar al valor de un campo/propiedad de tipo
+            // `any` produce `any`, como llamar a una variable `any`. Sin esta
+            // rama el retorno quedaba en `Void` y toda llamada diagnosticaba.
+            returnType = TsType.Any;
+            expectedParams = null;
         }
         else if (callee is BoundSuperExpression superExpr && superExpr.BaseClass.Constructor != null)
         {
@@ -3819,9 +3873,15 @@ public sealed class Binder
             memberSym = new PropertySymbol(member.MemberName, TsType.Void, member.Range);
         }
 
-        var resultType = member.IsNullConditional && memberSym.Type is not TsNullableType
-            ? new TsNullableType(memberSym.Type)
+        // Ciclo 10 (W, W-4, Rev 2 R2): el tipo base de un método referenciado
+        // como valor es su tipo función; el envoltorio TsNullableType del
+        // acceso ?. se aplica después, como antes.
+        var baseType = memberSym is MethodSymbol methodSym
+            ? FunctionTypeOf(methodSym.Parameters, methodSym.Type)
             : memberSym.Type;
+        var resultType = member.IsNullConditional && baseType is not TsNullableType
+            ? new TsNullableType(baseType)
+            : baseType;
 
         if (GetMemberAccessPath(member) is { } accessPath &&
             TryGetTemporaryMemberAccessType(accessPath, out var narrowedType))

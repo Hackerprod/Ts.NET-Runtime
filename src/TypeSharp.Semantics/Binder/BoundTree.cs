@@ -94,7 +94,11 @@ public sealed class BoundLiteralExpression : BoundNode
 public sealed class BoundVariableExpression : BoundNode
 {
     public Symbol Symbol { get; }
-    public BoundVariableExpression(Symbol symbol) : base(BoundNodeKind.VariableExpression, symbol.Type)
+    // Ciclo 10 (W, W-1): una expresión-variable puede llevar un tipo distinto
+    // del de su símbolo (una referencia a función se tipa como TsFunctionType
+    // mientras Symbol.Type sigue siendo el retorno).
+    public BoundVariableExpression(Symbol symbol, TsType? typeOverride = null)
+        : base(BoundNodeKind.VariableExpression, typeOverride ?? symbol.Type)
     {
         Symbol = symbol;
     }

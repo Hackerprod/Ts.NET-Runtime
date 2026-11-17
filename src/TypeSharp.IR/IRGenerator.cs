@@ -1583,6 +1583,14 @@ public sealed class IRGenerator
             else
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0, target));
         }
+        else if (varExpr.Symbol is ClassSymbol cls)
+        {
+            // Ciclo 10 (W, W-7): la clase como valor es su constructor.
+            // `NewObject` no pasa por aquí (toma el nombre de tipo como
+            // operando), así que esta rama solo cubre la clase como valor
+            // (argumento, alias, retorno, `typeof`, `===`).
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0, $"{cls.Name}::.ctor"));
+        }
     }
 
     private void GenerateBinary(BoundBinaryExpression bin)
@@ -1736,6 +1744,35 @@ public sealed class IRGenerator
         if (unary.Operand is BoundVariableExpression target &&
             target.Symbol is (LocalSymbol or ParameterSymbol))
         {
+            if (target.Symbol is LocalSymbol moduleGlobal && IsModuleGlobalSymbol(moduleGlobal))
+            {
+                // Ciclo 10 (X): la global de módulo vive en la tabla de
+                // globales, no en el frame. Misma disciplina de pila que el
+                // campo estático de GenerateMemberIncrement: prefijo deja el
+                // valor nuevo, postfijo deja el valor viejo; en posición de
+                // sentencia lo descarta el Pop de GenerateStatement.
+                string key = GetModuleGlobalKey(moduleGlobal);
+                var globalAddOp = IncrementAddOp(moduleGlobal.Type, unary.Operator);
+                bool globalIsInt64 = moduleGlobal.Type == TsType.Int64;
+                bool globalIsFloat = moduleGlobal.Type == TsType.Float64 || moduleGlobal.Type == TsType.Number || moduleGlobal.Type == TsType.Float32;
+
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadGlobal, 0, 0, key));
+                if (unary.IsPrefix)
+                {
+                    EmitConstOne(globalIsInt64, globalIsFloat);
+                    _currentBlock!.Instructions.Add(new Instruction(globalAddOp));
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+                }
+                else
+                {
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+                    EmitConstOne(globalIsInt64, globalIsFloat);
+                    _currentBlock!.Instructions.Add(new Instruction(globalAddOp));
+                }
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreGlobal, 0, 0, key));
+                return;
+            }
+
             if (IsBoxedSymbol(target.Symbol))
             {
                 GenerateBoxedIncrement(unary, target.Symbol);
@@ -1968,6 +2005,19 @@ public sealed class IRGenerator
 
             if (memberAccess.Member is not MethodSymbol)
             {
+                if (memberAccess.Object is BoundVariableExpression { Symbol: ClassSymbol }
+                    && memberAccess.Member is (FieldSymbol { IsStatic: true } or PropertySymbol { IsStatic: true, HasGetter: true }))
+                {
+                    // Ciclo 10 (W, W-9): el miembro estático guarda un
+                    // callable y no hay objeto receptor: se carga el valor
+                    // del miembro (LoadGlobal para campos, Call al getter
+                    // para propiedades) y se despacha dinámicamente.
+                    GenerateMemberAccess(memberAccess);
+                    for (int i = 0; i < call.Arguments.Count; i++)
+                        GenerateExpression(call.Arguments[i]);
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.CallDynamic, call.Arguments.Count));
+                    return;
+                }
                 GenerateExpression(memberAccess.Object);
                 for (int i = 0; i < call.Arguments.Count; i++)
                     GenerateExpression(call.Arguments[i]);
@@ -2357,6 +2407,23 @@ public sealed class IRGenerator
 
     private void GenerateMemberAccess(BoundMemberAccessExpression member)
     {
+        // Ciclo 10 (W, W-8, Rev 2 R1): el método como valor es su función.
+        // El receptor NO se emite: la llamada por valor antepone el receptor
+        // `Void` en `InvokeCallable`. Solo cuando se conoce la clase
+        // declarante; con receptor de tipo interfaz (DeclaringClassName ==
+        // null) se mantiene el comportamiento actual. Y solo en accesos NO
+        // opcionales: con `?.`, el camino actual cortocircuita a `null`
+        // cuando el receptor es null y la rama no debe puentearlo.
+        // Consecuencia: `C?.f` como valor deja el valor-clase (W-7) en vez
+        // del método; arreglar ese caso es otro ciclo.
+        if (member.Member is MethodSymbol methodSym && methodSym.DeclaringClassName != null
+            && !member.IsNullConditional)
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0,
+                $"{methodSym.DeclaringClassName}::{methodSym.RuntimeName ?? methodSym.Name}"));
+            return;
+        }
+
         if (member.Member is FieldSymbol { IsStatic: true } staticField)
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadGlobal, 0, 0,

@@ -2257,6 +2257,10 @@ public sealed class Interpreter
         if (left is TsUint8ArrayValue lbv && right is TsUint8ArrayValue rbv) return ReferenceEquals(lbv.Value, rbv.Value);
         if (IsBigIntValue(left) || IsBigIntValue(right)) return AsBigInteger(left) == AsBigInteger(right);
         if (IsNumericValue(left) && IsNumericValue(right)) return AsFloat64(left) == AsFloat64(right);
+        // Ciclo 10 (W, W-11): el `==` no estricto entre una función y otra
+        // cosa es `false` vía StrictEquals.
+        if (left is TsFunctionValue || right is TsFunctionValue)
+            return StrictEquals(left, right);
         return false;
     }
 
@@ -2273,6 +2277,13 @@ public sealed class Interpreter
         if (left is TsUint8ArrayValue lbv && right is TsUint8ArrayValue rbv) return ReferenceEquals(lbv.Value, rbv.Value);
         if (IsBigIntValue(left) || IsBigIntValue(right)) return IsBigIntValue(left) && IsBigIntValue(right) && AsBigInteger(left) == AsBigInteger(right);
         if (IsNumericValue(left) && IsNumericValue(right)) return AsFloat64(left) == AsFloat64(right);
+        // Ciclo 10 (W, W-11): dos valores-función son iguales si tienen el
+        // mismo nombre y comparten la misma instancia de capturas. LoadFunc
+        // pasa captured: null -> el singleton Array.Empty compartido, así
+        // que dos cargas del mismo nombre son iguales; MakeClosure pasa un
+        // array nuevo por evaluación, así que dos lambdas distintas no lo son.
+        if (left is TsFunctionValue lf && right is TsFunctionValue rf)
+            return lf.FunctionName == rf.FunctionName && ReferenceEquals(lf.Captured, rf.Captured);
         return false;
     }
 
@@ -2494,6 +2505,13 @@ public sealed class Interpreter
         if (calleeValue is not TsFunctionValue fnValue)
             throw new InvalidOperationException($"Value '{calleeValue}' is not callable");
 
+        // Ciclo 10 (W, W-10): una clase no se invoca sin `new`. `NewObject`
+        // no pasa por aquí (construye el frame del ctor directamente), así
+        // que ningún camino legítimo trae un "::.ctor" a esta función.
+        if (fnValue.FunctionName.EndsWith("::.ctor", StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                $"Class constructor '{fnValue.FunctionName[..^7]}' cannot be invoked without 'new'");
+
         if (Builtins.TryGet(fnValue.FunctionName, out var builtin))
             return builtin(args);
 
@@ -2501,7 +2519,28 @@ public sealed class Interpreter
         {
             var calleeFunc = module.Functions[fnIdx];
             _profile.RecordCall(module.Name, calleeFunc.Name);
-            var newFrame = CreateCallFrame(calleeFunc, caller, args, ctx, fnValue.Captured);
+            // Ciclo 10 (W, W-10): un método llamado por valor no trae
+            // receptor; el parámetro fantasma `this` del slot 0 recibe
+            // `Void` (decisión del ciclo 9: `this` en un estático es `Void`).
+            // Solo los miembros de clase ("C::m") tienen ese parámetro: las
+            // funciones top-level nunca contienen "::" y las lambdas se llaman
+            // "$lambda_...". Una función top-level SÍ puede declarar un
+            // parámetro llamado `this`, por eso la mitad "::" del
+            // discriminador es imprescindible.
+            // Desviación del plan (§2.5): el fragmento del plan leía
+            // `calleeFunc.Parameters[0].Name == "this"`, pero BytecodeFunction
+            // no tiene lista `Parameters` (solo `ParameterCount`): no
+            // compila. La corrección mínima es `ParameterCount > 0`:
+            // GenerateMethodFunction/GenerateAccessorFunction ponen el
+            // fantasma `this` en el slot 0 de forma incondicional
+            // (IRGenerator.cs:503, :613), así que toda función "::" tiene
+            // `this` en el slot 0 y ParameterCount >= 1; los ctores ya
+            // quedaron fuera por el guarda de arriba.
+            var callArgs = calleeFunc.Name.Contains("::", StringComparison.Ordinal)
+                && calleeFunc.ParameterCount > 0
+                ? new[] { TsValue.Void }.Concat(args).ToArray()
+                : args;
+            var newFrame = CreateCallFrame(calleeFunc, caller, callArgs, ctx, fnValue.Captured);
             if (calleeFunc.IsGenerator)
                 return new TsGeneratorValue(module, newFrame);
 

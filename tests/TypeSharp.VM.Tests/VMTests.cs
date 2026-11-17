@@ -3262,6 +3262,675 @@ public class InterpreterTests
         var result = RunWithLimits("function f(): int32 { return 1; } function main(): int32 { let i: int32 = 0; while (i < 1100000) { f() = 5; i++; } return 7; }");
         Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
     }
+
+    // Ciclo 10 — W (núcleo: símbolos de tipo como valores) + X (acompañante:
+    // ++/-- sobre globales de módulo). Tests 1-85 del plan (§3.2-§3.6).
+    // Los tests que afirman "0 diagnósticos" usan BindSourceErrors además
+    // de Run, porque Run ignora los diagnósticos del binder.
+
+    // §3.2 W cara 1 — typeof de funciones y métodos.
+
+    [Fact]
+    public void Typeof_DeclaredFunction_Int32Return()
+    {
+        var result = Run("function f(): int32 { return 1; } function main(): string { return typeof f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_DeclaredFunction_StringReturn()
+    {
+        var result = Run("function f(): string { return 'x'; } function main(): string { return typeof f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_DeclaredFunction_VoidReturn()
+    {
+        var result = Run("function f(): void { } function main(): string { return typeof f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_DeclaredFunction_BoolReturn()
+    {
+        var result = Run("function f(): bool { return true; } function main(): string { return typeof f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_NestedFunction()
+    {
+        var result = Run("function main(): string { function g(): int32 { return 1; } return typeof g; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_StaticMethod_Int32Return()
+    {
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): string { return typeof C.f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_StaticMethod_VoidReturn()
+    {
+        var result = Run("class C { static f(): void { } } function main(): string { return typeof C.f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_StaticMethod_BoolReturn()
+    {
+        var result = Run("class C { static f(): bool { return true; } } function main(): string { return typeof C.f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_StaticMethod_Async()
+    {
+        var result = Run("class C { static async f(n: int32): Promise<int32> { return n; } } function main(): string { return typeof C.f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_InstanceMethod_Int32Return()
+    {
+        var result = Run("class C { m(n: int32): int32 { return n; } } function main(): string { let c = new C(); return typeof c.m; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_InstanceMethod_VoidReturn()
+    {
+        var result = Run("class C { m(): void { } } function main(): string { let c = new C(); return typeof c.m; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_GenericFunction()
+    {
+        var result = Run("function f<T>(x: T): T { return x; } function main(): string { return typeof f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_AsyncFunction()
+    {
+        var result = Run("async function f(): Promise<int32> { return 1; } function main(): string { return typeof f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_NumberGlobal()
+    {
+        var result = Run("function main(): string { return typeof Number; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_NumberAlias()
+    {
+        var result = Run("function main(): string { let N = Number; return typeof N; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_Lambda_Control()
+    {
+        var result = Run("function main(): string { let f = () => 1; return typeof f; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    // §3.3 W cara 2 — clase y método como valor.
+
+    [Fact]
+    public void Typeof_ClassValue()
+    {
+        var result = Run("class C { } function main(): string { return typeof C; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Typeof_ClassWithStaticsValue()
+    {
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): string { return typeof C; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Class_AsArgument_ReturnsTypeof()
+    {
+        var result = Run("class C { } function take(x: any): string { return typeof x; } function main(): string { return take(C); }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void Class_StrictEqualsSelf()
+    {
+        var result = Run("class C { } function main(): bool { return C === C; }");
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+    }
+
+    [Fact]
+    public void ClassAlias_Typeof()
+    {
+        var result = Run("class C { } function main(): string { let K = C; return typeof K; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void ClassAlias_StrictEqualsClass()
+    {
+        var result = Run("class C { } function main(): bool { let K = C; return K === C; }");
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+    }
+
+    [Fact]
+    public void ClassAlias_ReturnsFunctionValue()
+    {
+        var result = Run("class C { } function main(): any { return C; }");
+        Assert.Equal("C::.ctor", Assert.IsType<TsFunctionValue>(result).FunctionName);
+    }
+
+    [Fact]
+    public void ClassAlias_NewInstance()
+    {
+        var result = Run("class C { v: int32; constructor(n: int32) { this.v = n; } } function main(): int32 { let K = C; let c = new K(42); return c.v; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void SpreadCall_StaticMethod()
+    {
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): int32 { return C.f(...[42]); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void OptionalCall_StaticMethod()
+    {
+        // Solo valor: el diagnóstico preexistente
+        // "Cannot return 'int32?' from function returning 'int32'" se mantiene.
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): int32 { return C.f?.(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_AsValue_Call()
+    {
+        const string source = "class C { static f(n: int32): int32 { return n; } } function main(): int32 { let g = C.f; return g(42); }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticMethod_AsValue_Typeof()
+    {
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): string { let g = C.f; return typeof g; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_AsValue_StrictEquals()
+    {
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): bool { return C.f === C.f; }");
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_AsValue_AnyAnnotated_Call()
+    {
+        // Solo valor: el diagnóstico preexistente "Cannot return 'void'..."
+        // se mantiene a propósito (la rama estrecha cubre callees-miembro
+        // de tipo any, no variables any).
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): int32 { let g: any = C.f; return g(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_AsCallback()
+    {
+        const string source = "function apply(fn: (n: int32) => int32): int32 { return fn(5); } class C { static f(n: int32): int32 { return n * 2; } } function main(): int32 { return apply(C.f); }";
+        var result = Run(source);
+        Assert.Equal(10, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticMethod_AsMapCallback()
+    {
+        var result = Run("class C { static f(n: int32): int32 { return n * 2; } } function main(): int32 { let a = [1, 2, 3]; return a.map(C.f)[2]; }");
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_AsValue_DefaultParam()
+    {
+        const string source = "class C { static f(n: int32 = 7): int32 { return n; } } function main(): int32 { let g = C.f; return g(); }";
+        var result = Run(source);
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticMethod_AsValue_RestParam()
+    {
+        const string source = "class C { static f(a: int32, ...rest: int32[]): int32 { return a * 10 + rest.length; } } function main(): int32 { let g = C.f; return g(1, 2, 3); }";
+        var result = Run(source);
+        Assert.Equal(12, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticFieldFunction_Typed_Call()
+    {
+        const string source = "class C { static h: (n: int32) => int32; static { C.h = (n: int32): int32 => { return n; }; } } function main(): int32 { return C.h(42); }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticFieldFunction_Any_Call()
+    {
+        const string source = "class C { static h: any; static { C.h = (n: int32): int32 => { return n; }; } } function main(): int32 { return C.h(42); }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void InstanceMethod_AsValue_Call()
+    {
+        const string source = "class C { v: int32; m(n: int32): int32 { return n; } } function main(): int32 { let c = new C(); let g = c.m; return g(42); }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void InstanceMethod_AsValue_DetachedTouchesThis()
+    {
+        // El método desprendido se llama con this = Void; this.v -> null
+        // y null + 42 -> 42.
+        // Desviación del plan (§3.38): el plan esperaba int64(42) apoyándose
+        // en la sonda M8b (`null + 42` -> int64), pero en ese script el
+        // `null` no estaba tipado y el binario tomaba el camino de
+        // ensanchamiento a int64 (IRGenerator.cs: GenerateBinary, operandos
+        // `any`). Aquí `this.v` y `n` son estáticamente int32, así que el
+        // opcode es Add_I32 y el valor es int32(42) (medido). El valor 42 es
+        // el mismo; solo cambia el tipo de runtime. Se afirma int32(42) con
+        // main(): int32 en vez de int64.
+        var result = Run("class C { v: int32; m(n: int32): int32 { return this.v + n; } } function main(): int32 { let c = new C(); c.v = 10; let g = c.m; return g(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Class_PlainCall_Throws()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            Run("class C { v: int32; constructor(n: int32) { this.v = n; } } function main(): int32 { return C(42); }"));
+        Assert.Contains("cannot be invoked without 'new'", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Class_PlainCall_ReportsDiagnostic()
+    {
+        const string source = "class C { v: int32; constructor(n: int32) { this.v = n; } } function main(): int32 { return C(42); }";
+        var errors = BindSourceErrors(source);
+        Assert.Single(errors);
+        Assert.Contains("Class 'C' cannot be invoked without 'new'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ClassAlias_PlainCall_Throws()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            Run("class C { v: int32; constructor(n: int32) { this.v = n; } } function main(): int32 { let K = C; K(42); return 7; }"));
+        Assert.Contains("cannot be invoked without 'new'", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void InstanceFieldFunction_Control()
+    {
+        const string source = "class C { h: any; } function main(): int32 { let c = new C(); c.h = (n: int32): int32 => { return n * 2; }; return c.h(21); }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    // §3.4 W cara 3 — alias de función y callbacks.
+
+    [Fact]
+    public void FunctionAlias_Typeof()
+    {
+        var result = Run("function f(): int32 { return 1; } function main(): string { let g = f; return typeof g; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void FunctionAlias_Call()
+    {
+        const string source = "function f(): int32 { return 7; } function main(): int32 { let g = f; return g(); }";
+        var result = Run(source);
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FunctionAlias_Call_AssignedToTypedLocal()
+    {
+        const string source = "function f(): int32 { return 7; } function main(): int32 { let g = f; let x: int32 = g(); return x; }";
+        var result = Run(source);
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FunctionAlias_Call_TypeofResult()
+    {
+        var result = Run("function f(): int32 { return 7; } function main(): string { let g = f; return typeof g(); }");
+        Assert.Equal("number", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void FunctionAlias_AsCallback()
+    {
+        const string source = "function apply(fn: (n: int32) => int32): int32 { return fn(5); } function f(n: int32): int32 { return n * 2; } function main(): int32 { let g = f; return apply(g); }";
+        var result = Run(source);
+        Assert.Equal(10, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FunctionDirect_AsCallback()
+    {
+        const string source = "function apply(fn: (n: int32) => int32): int32 { return fn(5); } function f(n: int32): int32 { return n * 2; } function main(): int32 { return apply(f); }";
+        var result = Run(source);
+        Assert.Equal(10, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FunctionAlias_Annotated()
+    {
+        const string source = "function f(n: int32): int32 { return n * 2; } function main(): int32 { let h: (n: int32) => int32 = f; return h(5); }";
+        var result = Run(source);
+        Assert.Equal(10, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void Function_ReturnedAsValue()
+    {
+        const string source = "function f(n: int32): int32 { return n * 2; } function fetchFn(): (n: int32) => int32 { return f; } function main(): int32 { return fetchFn()(5); }";
+        var result = Run(source);
+        Assert.Equal(10, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FunctionAlias_Generic_Typeof()
+    {
+        var result = Run("function f<T>(x: T): T { return x; } function main(): string { let g = f; return typeof g; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void FunctionAlias_Generic_Call()
+    {
+        // Solo valor: la expectativa de diagnósticos post-arreglo queda
+        // abierta por diseño (plan §3.52); D mide y registra el conteo.
+        var result = Run("function f<T>(x: T): T { return x; } function main(): int32 { let g = f; return g(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void OverloadedFunction_Alias_CallInt()
+    {
+        const string source = "function pick(value: string): string; function pick(value: int32): int32; function pick(value: any): any { return value; } function main(): int32 { let g = pick; return g(4); }";
+        var result = Run(source);
+        Assert.Equal(4, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void OverloadedFunction_Alias_CallString()
+    {
+        const string source = "function pick(value: string): string; function pick(value: int32): int32; function pick(value: any): any { return value; } function main(): string { let g = pick; return g('abc'); }";
+        var result = Run(source);
+        Assert.Equal("abc", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FunctionAlias_AnyAnnotated_Typeof()
+    {
+        var result = Run("function f(): int32 { return 7; } function main(): string { let g: any = f; return typeof g; }");
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    // §3.5 Controles W (guardas: pasan antes y después).
+
+    [Fact]
+    public void DirectStaticCall_Control()
+    {
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): int32 { return C.f(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Constructor_Control()
+    {
+        var result = Run("class C { v: int32; constructor(n: int32) { this.v = n; } } function main(): int32 { let c = new C(42); return c.v; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Object_Typeof_Control()
+    {
+        var result = Run("function main(): string { let o = { n: 1 }; return typeof o; }");
+        Assert.Equal("object", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void NumberConversion_Control()
+    {
+        var result = Run("function main(): number { return Number('42'); }");
+        Assert.Equal(42, Assert.IsType<TsFloat64Value>(result).Value);
+    }
+
+    [Fact]
+    public void GlobalIsFinite_Control()
+    {
+        var result = Run("function main(): bool { return isFinite(3); }");
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+    }
+
+    [Fact]
+    public void OptionalCall_PlainFunction_Control()
+    {
+        var result = Run("function f(n: int32): int32 { return n; } function main(): int32 { return f?.(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void MapLambda_Control()
+    {
+        var result = Run("function main(): int32 { let a = [1, 2, 3]; return a.map((x: int32): int32 => { return x * 2; })[2]; }");
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    // Desviación documentada (plan §3.63-§3.64): los nombres
+    // Builtin_MathFloor_Control y Builtin_ArrayIsArray_Control ya existen
+    // en InterpreterTests (tests del ciclo 9, mismo script y misma
+    // aserción). Un duplicado de nombre no compila (CS0111), así que los
+    // dos controles se añaden con sufijo _Cycle10; el contenido es el del
+    // plan y el conteo de 85 tests nuevos se mantiene.
+    [Fact]
+    public void Builtin_MathFloor_Control_Cycle10()
+    {
+        var result = Run("function main(): number { return Math.floor(3.7); }");
+        Assert.Equal(3, Assert.IsType<TsFloat64Value>(result).Value);
+    }
+
+    [Fact]
+    public void Builtin_ArrayIsArray_Control_Cycle10()
+    {
+        var result = Run("function main(): int32 { let b: any = Array.isArray([1]); return b; }");
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+    }
+
+    // §3.6 X — ++/-- sobre globales de módulo.
+
+    [Fact]
+    public void ModuleGlobal_PostfixInMain()
+    {
+        var result = Run("let x: int32 = 5; function main(): int32 { x++; return x; }");
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_PrefixInMain()
+    {
+        var result = Run("let x: int32 = 5; function main(): int32 { ++x; return x; }");
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_PostfixDecrementInMain()
+    {
+        var result = Run("let x: int32 = 5; function main(): int32 { x--; return x; }");
+        Assert.Equal(4, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_PostfixValue()
+    {
+        var result = Run("let x: int32 = 5; function main(): int32 { let y: int32 = x++; return y * 100 + x; }");
+        Assert.Equal(506, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_PrefixValue()
+    {
+        var result = Run("let x: int32 = 5; function main(): int32 { let y: int32 = ++x; return y * 100 + x; }");
+        Assert.Equal(606, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_PrefixDecrementValue()
+    {
+        var result = Run("let x: int32 = 5; function main(): int32 { let y: int32 = --x; return y * 100 + x; }");
+        Assert.Equal(404, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_PostfixDecrementValue()
+    {
+        var result = Run("let x: int32 = 5; function main(): int32 { let y: int32 = x--; return y * 100 + x; }");
+        Assert.Equal(504, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_IncrementFromFunction()
+    {
+        var result = Run("let x: int32 = 0; function inc(): void { x++; } function main(): int32 { inc(); inc(); return x; }");
+        Assert.Equal(2, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_PrefixFromFunctionThreeTimes()
+    {
+        var result = Run("let x: int32 = 0; function inc(): void { ++x; } function main(): int32 { inc(); inc(); inc(); return x; }");
+        Assert.Equal(3, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_PostfixValueFromFunction()
+    {
+        var result = Run("let x: int32 = 5; function inc(): int32 { return x++; } function main(): int32 { let y: int32 = inc(); return y * 100 + x; }");
+        Assert.Equal(506, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_IncrementInMain_ReadFromFunction()
+    {
+        var result = Run("let x: int32 = 5; function get(): int32 { return x; } function main(): int32 { x++; return get(); }");
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_IncrementInClosure()
+    {
+        var result = Run("let x: int32 = 5; function main(): int32 { let f = () => { x++; return x; }; return f(); }");
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_NumberIncrement()
+    {
+        var result = Run("let x: number = 5.5; function main(): number { x++; return x; }");
+        Assert.Equal(6.5, Assert.IsType<TsFloat64Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_Int64Increment()
+    {
+        var result = Run("let x: int64 = 5; function main(): int64 { x++; return x; }");
+        Assert.Equal(6, Assert.IsType<TsInt64Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_Float32Increment()
+    {
+        var result = Run("let x: float32 = 5.5; function main(): number { x++; return x; }");
+        Assert.Equal(6.5, Assert.IsType<TsFloat64Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_UninitializedIncrement()
+    {
+        var result = Run("let x: int32; function main(): int32 { x++; return x; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_IncrementInLoop()
+    {
+        var result = Run("let x: int32 = 0; function main(): int32 { for (let i: int32 = 0; i < 3; i++) { x++; } return x; }");
+        Assert.Equal(3, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_CompoundAssign_Control()
+    {
+        var result = Run("let x: int32 = 5; function inc(): void { x += 1; } function main(): int32 { inc(); return x; }");
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_CompoundAssignInMain_Control()
+    {
+        var result = Run("let x: int32 = 5; function main(): int32 { x += 1; return x; }");
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Local_PostfixValue_Control()
+    {
+        var result = Run("function main(): int32 { let x: int32 = 5; let y: int32 = x++; return y * 100 + x; }");
+        Assert.Equal(506, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ModuleGlobal_N33Counter_CrossCheck()
+    {
+        var result = Run("let calls: int32 = 0; function next(): int32 { calls++; return 1; } function main(): int32 { let a: int32 = next(); return calls * 100 + a; }");
+        Assert.Equal(101, Assert.IsType<TsInt32Value>(result).Value);
+    }
 }
 
 public class TypeCheckingTests
