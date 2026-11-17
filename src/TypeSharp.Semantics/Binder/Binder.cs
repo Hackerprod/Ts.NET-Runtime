@@ -33,6 +33,7 @@ public sealed class Binder
     private bool _currentFunctionIsAsync;
     private bool _currentFunctionIsGenerator;
     private bool _inConstructor;
+    private bool _inStaticInitializer;
     private int _lambdaCounter;
     private int _forOfCounter;
     private int _loopDepth;
@@ -688,6 +689,8 @@ public sealed class Binder
         var prevReturnType = _currentFunctionReturnType;
         var prevIsAsync = _currentFunctionIsAsync;
         var prevIsGenerator = _currentFunctionIsGenerator;
+        var prevInStaticInitializer = _inStaticInitializer;
+        _inStaticInitializer = false;
         _currentFunctionIsAsync = sym.IsAsync;
         _currentFunctionIsGenerator = sym.IsGenerator;
         _currentFunctionReturnType = sym.Type is TsAnyType ? null : BodyReturnType(sym.Type, sym.IsAsync);
@@ -695,6 +698,7 @@ public sealed class Binder
         _currentFunctionReturnType = prevReturnType;
         _currentFunctionIsAsync = prevIsAsync;
         _currentFunctionIsGenerator = prevIsGenerator;
+        _inStaticInitializer = prevInStaticInitializer;
 
         _captureCollectors.RemoveAt(_captureCollectors.Count - 1);
         _functionDepth--;
@@ -839,14 +843,21 @@ public sealed class Binder
 
     // Ciclo 10 (W, W-2): el tipo función de una referencia a función/método,
     // construido desde sus parámetros declarados y su tipo de retorno.
-    private static TsFunctionType FunctionTypeOf(IReadOnlyList<ParameterSymbol> parameters, TsType returnType) => new(
-        parameters.Select(p => new TsParameter(p.Name, p.Type)
-        {
-            HasDefault = p.HasDefault,
-            DefaultValue = p.DefaultValue,
-            IsRest = p.IsRest
-        }).ToList(),
-        returnType);
+    private static TsFunctionType FunctionTypeOf(
+        IReadOnlyList<ParameterSymbol> parameters, TsType returnType,
+        bool hasDynamicSignature = false)
+    {
+        var fnType = new TsFunctionType(
+            parameters.Select(p => new TsParameter(p.Name, p.Type)
+            {
+                HasDefault = p.HasDefault,
+                DefaultValue = p.DefaultValue,
+                IsRest = p.IsRest
+            }).ToList(),
+            returnType);
+        fnType.HasDynamicSignature = hasDynamicSignature;
+        return fnType;
+    }
 
     private static CallParameter ToCallParameter(TsParameter parameter) =>
         new(parameter.Name, parameter.Type, parameter.HasDefault || parameter.Type is TsNullableType, parameter.IsRest);
@@ -990,10 +1001,67 @@ public sealed class Binder
         var members = new List<BoundNode>();
         var prevClass = _currentClassType;
         _currentClassType = classType;
+        var prevInStaticInitializer = _inStaticInitializer;
+        _inStaticInitializer = false;
+        // Z: pre-pase de inicializadores de campo. Se ligan aquí (en orden de
+        // declaración) para que el caso ctor — que puede aparecer antes que los
+        // campos — disponga de todos ellos al insertarlos en el cuerpo, y para
+        // que `this.<campo>` resuelva contra el pre-pase de miembros
+        // (PreDeclareTypeMembers) con independencia del orden.
+        // (El campo `private bool _inStaticInitializer;` se declara en Z-B3.)
+        var boundInitializers = new Dictionary<string, BoundNode>(StringComparer.Ordinal);
+        var instanceInitializerStatements = new List<BoundNode>();
+        foreach (var classMember in classMembers)
+        {
+            if (classMember is not FieldDeclarationSyntax field || field.Initializer == null)
+                continue;
+            var fieldType = ResolveType(field.TypeAnnotation);
+            BoundNode boundInitializer;
+            if (field.IsStatic)
+            {
+                // Z-D8: `this` en un inicializador estático diagnostica (ver Z-B3).
+                // (Rev 3, R2: la variable de guardado se llama `prevStaticFlag` y
+                // no `prevInStaticInitializer`, porque ese nombre ya lo usa el
+                // restablecimiento de M2 a ámbito de método en `BindClassCore`
+                // (Z-B3); un local anidado con el mismo nombre no compila, CS0136.)
+                var prevStaticFlag = _inStaticInitializer;
+                _inStaticInitializer = true;
+                boundInitializer = BindExpression(field.Initializer);
+                _inStaticInitializer = prevStaticFlag;
+            }
+            else
+            {
+                boundInitializer = BindExpression(field.Initializer);
+            }
+            // Z-D9: mismo chequeo que la declaración de variable (Binder.cs:1796).
+            if (!TsType.IsCompatibleWith(boundInitializer.Type, fieldType))
+                _diagnostics.Error(
+                    $"Type mismatch: cannot assign {boundInitializer.Type} to {fieldType}",
+                    field.Range.Start);
+            boundInitializers[field.Name] = boundInitializer;
+            if (!field.IsStatic)
+            {
+                // La asignación sintetizada usa un FieldSymbol construido desde
+                // la entrada pre-registrada, exactamente como hace BindMemberAccess
+                // al resolver `this.<campo>` (Binder.cs:3747-3760).
+                var targetField = new FieldSymbol(field.Name, fieldType, field.Range)
+                {
+                    IsReadonly = field.IsReadonly,
+                    IsStatic = false,
+                    IsAbstract = field.IsAbstract,
+                    IsPrivateName = field.IsPrivateName,
+                    RuntimeName = GetRuntimeFieldName(name, field.Name, field.IsPrivateName)
+                };
+                instanceInitializerStatements.Add(new BoundExpressionStatement(
+                    new BoundAssignmentExpression(
+                        new BoundMemberAccessExpression(new BoundThisExpression(classType), targetField),
+                        boundInitializer)));
+            }
+        }
         int staticOrdinal = 0;
         foreach (var member in classMembers)
         {
-            var bound = BindClassMember(member, classType, staticOrdinal);
+            var bound = BindClassMember(member, classType, boundInitializers, instanceInitializerStatements, staticOrdinal);
             if (bound != null)
             {
                 members.Add(bound);
@@ -1006,16 +1074,35 @@ public sealed class Binder
         _symbolTable.PopScope();
         PopTypeParameters();
 
+        // Z-D3: clase con inicializadores de instancia pero sin ctor explícito:
+        // se sintetiza un `.ctor` que solo ejecuta los inicializadores. No llama
+        // a super() ni reenvía argumentos (eso es AE, no Z). Se registra en
+        // classType.Constructor para que el sistema de tipos refleje que el
+        // `.ctor` existe (consecuencias: §2.3).
+        if (instanceInitializerStatements.Count > 0
+            && !members.Any(m => m is BoundConstructorDeclaration))
+        {
+            var defaultCtorSym = new MethodSymbol("constructor", TsType.Void, range);
+            defaultCtorSym.IsStatic = false;
+            defaultCtorSym.AccessModifier = TsAccessModifier.Public;
+            classType.Constructor = new TsMethod("constructor", TsType.Void, new List<TsParameter>());
+            members.Add(new BoundConstructorDeclaration(name, defaultCtorSym,
+                new BoundBlockStatement(instanceInitializerStatements)));
+        }
+
         var declaration = new BoundClassDeclaration(sym, members);
         if (decorators != null)
             declaration.Decorators.AddRange(decorators.Select(decorator => BindExpression(decorator.Expression)));
         ValidateAbstractImplementation(classType, range.Start);
         if (defineSymbol && sym.IsExported)
             _exports[exportName ?? name] = sym;
+        _inStaticInitializer = prevInStaticInitializer;
         return declaration;
     }
 
-    private BoundNode? BindClassMember(SyntaxNode member, TsClassType classType, int staticOrdinal = 0)
+    private BoundNode? BindClassMember(SyntaxNode member, TsClassType classType,
+        Dictionary<string, BoundNode> boundInitializers,
+        List<BoundNode> instanceInitializerStatements, int staticOrdinal = 0)
     {
         switch (member)
         {
@@ -1075,10 +1162,36 @@ public sealed class Binder
                                 new FieldSymbol(p.Name, paramSym.Type, p.Range)),
                             new BoundVariableExpression(paramSym))));
                 }
+                // Z-D2: número de asignaciones de parámetros de propiedad, capturado
+                // ANTES de añadir el bloque de usuario. 0 cuando no hay parámetros
+                // de propiedad (el `if` no corre y el cuerpo de usuario es el propio
+                // bloque exterior).
+                var propertyAssignmentCount = propertyAssignments.Count;
                 if (propertyAssignments.Count > 0)
                 {
                     propertyAssignments.Add(body!);
                     body = new BoundBlockStatement(propertyAssignments);
+                }
+
+                // Z-D2: los inicializadores de instancia corren en orden de declaración,
+                // tras super() si es la primera sentencia de usuario, si no al inicio del
+                // cuerpo (tras las asignaciones de parámetros de propiedad), y siempre
+                // antes del resto del cuerpo. El cuerpo del ctor es siempre un
+                // BoundBlockStatement; con parámetros de propiedad, el cuerpo de usuario
+                // es el último elemento (un bloque anidado). Statements es una List
+                // mutable: la inserción in situ es suficiente, no se reemplaza el nodo.
+                // `propertyAssignmentCount` es el Count capturado arriba, antes del Add.
+                if (instanceInitializerStatements.Count > 0)
+                {
+                    var bodyBlock = (BoundBlockStatement)body!;
+                    var userBlock = propertyAssignmentCount > 0
+                        ? (BoundBlockStatement)bodyBlock.Statements[propertyAssignmentCount]
+                        : bodyBlock;
+                    int insertAt = userBlock.Statements.Count > 0
+                        && userBlock.Statements[0] is BoundExpressionStatement
+                            { Expression: BoundCallExpression { Callee: BoundSuperExpression } }
+                        ? 1 : 0;
+                    userBlock.Statements.InsertRange(insertAt, instanceInitializerStatements);
                 }
 
                 return new BoundConstructorDeclaration(classType.Name, ctorSym, body!);
@@ -1104,6 +1217,8 @@ public sealed class Binder
                     RuntimeName = fieldSym.RuntimeName
                 };
                 var boundField = new BoundFieldInitializer(classType.Name, fieldSym);
+                if (boundInitializers.TryGetValue(field.Name, out var preboundInitializer))
+                    boundField.Initializer = preboundInitializer;
                 boundField.Decorators.AddRange(field.Decorators.Select(decorator => BindExpression(decorator.Expression)));
                 return boundField;
             }
@@ -3123,7 +3238,7 @@ public sealed class Binder
         // Ciclo 10 (W, W-3): una función referenciada como valor se tipa como
         // función (parámetros + retorno); Symbol.Type sigue siendo el retorno.
         if (symbol is FunctionSymbol funcSym)
-            return new BoundVariableExpression(symbol, FunctionTypeOf(funcSym.Parameters, funcSym.Type));
+            return new BoundVariableExpression(symbol, FunctionTypeOf(funcSym.Parameters, funcSym.Type, funcSym.HasDynamicSignature));
         return new BoundVariableExpression(symbol);
     }
 
@@ -3361,7 +3476,13 @@ public sealed class Binder
         else if (callee.Type is TsFunctionType fnType)
         {
             returnType = fnType.ReturnType;
-            expectedParams = fnType.Parameters.Select(ToCallParameter).ToList();
+            // (1): un builtin de aridad flexible por alias no valida aridad,
+            // igual que por llamada directa (rama MethodSymbol tras D4, y rama
+            // FunctionSymbol con HasDynamicSignature). Una función declarada
+            // con 0 parámetros sigue diagnosticando (la marca es false).
+            expectedParams = fnType.HasDynamicSignature
+                ? null
+                : fnType.Parameters.Select(ToCallParameter).ToList();
         }
         else if (callee is BoundMemberAccessExpression anyMemberExpr
             && (anyMemberExpr.Member is FieldSymbol or PropertySymbol)
@@ -3877,7 +3998,7 @@ public sealed class Binder
         // como valor es su tipo función; el envoltorio TsNullableType del
         // acceso ?. se aplica después, como antes.
         var baseType = memberSym is MethodSymbol methodSym
-            ? FunctionTypeOf(methodSym.Parameters, methodSym.Type)
+            ? FunctionTypeOf(methodSym.Parameters, methodSym.Type, methodSym.HasDynamicSignature)
             : memberSym.Type;
         var resultType = member.IsNullConditional && baseType is not TsNullableType
             ? new TsNullableType(baseType)
@@ -4006,7 +4127,8 @@ public sealed class Binder
     {
         return new MethodSymbol(name, returnType, range)
         {
-            DeclaringClassName = declaringClass
+            DeclaringClassName = declaringClass,
+            HasDynamicSignature = true
         };
     }
 
@@ -4024,6 +4146,7 @@ public sealed class Binder
             IsStatic = method.IsStatic,
             IsAbstract = method.IsAbstract,
             IsPrivateName = method.IsPrivateName,
+            HasDynamicSignature = declaringClass != null && IsBuiltinStaticNamespace(declaringClass),
             RuntimeName = method.RuntimeName
         };
         sym.TypeParameters.AddRange(method.TypeParameters.Select(CloneTypeParameter));
@@ -4314,6 +4437,16 @@ public sealed class Binder
     private BoundThisExpression BindThis(ThisExpressionSyntax thisExpr)
     {
         var type = _currentClassType ?? new TsClassType("Unknown");
+        if (_inStaticInitializer)
+        {
+            // Z-D8: en un inicializador estático no hay instancia; `this` no es
+            // la clase (ver §2.3: en métodos estáticos es Void, en bloques static
+            // revienta, E52) — se diagnostica en vez de emitir un LoadThis que
+            // depende de los locales del frame. La clase se referencia por nombre.
+            _diagnostics.Error("'this' cannot be used in a static field initializer",
+                thisExpr.Range.Start);
+            return new BoundThisExpression(type);
+        }
         if (_currentThisSymbol != null)
             RegisterPossibleCapture(_currentThisSymbol);
         return new BoundThisExpression(type);

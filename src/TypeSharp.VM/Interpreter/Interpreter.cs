@@ -1168,7 +1168,8 @@ public sealed class Interpreter
                         TsInt32Value or TsFloat32Value or
                         TsFloat64Value or TsDecimalValue => "number",
                         TsFunctionValue => "function",
-                        TsNull or TsVoid => "undefined",
+                        TsNull => "object",
+                        TsVoid => "undefined",
                         _ => "object"
                     }));
                     break;

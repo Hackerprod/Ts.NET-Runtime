@@ -3931,6 +3931,474 @@ public class InterpreterTests
         var result = Run("let calls: int32 = 0; function next(): int32 { calls++; return 1; } function main(): int32 { let a: int32 = next(); return calls * 100 + a; }");
         Assert.Equal(101, Assert.IsType<TsInt32Value>(result).Value);
     }
+    // ===== Ciclo 11: Z (inicializadores de campo), F (for sin condicion), =====
+    // ===== M (typeof null) y (1) (alias de builtin sin diagnostico espurio) =====
+
+    // --- Z instancia (§3.2) ---
+
+    [Fact]
+    public void FieldInitializer_Instance_Literal()
+    {
+        var result = Run("class C { v: int32 = 42; } function main(): int32 { return new C().v; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors("class C { v: int32 = 42; } function main(): int32 { return new C().v; }"));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_Expression()
+    {
+        var result = Run("class C { v: int32 = 6 * 7; } function main(): int32 { return new C().v; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors("class C { v: int32 = 6 * 7; } function main(): int32 { return new C().v; }"));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_String()
+    {
+        var result = Run("class C { v: string = 'hi'; } function main(): string { return new C().v; }");
+        Assert.Equal("hi", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors("class C { v: string = 'hi'; } function main(): string { return new C().v; }"));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_SideEffectOrder()
+    {
+        const string source = "let log: int32 = 0; function f(n: int32): int32 { log = log * 10 + n; return n; } class C { a: int32 = f(1); b: int32 = f(2); } function main(): int32 { let c = new C(); return log * 100 + c.a * 10 + c.b; }";
+        var result = Run(source);
+        Assert.Equal(1212, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_ReadsEarlierField()
+    {
+        const string source = "class C { a: int32 = 5; b: int32 = this.a + 1; } function main(): int32 { return new C().b; }";
+        var result = Run(source);
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_ReadsLaterField()
+    {
+        const string source = "class C { a: int32 = this.b; b: int32 = 2; } function main(): int32 { let c = new C(); return c.a; }";
+        var result = Run(source);
+        Assert.IsType<TsNull>(result);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_ReadsOwnField()
+    {
+        const string source = "class C { v: int32 = this.v + 1; } function main(): int32 { return new C().v; }";
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_CtorAssignWins()
+    {
+        const string source = "class C { v: int32 = 42; constructor() { this.v = 7; } } function main(): int32 { return new C().v; }";
+        var result = Run(source);
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_Readonly()
+    {
+        const string source = "class C { readonly v: int32 = 42; } function main(): int32 { return new C().v; }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_ReadonlyAssignInCtor_ReportsDiagnostic()
+    {
+        var errors = BindSourceErrors("class C { readonly v: int32; constructor() { this.v = 5; } } function main(): int32 { return new C().v; }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to readonly member 'v'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_ThisIsInstance()
+    {
+        const string source = "class C { v: any = this; } function main(): string { return typeof new C().v; }";
+        var result = Run(source);
+        Assert.Equal("object", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Derived_SuperFirst()
+    {
+        const string source = "class A { v: int32 = 1; constructor() { this.v = 2; } } class B extends A { v: int32 = 3; constructor() { super(); } } function main(): int32 { return new B().v; }";
+        var result = Run(source);
+        Assert.Equal(3, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Derived_SuperNotFirst()
+    {
+        const string source = "class A { v: int32 = 1; constructor() { this.v = 2; } } class B extends A { v: int32 = 3; w: int32; constructor() { this.w = 9; super(); } } function main(): int32 { let b = new B(); return b.v * 100 + b.w; }";
+        var result = Run(source);
+        Assert.Equal(209, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Derived_NoSuper_OwnRuns()
+    {
+        const string source = "class A { v: int32 = 1; constructor() { this.v = 2; } } class B extends A { w: int32 = 3; constructor() { this.w = 4; } } function main(): int32 { return new B().w; }";
+        var result = Run(source);
+        Assert.Equal(4, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Derived_NoSuper_BaseStaysNull()
+    {
+        const string source = "class A { v: int32 = 1; constructor() { this.v = 2; } } class B extends A { w: int32 = 3; constructor() { this.w = 4; } } function main(): int32 { return new B().v; }";
+        var result = Run(source);
+        Assert.IsType<TsNull>(result);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_NoCtor_NewWithArgs_ReportsDiagnostic()
+    {
+        const string source = "class C { v: int32 = 42; } function main(): int32 { let c = new C(7); return c.v; }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        var errors = BindSourceErrors(source);
+        Assert.Single(errors);
+        Assert.Contains("Expected 0 argument(s) but got 1", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FieldInitializer_SuperAgainstInitializerOnlyBase()
+    {
+        const string source = "class A { v: int32 = 1; } class B extends A { constructor() { super(); } } function main(): int32 { return new B().v; }";
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_PrivateField()
+    {
+        const string source = "class C { #v: int32 = 42; get(): int32 { return this.#v; } } function main(): int32 { return new C().get(); }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_PropertyParamOrder()
+    {
+        const string source = "class C { v: int32 = this.w + 1; constructor(private w: int32) { } } function main(): int32 { return new C(5).v; }";
+        var result = Run(source);
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void FieldInitializer_Instance_ClassReference()
+    {
+        const string source = "class C { v: any = C; } function main(): string { let c = new C(); return typeof c.v; }";
+        var result = Run(source);
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    // --- Z estatico (§3.3) ---
+
+    [Fact]
+    public void StaticFieldInitializer_Literal()
+    {
+        const string source = "class C { static v: int32 = 42; } function main(): int32 { return C.v; }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticFieldInitializer_String()
+    {
+        const string source = "class C { static v: string = 'hi'; } function main(): string { return C.v; }";
+        var result = Run(source);
+        Assert.Equal("hi", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticFieldInitializer_SideEffect()
+    {
+        const string source = "let seen: int32 = 0; function f(): int32 { seen = 1; return 7; } class C { static v: int32 = f(); } function main(): int32 { return C.v * 10 + seen; }";
+        var result = Run(source);
+        Assert.Equal(71, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticFieldInitializer_ReadsEarlierStatic()
+    {
+        const string source = "class C { static a: int32 = 5; static b: int32 = C.a + 1; } function main(): int32 { return C.b; }";
+        var result = Run(source);
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticFieldInitializer_Interleaved_BlockAfter()
+    {
+        const string source = "class C { static v: int32 = 10; static { C.v = C.v + 1; } } function main(): int32 { return C.v; }";
+        var result = Run(source);
+        Assert.Equal(11, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticFieldInitializer_Interleaved_BlockBefore()
+    {
+        const string source = "class C { static { C.v = 5; } static v: int32 = 10; } function main(): int32 { return C.v; }";
+        var result = Run(source);
+        Assert.Equal(10, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticFieldInitializer_Interleaved_TwoBlocks()
+    {
+        const string source = "let order: string = ''; class C { static a: int32 = 1; static { order = order + 'a'; } static b: int32 = 2; static { order = order + 'b'; } } function main(): string { return order + (C.a * 10 + C.b); }";
+        var result = Run(source);
+        Assert.Equal("ab12", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void StaticFieldInitializer_This_ReportsDiagnostic()
+    {
+        var errors = BindSourceErrors("class C { static v: any = this; } function main(): string { return typeof C.v; }");
+        Assert.Single(errors);
+        Assert.Contains("'this' cannot be used in a static field initializer", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StaticFieldInitializer_ClassReference()
+    {
+        const string source = "class C { static v: any = C; } function main(): string { return typeof C.v; }";
+        var result = Run(source);
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    // --- F: for sin condicion (§3.4) ---
+
+    [Fact]
+    public void ForNoCondition_BreakByCounter()
+    {
+        const string source = "function main(): int32 { let i: int32 = 0; for (let j: int32 = 0; ; j++) { i++; if (i >= 3) break; } return i; }";
+        var result = Run(source);
+        Assert.Equal(3, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void ForNoCondition_Return()
+    {
+        const string source = "function main(): int32 { for (;;) { return 7; } return 0; }";
+        var result = Run(source);
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void ForNoCondition_Continue()
+    {
+        const string source = "function main(): int32 { let i: int32 = 0; for (;;) { i++; if (i < 3) continue; break; } return i; }";
+        var result = Run(source);
+        Assert.Equal(3, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void ForNoCondition_IteratorRuns()
+    {
+        const string source = "function main(): int32 { let i: int32 = 0; let j: int32 = 0; for (; ; j++) { i++; if (i >= 3) break; } return i * 100 + j; }";
+        var result = Run(source);
+        Assert.Equal(302, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void ForWithCondition_Control()
+    {
+        const string source = "function main(): int32 { let i: int32 = 0; for (let k: int32 = 0; k < 3; k++) { i++; } return i * 10; }";
+        var result = Run(source);
+        Assert.Equal(30, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    // --- M: typeof null (§3.5) ---
+
+    [Fact]
+    public void Typeof_Null()
+    {
+        const string source = "function main(): string { return typeof null; }";
+        var result = Run(source);
+        Assert.Equal("object", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void Typeof_NullVariable()
+    {
+        const string source = "function main(): string { let x: any = null; return typeof x; }";
+        var result = Run(source);
+        Assert.Equal("object", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void Typeof_UninitializedLocal_Control()
+    {
+        const string source = "function main(): string { let u: any; return typeof u; }";
+        var result = Run(source);
+        Assert.Equal("undefined", Assert.IsType<TsStringValue>(result).Value);
+        var errors = BindSourceErrors(source);
+        Assert.Single(errors);
+        Assert.Contains("Variable 'u' is used before being assigned", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Typeof_Void_Control()
+    {
+        const string source = "function main(): string { return typeof void 0; }";
+        var result = Run(source);
+        Assert.Equal("undefined", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void NullEqualsUndefined_Control()
+    {
+        const string source = "function main(): bool { return null == undefined; }";
+        var result = Run(source);
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void Typeof_NullReturn()
+    {
+        const string source = "function f(): any { return null; } function main(): string { return typeof f(); }";
+        var result = Run(source);
+        Assert.Equal("object", Assert.IsType<TsStringValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    // --- (1): alias de builtin (§3.6) ---
+
+    [Fact]
+    public void AliasBuiltin_MathFloor_NoDiagnostic()
+    {
+        const string source = "function main(): number { let g = Math.floor; return g(3.7); }";
+        var result = Run(source);
+        Assert.Equal(3, Assert.IsType<TsFloat64Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void AliasBuiltin_ArrayIsArray_NoDiagnostic()
+    {
+        const string source = "function main(): bool { let g = Array.isArray; return g([1]); }";
+        var result = Run(source);
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void AliasBuiltin_MathMax_NoDiagnostic()
+    {
+        const string source = "function main(): number { let g = Math.max; return g(1, 2, 3); }";
+        var result = Run(source);
+        Assert.Equal(3, Assert.IsType<TsFloat64Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void AliasDeclared_ZeroParams_StillDiagnoses()
+    {
+        const string source = "function f(): int32 { return 1; } function main(): int32 { let g = f; return g(1); }";
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+        var errors = BindSourceErrors(source);
+        Assert.Single(errors);
+        Assert.Contains("Expected 0 argument(s) but got 1", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AliasDeclared_OneParam_StillDiagnoses()
+    {
+        const string source = "function f(n: int32): int32 { return n; } function main(): int32 { let g = f; return g(1, 2); }";
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+        var errors = BindSourceErrors(source);
+        Assert.Single(errors);
+        Assert.Contains("Expected 1 argument(s) but got 2", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DirectBuiltinCall_MathFloor_Control()
+    {
+        const string source = "function main(): number { return Math.floor(3.7); }";
+        var result = Run(source);
+        Assert.Equal(3, Assert.IsType<TsFloat64Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void DirectBuiltinCall_ArrayIsArray_Control()
+    {
+        const string source = "function main(): bool { return Array.isArray([1]); }";
+        var result = Run(source);
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void AliasBuiltin_ParseInt_NoDiagnostic()
+    {
+        const string source = "function main(): number { let g = parseInt; return g('42'); }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsFloat64Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void AliasBuiltin_NumberConversion_NoDiagnostic()
+    {
+        const string source = "function main(): number { let g = Number; return g('42'); }";
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsFloat64Value>(result).Value);
+        Assert.Empty(BindSourceErrors(source));
+    }
+
+    [Fact]
+    public void AliasDeclared_StaticMethodZeroParams_StillDiagnoses()
+    {
+        const string source = "class C { static f(): int32 { return 1; } } function main(): int32 { let g = C.f; return g(1); }";
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+        var errors = BindSourceErrors(source);
+        Assert.Single(errors);
+        Assert.Contains("Expected 0 argument(s) but got 1", errors[0].Message, StringComparison.Ordinal);
+    }
+
 }
 
 public class TypeCheckingTests
@@ -5502,4 +5970,5 @@ public class IROptimizerTests
         var result = RunOptimized("function main(): int32 { let x: int32 = 5; let y: int32 = 7; x = y; return x; }");
         Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
     }
+
 }

@@ -763,6 +763,7 @@ public sealed class BoundFieldInitializer : BoundNode
     public string ClassName { get; }
     public FieldSymbol Field { get; }
     public List<BoundNode> Decorators { get; } = new();
+    public BoundNode? Initializer { get; set; }
 
     public BoundFieldInitializer(string className, FieldSymbol field)
         : base(BoundNodeKind.FieldInitializer, TsType.Void)

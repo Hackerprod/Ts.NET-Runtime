@@ -85,7 +85,8 @@ public sealed class IRGenerator
                                  m is BoundStaticBlock ||
                                  m is BoundMethodDeclaration { Decorators.Count: > 0 } ||
                                  m is BoundAccessorDeclaration { Decorators.Count: > 0 } ||
-                                 m is BoundFieldInitializer { Decorators.Count: > 0 })))
+                                 m is BoundFieldInitializer { Decorators.Count: > 0 } ||
+                                 m is BoundFieldInitializer { Field.IsStatic: true, Initializer: not null })))
             .ToList();
         if (executableMembers.Count == 0)
             return null;
@@ -180,6 +181,7 @@ public sealed class IRGenerator
                 break;
             case BoundFieldInitializer field:
                 foreach (var decorator in field.Decorators) CollectCaptureInfo(decorator);
+                if (field.Initializer != null) CollectCaptureInfo(field.Initializer);
                 break;
             case BoundStaticBlock staticBlock:
                 CollectCaptureInfo(staticBlock.Body);
@@ -688,8 +690,25 @@ public sealed class IRGenerator
 
     private void GenerateClassRuntimeInitializer(BoundClassDeclaration cls)
     {
-        foreach (var staticBlock in cls.Members.OfType<BoundStaticBlock>().OrderBy(b => b.Ordinal))
-            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 0, $"{staticBlock.ClassName}::static:{staticBlock.Ordinal}"));
+        // Z-D8: inicializadores estáticos intercalados con bloques `static` por
+        // posición textual (una sola pasada sobre cls.Members, en orden de
+        // declaración). La clave global es la misma que construye BindMemberAccess
+        // para campos estáticos ($static:Clase:campo, Binder.cs:3757-3760).
+        foreach (var member in cls.Members)
+        {
+            switch (member)
+            {
+                case BoundStaticBlock staticBlock:
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 0,
+                        $"{staticBlock.ClassName}::static:{staticBlock.Ordinal}"));
+                    break;
+                case BoundFieldInitializer field when field.Field.IsStatic && field.Initializer != null:
+                    GenerateExpression(field.Initializer);
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreGlobal, 0, 0,
+                        $"$static:{cls.Symbol.Name}:{field.Field.Name}"));
+                    break;
+            }
+        }
 
         foreach (var member in cls.Members)
         {
@@ -1105,8 +1124,13 @@ public sealed class IRGenerator
         {
             GenerateExpression(forStmt.Condition);
             EmitBranchTrue(bodyBlock.Id);
+            EmitBranch(afterBlock.Id);
         }
-        EmitBranch(afterBlock.Id);
+        else
+        {
+            // F: sin condición el bucle es infinito (solo `break`/`return` salen).
+            EmitBranch(bodyBlock.Id);
+        }
 
         _currentBlock = bodyBlock;
         _breakTargets.Push(afterBlock.Id);

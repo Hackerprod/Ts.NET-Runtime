@@ -117,6 +117,7 @@ public sealed class MethodSymbol : Symbol
     public bool IsStatic { get; set; }
     public bool IsAbstract { get; set; }
     public bool IsPrivateName { get; set; }
+    public bool HasDynamicSignature { get; set; }
     public string? RuntimeName { get; set; }
     public TypeSystem.TsAccessModifier AccessModifier { get; set; }
 

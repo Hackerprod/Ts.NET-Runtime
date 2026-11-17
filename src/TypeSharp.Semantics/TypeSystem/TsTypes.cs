@@ -120,7 +120,10 @@ public abstract class TsType : IEquatable<TsType>
                     HasDefault = p.HasDefault,
                     DefaultValue = p.DefaultValue
                 }).ToList(),
-                Substitute(function.ReturnType, genericArguments)),
+                Substitute(function.ReturnType, genericArguments))
+            {
+                HasDynamicSignature = function.HasDynamicSignature
+            },
             TsGenericType generic => new TsGenericType(
                 Substitute(generic.Definition, genericArguments),
                 generic.TypeArguments.Select(t => Substitute(t, genericArguments)).ToList()),
@@ -640,6 +643,7 @@ public sealed class TsFunctionType : TsType
 {
     public List<TsParameter> Parameters { get; }
     public TsType ReturnType { get; }
+    public bool HasDynamicSignature { get; set; }
     public override string Name => $"({string.Join(", ", Parameters.Select(p => p.Type.Name))}) => {ReturnType.Name}";
     public override bool IsValueType => false;
     public override bool IsReferenceType => true;
