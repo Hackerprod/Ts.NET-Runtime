@@ -67,8 +67,8 @@ public sealed class IRGenerator
             }
             else if (member is BoundClassDeclaration cls)
             {
-                _generatedClasses.Add(cls.Symbol.Name);
-                GenerateClass(module, cls);
+                if (_generatedClasses.Add(cls.Symbol.Name))
+                    GenerateClass(module, cls);
                 DrainLiftedFunctions(module);
             }
         }
@@ -796,6 +796,11 @@ public sealed class IRGenerator
                     GenerateStatement(stmt);
                 break;
             case BoundClassDeclaration cls:
+                // AG: la declaración de clase local emite su inicializador de
+                // ejecución en el punto de la declaración (estáticos y bloques
+                // `static`, como a nivel superior) y se encola para que
+                // `DrainLiftedFunctions` emita sus funciones (.ctor, métodos).
+                _liftedClasses.Enqueue(cls);
                 GenerateClassRuntimeInitializer(cls);
                 break;
 
@@ -1378,7 +1383,13 @@ public sealed class IRGenerator
                 break;
             case BoundClassExpression classExpression:
                 _liftedClasses.Enqueue(classExpression.Declaration);
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_String, 0, 0, classExpression.Declaration.Symbol.Name));
+                // AG: los estáticos de la expresión de clase corren al evaluarla
+                // (AG-D4), y su valor es el constructor, como una clase declarada
+                // como valor (W-7). El `LoadConst_String` anterior filtraba el
+                // nombre interno como valor (`typeof` → "string").
+                GenerateClassRuntimeInitializer(classExpression.Declaration);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0,
+                    $"{classExpression.Declaration.Symbol.Name}::.ctor"));
                 break;
             case BoundCastExpression cast:
                 GenerateExpression(cast.Operand);
@@ -2029,7 +2040,10 @@ public sealed class IRGenerator
 
             if (memberAccess.Member is not MethodSymbol)
             {
-                if (memberAccess.Object is BoundVariableExpression { Symbol: ClassSymbol }
+                // AG: una variable local con `ClassValue` también accede por
+                // la puerta estática, como un `ClassSymbol`.
+                if ((memberAccess.Object is BoundVariableExpression { Symbol: ClassSymbol }
+                        || memberAccess.Object is BoundVariableExpression { Symbol: LocalSymbol { ClassValue: not null } })
                     && memberAccess.Member is (FieldSymbol { IsStatic: true } or PropertySymbol { IsStatic: true, HasGetter: true }))
                 {
                     // Ciclo 10 (W, W-9): el miembro estático guarda un
@@ -2060,7 +2074,10 @@ public sealed class IRGenerator
             // listas de parámetros vacías y leerían el ficticio como primer
             // argumento. Un estático de usuario sin parámetros tampoco lo
             // necesita: su slot 0 ya es `Void` por inicialización del frame.
-            bool isStatic = memberAccess.Object is BoundVariableExpression { Symbol: ClassSymbol };
+            // AG: una variable local con `ClassValue` también accede por la
+            // puerta estática, como un `ClassSymbol`.
+            bool isStatic = memberAccess.Object is BoundVariableExpression { Symbol: ClassSymbol }
+                || memberAccess.Object is BoundVariableExpression { Symbol: LocalSymbol { ClassValue: not null } };
             bool emitDummyReceiver = isStatic
                 && memberAccess.Member is MethodSymbol staticMethodSym
                 && staticMethodSym.Parameters.Count > 0;
@@ -2072,8 +2089,15 @@ public sealed class IRGenerator
                 GenerateExpression(call.Arguments[i]);
 
             string funcName = "";
+            // AG: el nombre de la clase sale del símbolo que corresponda
+            // (`ClassSymbol` o el `ClassValue` de la variable local).
             string className = isStatic
-                ? ((ClassSymbol)((BoundVariableExpression)memberAccess.Object).Symbol).Name
+                ? memberAccess.Object switch
+                {
+                    BoundVariableExpression { Symbol: ClassSymbol cs } => cs.Name,
+                    BoundVariableExpression { Symbol: LocalSymbol { ClassValue: { } cv } } => cv.Name,
+                    _ => GetClassName(memberAccess.Object.Type)
+                }
                 : GetClassName(memberAccess.Object.Type);
 
             if (memberAccess.Member is MethodSymbol methodSym)

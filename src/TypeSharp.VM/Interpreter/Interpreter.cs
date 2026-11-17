@@ -417,6 +417,11 @@ public sealed class Interpreter
                     var obj = frame.Pop();
                     if (obj is TsObjectValue objVal)
                         objVal.Value.SetField(fieldName, value);
+                    // AI: la escritura por punto sobre `null` lanza, como el
+                    // camino de índice (`StoreElement`); los demás receptores
+                    // no-objeto conservan el no-op silencioso de hoy.
+                    else if (obj is TsNull)
+                        throw new InvalidOperationException("Cannot index a null value");
                     break;
                 }
 

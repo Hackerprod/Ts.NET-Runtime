@@ -50,6 +50,12 @@ public sealed class LocalSymbol : Symbol
     public bool DeclaredWithoutInitializer { get; set; }
     public bool HasKnownAssignment { get; set; }
 
+    // La variable contiene el valor-clase de una expresión de clase
+    // (`let C = class {...}`) o de una clase declarada (`let K = C`): los
+    // accesos a miembro sobre ella son estáticos (AG-D5). Se fija al declarar
+    // la variable y se actualiza/limpia en cada reasignación (BindAssignment).
+    public ClassSymbol? ClassValue { get; set; }
+
     // Captured by a nested function: storage becomes a heap box so the
     // closure and the declaring frame share one mutable cell.
     public bool IsCaptured { get; set; }

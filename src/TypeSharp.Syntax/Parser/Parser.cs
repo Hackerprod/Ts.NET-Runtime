@@ -1137,6 +1137,7 @@ public sealed class Parser
             TokenKind.TryKeyword => ParseTryStatement(),
             TokenKind.LetKeyword => ParseVariableStatement(false),
             TokenKind.ConstKeyword => ParseVariableStatement(true),
+            TokenKind.ClassKeyword => ParseClassDeclaration(new List<SyntaxToken>()),
             TokenKind.Semicolon => new ExpressionStatementSyntax(
                 new LiteralExpressionSyntax(Advance(), Peek().Location), Peek().Location),
             _ => ParseExpressionStatement(),

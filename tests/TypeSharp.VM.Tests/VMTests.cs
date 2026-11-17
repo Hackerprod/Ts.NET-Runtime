@@ -4399,6 +4399,324 @@ public class InterpreterTests
         Assert.Contains("Expected 0 argument(s) but got 1", errors[0].Message, StringComparison.Ordinal);
     }
 
+    // Ciclo 12 (AG): clases locales como declaraciones.
+
+    [Fact]
+    public void LocalClass_StaticField()
+    {
+        const string source = "function main(): int32 { class C { static v: int32 = 42; } return C.v; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_StaticMethod()
+    {
+        const string source = "function main(): int32 { class C { static v: int32 = 42; static f(): int32 { return C.v; } } return C.f(); }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_StaticReadModifyWrite()
+    {
+        const string source = "function main(): int32 { class C { static calls: int32 = 0; } C.calls = C.calls + 1; return C.calls; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_StaticMethodDerived()
+    {
+        const string source = "function main(): int32 { class A { static f(): int32 { return 1; } } class B extends A { static g(): int32 { return 2; } } return B.g(); }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(2, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_Typeof()
+    {
+        const string source = "function main(): string { class C { v: int32 = 1; } return typeof C; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_AliasCallsStatic()
+    {
+        const string source = "function main(): int32 { class C { static f(n: int32): int32 { return n * 2; } } let K = C; return K.f(21); }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_StaticWrite()
+    {
+        const string source = "function main(): int32 { class C { static v: int32 = 0; } C.v = 5; return C.v; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_NestedBlock()
+    {
+        const string source = "function main(): int32 { let r: int32 = 0; { class C { static v: int32 = 42; } r = C.v; } return r; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_StaticInitializerRuns()
+    {
+        const string source = "function main(): int32 { let seen: int32 = 0; function f(): int32 { seen = 7; return 42; } class C { static v: int32 = f(); } let c = new C(); return seen; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_StaticBlockRuns()
+    {
+        const string source = "let seen: int32 = 0; function main(): int32 { class C { static { seen = 7; } } return seen; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_ThisFieldInInitializer()
+    {
+        const string source = "function main(): int32 { class C { a: int32 = 5; b: int32 = this.a + 1; } let c = new C(); return c.b; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(6, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_ThisFieldValueFlows()
+    {
+        const string source = "function main(): int32 { class C { a: int32 = 7; b: int32 = this.a; } let c = new C(); return c.a * 100 + c.b; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(707, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_ForwardFieldReference()
+    {
+        const string source = "function main(): int32 { class C { a: int32 = this.b; b: int32 = 5; } let c = new C(); return c.a * 100 + c.b; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_CallReceiverField()
+    {
+        const string source = "function main(): int32 { class O { n: int32 = 10; } function getO(): O { return new O(); } return getO().n; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(10, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_CallReceiverMethod()
+    {
+        const string source = "function main(): int32 { class O { n: int32 = 10; m(): int32 { return this.n; } } function getO(): O { return new O(); } return getO().m(); }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(10, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_CallReceiverCompoundAssign()
+    {
+        const string source = "function main(): int32 { class O { n: int32 = 10; } let calls: int32 = 0; function getO(): O { calls = calls + 1; return new O(); } getO().n += 5; return calls; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(2, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_CallReceiverAdd()
+    {
+        const string source = "function main(): int32 { class O { n: int32 = 10; } function getO(): O { return new O(); } return getO().n + 5; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(15, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_StaticBaseCallExplicit()
+    {
+        const string source = "function main(): int32 { class A { static f(): int32 { return 1; } } class B extends A { static g(): int32 { return A.f(); } } return B.g(); }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    // Ciclo 12 (AG): guardas — lo que ya funciona en locales.
+
+    [Fact]
+    public void LocalClass_New_Control()
+    {
+        const string source = "function main(): int32 { class C { v: int32 = 0; constructor(n: int32) { this.v = n; } } let c = new C(42); return c.v; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_InstanceMethod_Control()
+    {
+        const string source = "function main(): int32 { class C { v: int32 = 7; m(): int32 { return this.v; } } let c = new C(); return c.m(); }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_LocalFunctionValue_Control()
+    {
+        const string source = "function main(): int32 { function g(): int32 { return 1; } let h = g; return h(); }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_Annotation_Control()
+    {
+        const string source = "function main(): int32 { class C { v: int32 = 1; } let c: C = new C(); return c.v; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void LocalClass_AnyAccess_Control()
+    {
+        const string source = "function main(): int32 { class C { v: int32 = 5; } let c: any = new C(); return c.v; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    // Ciclo 12 (AG): expresión de clase explícita.
+
+    [Fact]
+    public void ClassExpr_StaticField()
+    {
+        const string source = "function main(): int32 { let C = class { static v: int32 = 42; }; return C.v; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ClassExpr_StaticMethod()
+    {
+        const string source = "function main(): int32 { let C = class { static f(n: int32): int32 { return n * 2; } }; return C.f(21); }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ClassExpr_Typeof()
+    {
+        const string source = "function main(): string { let C = class { v: int32 = 1; }; return typeof C; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal("function", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void ClassExpr_NewAndInstance_Control()
+    {
+        const string source = "function main(): int32 { let C = class { v: int32 = 5; }; let c = new C(); return c.v; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void ClassExpr_InstanceMethod_Control()
+    {
+        const string source = "function main(): int32 { let C = class { v: int32 = 1; m(): int32 { return this.v; } }; let c = new C(); return c.m(); }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    // Ciclo 12 (AI): escrituras por punto sobre null.
+
+    [Fact]
+    public void NullDotWrite_Throws()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): int32 { let o: any = null; o.x = 1; return 1; }"));
+        Assert.Contains("Cannot index a null value", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NullDotCompoundWrite_Throws()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): int32 { let o: any = null; o.x += 1; return 1; }"));
+        Assert.Contains("Cannot index a null value", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NullDotIncrement_Throws()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): int32 { let o: any = null; o.x++; return 1; }"));
+        Assert.Contains("Cannot index a null value", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NullIndexWrite_Control()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): int32 { let o: any = null; o['x'] = 1; return 1; }"));
+        Assert.Contains("Cannot index a null value", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NullCall_Control()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            Run("function main(): int32 { let o: any = null; o.f(); return 1; }"));
+        Assert.Contains("Function 'f' not found for receiver null", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NullDotRead_ReturnsNull()
+    {
+        const string source = "function main(): int32 { let o: any = null; return o.x; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.IsType<TsNull>(result);
+    }
+
+    [Fact]
+    public void DotWrite_OnObject_Control()
+    {
+        const string source = "function main(): int32 { let o: any = {}; o.x = 5; return o.x; }";
+        Assert.Empty(BindSourceErrors(source));
+        var result = Run(source);
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
 }
 
 public class TypeCheckingTests

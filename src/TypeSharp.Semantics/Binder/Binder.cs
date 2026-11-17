@@ -410,6 +410,107 @@ public sealed class Binder
         return true;
     }
 
+    // AG: pre-declaración de miembros de una clase, extraída verbatim del
+    // caso `ClassDeclarationSyntax` de `PreDeclareTypeMembers`. Se llama
+    // desde `PreDeclareTypeMembers` (nivel superior, como hoy) y desde
+    // `BindClassCore` (clases locales, antes del pre-pase Z). Idempotente:
+    // los diccionarios se sobrescriben con los mismos valores; las firmas de
+    // índice se limpian antes de re-añadirlas para no duplicarlas en la
+    // segunda llamada.
+    private void PreDeclareClassMembers(TsClassType classType, string className,
+        IReadOnlyList<SyntaxNode> classMembers)
+    {
+        classType.IndexSignatures.Clear();
+        foreach (var classMember in classMembers)
+        {
+            switch (classMember)
+            {
+                case ConstructorDeclarationSyntax ctor:
+                    classType.Constructor = new TsMethod("constructor", TsType.Void,
+                        ctor.Parameters.Select(CreateTypeParameter).ToList());
+                    foreach (var p in ctor.Parameters)
+                    {
+                        if (p.IsPropertyParameter)
+                            classType.Fields[p.Name] = new TsField(p.Name, CreateParameterSymbol(p).Type);
+                    }
+                    break;
+
+                case FieldDeclarationSyntax field:
+                    classType.Fields[field.Name] = new TsField(field.Name, ResolveType(field.TypeAnnotation))
+                    {
+                        IsReadonly = field.IsReadonly,
+                        IsStatic = field.IsStatic,
+                        IsAbstract = field.IsAbstract,
+                        IsPrivateName = field.IsPrivateName,
+                        RuntimeName = GetRuntimeFieldName(className, field.Name, field.IsPrivateName)
+                    };
+                    break;
+
+                case MethodDeclarationSyntax method:
+                    PushTypeParameters(method.GenericParameters);
+                    var classMethod = new TsMethod(method.Name,
+                        ResolveType(method.ReturnType) ?? TsType.Void,
+                        method.Parameters.Select(CreateTypeParameter).ToList())
+                    {
+                        IsStatic = method.IsStatic,
+                        IsAbstract = method.IsAbstract,
+                        IsPrivateName = method.IsPrivateName,
+                        RuntimeName = GetRuntimeMemberName(className, method.Name, method.IsPrivateName)
+                    };
+                    classMethod.TypeParameters.AddRange(method.GenericParameters.Select(CreateTypeParameterType));
+                    classType.Methods[method.Name] = classMethod;
+                    PopTypeParameters();
+                    break;
+
+                case AccessorDeclarationSyntax accessor:
+                {
+                    var valueType = accessor.IsGetter
+                        ? ResolveType(accessor.TypeAnnotation) ?? TsType.Any
+                        : accessor.Parameter != null
+                            ? CreateParameterSymbol(accessor.Parameter).Type
+                            : TsType.Any;
+                    if (!classType.Properties.TryGetValue(accessor.Name, out var property))
+                    {
+                        property = new TsProperty(accessor.Name, valueType)
+                        {
+                            IsStatic = accessor.IsStatic,
+                            IsAbstract = accessor.IsAbstract,
+                            IsPrivateName = accessor.IsPrivateName,
+                            RuntimeName = GetRuntimeFieldName(className, accessor.Name, accessor.IsPrivateName),
+                            DeclaringClassName = className
+                        };
+                        classType.Properties[accessor.Name] = property;
+                    }
+                    if (accessor.IsGetter)
+                    {
+                        property.HasGetter = true;
+                        property.GetterName = $"{className}::get:{accessor.Name}";
+                    }
+                    else
+                    {
+                        property.HasSetter = true;
+                        property.SetterName = $"{className}::set:{accessor.Name}";
+                        property.IsReadonly = false;
+                    }
+                    break;
+                }
+
+                case IndexSignatureSyntax indexSignature:
+                    classType.IndexSignatures.Add(new TsIndexSignature(
+                        ResolveType(indexSignature.KeyType),
+                        ResolveType(indexSignature.ValueType))
+                    {
+                        IsReadonly = indexSignature.IsReadonly
+                    });
+                    break;
+
+                case PropertyDeclarationSyntax prop:
+                    classType.Properties[prop.Name] = new TsProperty(prop.Name, ResolveType(prop.TypeAnnotation));
+                    break;
+            }
+        }
+    }
+
     private void PreDeclareTypeMembers(SyntaxNode member)
     {
         switch (member)
@@ -448,94 +549,7 @@ public sealed class Binder
                 if (cls.BaseType != null)
                     TrySetBaseType(classType, cls.BaseType);
 
-                foreach (var classMember in cls.Members)
-                {
-                    switch (classMember)
-                    {
-                        case ConstructorDeclarationSyntax ctor:
-                            classType.Constructor = new TsMethod("constructor", TsType.Void,
-                                ctor.Parameters.Select(CreateTypeParameter).ToList());
-                            foreach (var p in ctor.Parameters)
-                            {
-                                if (p.IsPropertyParameter)
-                                    classType.Fields[p.Name] = new TsField(p.Name, CreateParameterSymbol(p).Type);
-                            }
-                            break;
-
-                        case FieldDeclarationSyntax field:
-                            classType.Fields[field.Name] = new TsField(field.Name, ResolveType(field.TypeAnnotation))
-                            {
-                                IsReadonly = field.IsReadonly,
-                                IsStatic = field.IsStatic,
-                                IsAbstract = field.IsAbstract,
-                                IsPrivateName = field.IsPrivateName,
-                                RuntimeName = GetRuntimeFieldName(cls.Name, field.Name, field.IsPrivateName)
-                            };
-                            break;
-
-                        case MethodDeclarationSyntax method:
-                            PushTypeParameters(method.GenericParameters);
-                            var classMethod = new TsMethod(method.Name,
-                                ResolveType(method.ReturnType) ?? TsType.Void,
-                                method.Parameters.Select(CreateTypeParameter).ToList())
-                            {
-                                IsStatic = method.IsStatic,
-                                IsAbstract = method.IsAbstract,
-                                IsPrivateName = method.IsPrivateName,
-                                RuntimeName = GetRuntimeMemberName(cls.Name, method.Name, method.IsPrivateName)
-                            };
-                            classMethod.TypeParameters.AddRange(method.GenericParameters.Select(CreateTypeParameterType));
-                            classType.Methods[method.Name] = classMethod;
-                            PopTypeParameters();
-                            break;
-
-                        case AccessorDeclarationSyntax accessor:
-                        {
-                            var valueType = accessor.IsGetter
-                                ? ResolveType(accessor.TypeAnnotation) ?? TsType.Any
-                                : accessor.Parameter != null
-                                    ? CreateParameterSymbol(accessor.Parameter).Type
-                                    : TsType.Any;
-                            if (!classType.Properties.TryGetValue(accessor.Name, out var property))
-                            {
-                                property = new TsProperty(accessor.Name, valueType)
-                                {
-                                    IsStatic = accessor.IsStatic,
-                                    IsAbstract = accessor.IsAbstract,
-                                    IsPrivateName = accessor.IsPrivateName,
-                                    RuntimeName = GetRuntimeFieldName(cls.Name, accessor.Name, accessor.IsPrivateName),
-                                    DeclaringClassName = cls.Name
-                                };
-                                classType.Properties[accessor.Name] = property;
-                            }
-                            if (accessor.IsGetter)
-                            {
-                                property.HasGetter = true;
-                                property.GetterName = $"{cls.Name}::get:{accessor.Name}";
-                            }
-                            else
-                            {
-                                property.HasSetter = true;
-                                property.SetterName = $"{cls.Name}::set:{accessor.Name}";
-                                property.IsReadonly = false;
-                            }
-                            break;
-                        }
-
-                        case IndexSignatureSyntax indexSignature:
-                            classType.IndexSignatures.Add(new TsIndexSignature(
-                                ResolveType(indexSignature.KeyType),
-                                ResolveType(indexSignature.ValueType))
-                            {
-                                IsReadonly = indexSignature.IsReadonly
-                            });
-                            break;
-
-                        case PropertyDeclarationSyntax prop:
-                            classType.Properties[prop.Name] = new TsProperty(prop.Name, ResolveType(prop.TypeAnnotation));
-                            break;
-                    }
-                }
+                PreDeclareClassMembers(classType, cls.Name, cls.Members);
 
                 PopTypeParameters();
                 break;
@@ -1003,6 +1017,10 @@ public sealed class Binder
         _currentClassType = classType;
         var prevInStaticInitializer = _inStaticInitializer;
         _inStaticInitializer = false;
+        // AG: pre-declaración de miembros antes del pre-pase Z, para que
+        // `this.<campo>` en un inicializador resuelva contra `Fields` ya
+        // poblados (las clases locales no pasan por `PreDeclareTypeMembers`).
+        PreDeclareClassMembers(classType, name, classMembers);
         // Z: pre-pase de inicializadores de campo. Se ligan aquí (en orden de
         // declaración) para que el caso ctor — que puede aparecer antes que los
         // campos — disponga de todos ellos al insertarlos en el cuerpo, y para
@@ -1726,6 +1744,7 @@ public sealed class Binder
             ForInStatementSyntax forIn => BindForIn(forIn),
             LabelledStatementSyntax labelled => BindLabelled(labelled),
             FunctionDeclarationSyntax nestedFunc => BindFunction(nestedFunc),
+            ClassDeclarationSyntax cls => BindClass(cls),
             VariableDeclarationListSyntax varList => new BoundBlockStatement(
                 varList.Declarations.Select(d => BindVariableDeclaration(d)).ToList()),
             DestructuringVariableDeclarationSyntax destructuring => BindDestructuringVariableDeclaration(destructuring),
@@ -1741,6 +1760,16 @@ public sealed class Binder
 
         try
         {
+            // AG: las clases locales se izan como las de nivel superior (pase 1 de
+            // Bind, Binder.cs:275-277): primero las cáscaras y luego los miembros,
+            // ANTES de izar las firmas de funciones, para que `getO(): O` resuelva
+            // contra la instancia canónica de `_classTypes` y no contra una
+            // instancia fresca sin poblar (ResolveNamedType, cola en :5835).
+            foreach (var localClass in block.Statements.OfType<ClassDeclarationSyntax>())
+                PreDeclareTypeShell(localClass);
+            foreach (var localClass in block.Statements.OfType<ClassDeclarationSyntax>())
+                PreDeclareTypeMembers(localClass);
+
             // Nested function declarations hoist within their block.
             foreach (var nested in block.Statements.OfType<FunctionDeclarationSyntax>())
                 DeclareFunctionSignature(nested);
@@ -1922,6 +1951,16 @@ public sealed class Binder
             DeclaredWithoutInitializer = initializer == null,
             HasKnownAssignment = initializer != null
         };
+        // AG: si la variable contiene el valor-clase de una expresión de clase
+        // (`let C = class {...}`) o de una clase declarada (`let K = C`), los
+        // accesos a miembro sobre ella son estáticos (AG-D5). El tercer brazo
+        // propaga el valor-clase en alias de alias (`let K2 = K`).
+        if (initializer is BoundClassExpression classExpr)
+            symbol.ClassValue = classExpr.Declaration.Symbol;
+        else if (initializer is BoundVariableExpression { Symbol: ClassSymbol classSym })
+            symbol.ClassValue = classSym;
+        else if (initializer is BoundVariableExpression { Symbol: LocalSymbol { ClassValue: { } classValue } })
+            symbol.ClassValue = classValue;
         if (symbol.IsConst && initializer != null &&
             (IsCompileTimeConstant(initializer) || IsModuleConstantExpression(initializer)))
             symbol.ConstantInitializer = initializer;
@@ -3863,7 +3902,11 @@ public sealed class Binder
             objType = generic.Definition;
         }
 
-        bool isStaticAccess = obj is BoundVariableExpression { Symbol: ClassSymbol };
+        // AG: una variable local con `ClassValue` (expresión de clase o alias
+        // de clase) también accede por la puerta estática; el tipo de búsqueda
+        // sigue siendo `objType` como siempre (Rev 2: sin `lookupType`).
+        bool isStaticAccess = obj is BoundVariableExpression { Symbol: ClassSymbol }
+            || obj is BoundVariableExpression { Symbol: LocalSymbol { ClassValue: not null } };
 
         if (objType is TsClassType classType)
         {
@@ -4233,7 +4276,22 @@ public sealed class Binder
         }
 
         if (target is BoundVariableExpression assignedVar && assignedVar.Symbol is LocalSymbol assignedLocal)
+        {
             assignedLocal.HasKnownAssignment = true;
+            // AG: la marca `ClassValue` sigue al valor asignado (misma regla
+            // de tres brazos que en `BindVariableDeclaration`, incluido el alias
+            // de alias); cualquier otro valor la limpia. Para asignaciones
+            // compuestas `value` ya es el binario desazucarado y la marca se
+            // limpia, que es lo correcto.
+            if (value is BoundClassExpression assignedClassExpr)
+                assignedLocal.ClassValue = assignedClassExpr.Declaration.Symbol;
+            else if (value is BoundVariableExpression { Symbol: ClassSymbol assignedClassSym })
+                assignedLocal.ClassValue = assignedClassSym;
+            else if (value is BoundVariableExpression { Symbol: LocalSymbol { ClassValue: { } assignedClassValue } })
+                assignedLocal.ClassValue = assignedClassValue;
+            else
+                assignedLocal.ClassValue = null;
+        }
 
         return new BoundAssignmentExpression(target, value);
     }
