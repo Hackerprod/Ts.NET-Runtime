@@ -1311,7 +1311,11 @@ public sealed class Parser
         SyntaxNode? initializer = null;
         if (!Check(TokenKind.Semicolon))
         {
-            initializer = ParseVariableStatement(false);
+            // Ciclo 9 (T, §3.47): el inicializador respeta `const`. Antes se
+            // pasaba `false` siempre y `for (const i = 0; ...)` se ligaba
+            // como `let`: el símbolo perdía `IsConst`, no se plegaba y
+            // ningún diagnóstico de `const` disparaba sobre él.
+            initializer = ParseVariableStatement(Check(TokenKind.ConstKeyword));
         }
         else
         {

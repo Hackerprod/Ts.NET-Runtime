@@ -1977,9 +1977,23 @@ public sealed class IRGenerator
 
             // Static namespace calls (Math.floor, console.log) have no
             // receiver value: skip the object load and pass args only.
+            // Ciclo 9 (V, opción (b), §2.2): un método estático de usuario se
+            // genera con un parámetro fantasma `this` en el slot 0, así que
+            // se emite un receptor ficticio `Void` cuando el método tiene
+            // parámetros explícitos, para que los argumentos caigan en sus
+            // slots. Solo se emite cuando hay parámetros que proteger: los
+            // builtins de espacio de nombres (Math, Array, JSON, ...) tienen
+            // listas de parámetros vacías y leerían el ficticio como primer
+            // argumento. Un estático de usuario sin parámetros tampoco lo
+            // necesita: su slot 0 ya es `Void` por inicialización del frame.
             bool isStatic = memberAccess.Object is BoundVariableExpression { Symbol: ClassSymbol };
+            bool emitDummyReceiver = isStatic
+                && memberAccess.Member is MethodSymbol staticMethodSym
+                && staticMethodSym.Parameters.Count > 0;
             if (!isStatic)
                 GenerateExpression(memberAccess.Object);
+            else if (emitDummyReceiver)
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
             for (int i = 0; i < call.Arguments.Count; i++)
                 GenerateExpression(call.Arguments[i]);
 
@@ -1993,7 +2007,7 @@ public sealed class IRGenerator
             else if (memberAccess.Member is PropertySymbol propSym)
                 funcName = $"{className}::{propSym.Name}";
 
-            int totalArgs = (isStatic ? 0 : 1) + call.Arguments.Count;
+            int totalArgs = (!isStatic || emitDummyReceiver ? 1 : 0) + call.Arguments.Count;
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, totalArgs, funcName));
         }
         else if (call.Callee is BoundSuperExpression superExpr)
@@ -2211,13 +2225,20 @@ public sealed class IRGenerator
                 // Se guarda una copia del valor en un temporal, se descarta el
                 // Void con Pop y se recarga el valor asignado como valor de la
                 // expresión. Receptor y valor se evalúan una sola vez.
+                // Ciclo 9 (V, opción (b), §2.2): el setter se genera con el
+                // parámetro fantasma `this` en el slot 0 y su parámetro en
+                // el 1; el receptor ficticio `Void` ocupa el slot 0 cuando
+                // el acceso es estático, y el `argCount` pasa a ser 2 en
+                // ambos caminos.
                 int tmpVal = _tempCounter++;
                 if (!prop.IsStatic)
                     GenerateExpression(memberAccess.Object);
+                else
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
                 GenerateExpression(assign.Value);
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
                 EmitStoreLocal(tmpVal);
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, prop.IsStatic ? 1 : 2,
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 2,
                     prop.SetterName ?? $"{prop.DeclaringClassName}::set:{prop.Name}"));
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
                 EmitLoadLocal(tmpVal);
@@ -2291,11 +2312,15 @@ public sealed class IRGenerator
             {
                 // Ciclo 8: la asignación vale el valor asignado (neto +1); el
                 // Dup conserva una copia a través del Store, que consume la
-                // de arriba. Sin variable reconocida (objetivo inválido) no
-                // hay Store ni Dup: el valor ya queda como neto +1.
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+                // de arriba.
+                // Ciclo 9 (§8.1): el Dup va solo dentro de cada rama con
+                // Store. Sin variable reconocida (objetivo inválido: función,
+                // clase, ...) no hay Store y el valor ya queda como neto +1;
+                // un Dup antes de la dispatch dejaría neto +2 y filtraría un
+                // slot por asignación en bucle.
                 if (varExpr.Symbol is LocalSymbol local)
                 {
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
                     if (IsModuleGlobalSymbol(local))
                         _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreGlobal, 0, 0, GetModuleGlobalKey(local)));
                     else
@@ -2303,8 +2328,13 @@ public sealed class IRGenerator
                 }
                 else if (varExpr.Symbol is ParameterSymbol param)
                 {
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
                     _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreLocal, GetParameterIndex(param)));
                 }
+                // Cualquier otro símbolo (FunctionSymbol, ClassSymbol, ...):
+                // sin Store y sin Dup. El valor ya queda como neto +1, que es
+                // el valor de la asignación; en posición de sentencia lo
+                // equilibra el Pop de GenerateStatement (ciclo 8, §2.4a).
             }
         }
     }
@@ -2336,9 +2366,17 @@ public sealed class IRGenerator
 
         if (member.Member is PropertySymbol prop && prop.HasGetter)
         {
+            // Ciclo 9 (V, opción (b), §2.2): el getter se genera con el
+            // parámetro fantasma `this` en el slot 0; el receptor ficticio
+            // `Void` lo ocupa cuando el acceso es estático. Un getter no
+            // tiene parámetros explícitos y ningún builtin tiene accessors,
+            // así que el ficticio es incondicional aquí y el `argCount` pasa
+            // a ser 1 en ambos caminos.
             if (!prop.IsStatic)
                 GenerateExpression(member.Object);
-            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, prop.IsStatic ? 0 : 1,
+            else
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 1,
                 prop.GetterName ?? $"{prop.DeclaringClassName}::get:{prop.Name}"));
             return;
         }

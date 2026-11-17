@@ -3219,6 +3219,15 @@ public sealed class Binder
     // then properties with accessors (generic message).
     private void ReportUnsupportedIncrementTarget(UnaryExpressionSyntax unary, BoundNode operand)
     {
+        // Ciclo 9 (T, §2.3): `++`/`--` sobre una `const` local es un error,
+        // igual que la asignación (`BindAssignment`, mismo mensaje). Solo
+        // `LocalSymbol` tiene `IsConst`; un parámetro nunca es `const`.
+        if (operand is BoundVariableExpression { Symbol: LocalSymbol local } && local.IsConst)
+        {
+            _diagnostics.Error($"Cannot assign to const variable '{local.Name}'", unary.OperatorToken.Location);
+            return;
+        }
+
         if (operand is BoundVariableExpression { Symbol: LocalSymbol or ParameterSymbol })
             return;
 

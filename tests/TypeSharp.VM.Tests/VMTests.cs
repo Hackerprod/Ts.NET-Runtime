@@ -2697,11 +2697,13 @@ public class InterpreterTests
     [Fact]
     public void WhileLoop_StaticSetterAssignments_LeakNoSlot()
     {
-        // Solo disciplina de pila del camino setter estático: el getter
-        // estático devuelve Void hoy (defecto separado, fuera de alcance),
-        // así que este test no afirma el valor leído del setter estático.
-        var result = RunWithLimits("class C { static v: int32; static set p(n: int32) { C.v = n; } static get p(): int32 { return C.v; } } function main(): int32 { let i: int32 = 0; while (i < 1100000) { C.p = i; i++; } return 7; }");
-        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+        // Ciclo 9 (V, §3.39): el getter estático lee fielmente el campo; lo
+        // roto era el setter estático, que escribía `Void` en el campo por el
+        // desplazamiento de argumentos de los miembros estáticos. Este test
+        // afirma ahora el valor leído (1099999), no solo la disciplina de
+        // pila del bucle.
+        var result = RunWithLimits("class C { static v: int32; static set p(n: int32) { C.v = n; } static get p(): int32 { return C.v; } } function main(): int32 { let i: int32 = 0; while (i < 1100000) { C.p = i; i++; } return C.p; }");
+        Assert.Equal(1099999, Assert.IsType<TsInt32Value>(result).Value);
     }
 
     [Fact]
@@ -2796,6 +2798,469 @@ public class InterpreterTests
     {
         var result = Run("function main(): int32 { let x: int32 = 0; for (let y: int32 = (x = 4); y < 5; y++) { } return x; }");
         Assert.Equal(4, Assert.IsType<TsInt32Value>(result).Value);
+    }
+    // Ciclo 9 — V: métodos y accesores `static` con parámetros (§3.2).
+    // El arreglo (opción (b), §2.1/§2.2) emite un receptor ficticio `Void`
+    // en los tres sitios de llamada estática para alinear los argumentos
+    // con el parámetro fantasma `this` del slot 0.
+
+    [Fact]
+    public void StaticMethod_OneParam_ReturnsArgument()
+    {
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): int32 { return C.f(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_TwoParams_ReturnsCombined()
+    {
+        var result = Run("class C { static f(a: int32, b: int32): int32 { return a * 10 + b; } } function main(): int32 { return C.f(4, 2); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_ThreeParams_ReturnsCombined()
+    {
+        var result = Run("class C { static f(a: int32, b: int32, c: int32): int32 { return a * 100 + b * 10 + c; } } function main(): int32 { return C.f(1, 2, 3); }");
+        Assert.Equal(123, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_DefaultParam_NoArg_AppliesDefault()
+    {
+        var result = Run("class C { static f(n: int32 = 7): int32 { return n; } } function main(): int32 { return C.f(); }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_DefaultParam_WithArg_IgnoresDefault()
+    {
+        var result = Run("class C { static f(n: int32 = 7): int32 { return n; } } function main(): int32 { return C.f(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_RestParam_LengthIsCorrect()
+    {
+        var result = Run("class C { static f(a: int32, ...rest: int32[]): int32 { return rest.length; } } function main(): int32 { return C.f(1, 2, 3); }");
+        Assert.Equal(2, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_RestParam_FirstParamIsCorrect()
+    {
+        var result = Run("class C { static f(a: int32, ...rest: int32[]): int32 { return a * 10 + rest.length; } } function main(): int32 { return C.f(1, 2, 3); }");
+        Assert.Equal(12, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_ExtraArgument_Ignored()
+    {
+        // Diagnóstico preexistente de aridad (`Expected 1 argument(s) but
+        // got 2`); `Run` lo ignora y el test afirma solo el valor.
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): int32 { return C.f(42, 43); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_MissingArgument_IsVoid()
+    {
+        // Diagnóstico preexistente de aridad (`Expected 2 argument(s) but
+        // got 1`); `Run` lo ignora y el test afirma solo el valor.
+        var result = Run("class C { static f(a: int32, b: int32): int32 { return a * 10 + b; } } function main(): int32 { let t: any = C.f(42); return t; }");
+        Assert.Equal(420, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_Inherited_ReturnsArgument()
+    {
+        var result = Run("class C { static f(n: int32): int32 { return n; } } class D extends C {} function main(): int32 { return D.f(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_CallsStaticMethod_ReturnsArgument()
+    {
+        var result = Run("class C { static g(n: int32): int32 { return n + 1; } static f(n: int32): int32 { return C.g(n); } } function main(): int32 { return C.f(41); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_Generic_ReturnsArgument()
+    {
+        var result = Run("class C { static f<T>(x: T): T { return x; } } function main(): int32 { return C.f(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_PrivateCalledFromInside_ReturnsArgument()
+    {
+        var result = Run("class C { static #f(n: int32): int32 { return n; } static g(n: int32): int32 { return C.#f(n); } } function main(): int32 { return C.g(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_ClosureCapturesParam_ReturnsArgument()
+    {
+        var result = Run("class C { static f(n: int32): int32 { let g = () => { return n; }; return g(); } } function main(): int32 { return C.f(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_This_IsVoid()
+    {
+        var result = Run("class C { static f(n: int32): any { return this; } } function main(): int32 { let t: any = C.f(42); if (typeof t == \"undefined\") { return 1; } return 0; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_ThisNoParams_IsVoid()
+    {
+        var result = Run("class C { static f(): any { return this; } } function main(): int32 { let t: any = C.f(); if (typeof t == \"undefined\") { return 1; } return 0; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_ClosureCapturesThis_IsVoid()
+    {
+        var result = Run("class C { static f(n: int32): any { let g = () => { return this; }; return g(); } } function main(): int32 { let t: any = C.f(42); if (typeof t == \"undefined\") { return 1; } return 0; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticAccessor_GetterAfterSetter_ReturnsValue()
+    {
+        var result = Run("class C { static v: int32; static set p(n: int32) { C.v = n; } static get p(): int32 { return C.v; } } function main(): int32 { C.p = 42; return C.p; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticSetter_AddsConstant_ReturnsStoredValue()
+    {
+        var result = Run("class C { static v: int32; static set p(n: int32) { C.v = n + 100; } static get p(): int32 { return C.v; } } function main(): int32 { C.p = 42; return C.v; }");
+        Assert.Equal(142, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticSetter_BodyReadsThis_SetterStillWritesParam()
+    {
+        var result = Run("class C { static v: int32; static set p(n: int32) { let t: any = this; C.v = n; } static get p(): int32 { return C.v; } } function main(): int32 { C.p = 42; return C.p; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticSetter_BranchesOnParam_ReturnsCorrectBranch()
+    {
+        var result = Run("class C { static v: int32; static set p(n: int32) { if (n == 42) { C.v = 1; } else { C.v = 2; } } static get p(): int32 { return C.v; } } function main(): int32 { C.p = 42; return C.v; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_StringParam_ReturnsArgument()
+    {
+        var result = Run("class C { static f(s: string): string { return s; } } function main(): string { return C.f('hi'); }");
+        Assert.Equal("hi", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_WritesStaticField_ReturnsField()
+    {
+        var result = Run("class C { static v: int32; static f(n: int32): int32 { C.v = n; return C.v; } } function main(): int32 { return C.f(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_DecoratedWithParam_ReturnsArgument()
+    {
+        // La función `mark` se copia literalmente de
+        // `DecoratorsReceiveStandardShapeContext` (VMTests.cs:172): con una
+        // `mark` simplificada de un solo argumento el `order` no es
+        // `SNmethodf` (ciclo 9, M4).
+        var result = Run("let order: string = ''; function mark(target: any, context: any): void { if (context['static']) { order = order + 'S'; } else { order = order + 'I'; } if (context['private']) { order = order + 'P'; } else { order = order + 'N'; } let kind: string = context.kind; let name: string = context.name; order = order + kind + name; } class C { @mark static f(n: int32): int32 { return n; } } function main(): int32 { let r: int32 = C.f(42); if (order == 'SNmethodf') { return r; } return -1; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_WritesPrivateStaticField_ReturnsField()
+    {
+        var result = Run("class C { static #v: int32; static f(n: int32): int32 { C.#v = n; return C.#v; } } function main(): int32 { return C.f(42); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InstanceMethod_TwoParams_Control()
+    {
+        var result = Run("class C { m(a: int32, b: int32): int32 { return a * 10 + b; } } function main(): int32 { let c = new C(); return c.m(4, 2); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_NoParams_Control()
+    {
+        var result = Run("class C { static f(): int32 { return 42; } } function main(): int32 { return C.f(); }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Constructor_OneParam_Control()
+    {
+        var result = Run("class C { v: int32; constructor(n: int32) { this.v = n; } } function main(): int32 { let c = new C(42); return c.v; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Constructor_TwoParams_Control()
+    {
+        var result = Run("class C { v: int32; constructor(a: int32, b: int32) { this.v = a * 10 + b; } } function main(): int32 { let c = new C(4, 2); return c.v; }");
+        Assert.Equal(42, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InstanceSetter_AsStatement_Control()
+    {
+        var result = Run("class C { #v: int32; constructor() { this.#v = 0; } set p(n: int32) { this.#v = n; } get p(): int32 { return this.#v; } } function main(): int32 { let c = new C(); c.p = 5; return c.p; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Builtin_MathFloor_Control()
+    {
+        var result = Run("function main(): number { return Math.floor(3.7); }");
+        Assert.Equal(3, Assert.IsType<TsFloat64Value>(result).Value);
+    }
+
+    [Fact]
+    public void Builtin_MathPow_Control()
+    {
+        var result = Run("function main(): number { return Math.pow(2, 10); }");
+        Assert.Equal(1024, Assert.IsType<TsFloat64Value>(result).Value);
+    }
+
+    [Fact]
+    public void Builtin_ArrayIsArray_Control()
+    {
+        var result = Run("function main(): int32 { let b: any = Array.isArray([1]); return b; }");
+        Assert.True(Assert.IsType<TsBoolValue>(result).Value);
+    }
+
+    [Fact]
+    public void Builtin_ArrayOf_Control()
+    {
+        var result = Run("function main(): int32 { let a = Array.of(1, 2, 3); return a.length; }");
+        Assert.Equal(3, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void Builtin_JsonStringify_Control()
+    {
+        var result = Run("function main(): string { return JSON.stringify({a: 1}); }");
+        Assert.Equal("{\"a\":1}", Assert.IsType<TsStringValue>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_ClosureCapturesThisNoParams_Control()
+    {
+        var result = Run("class C { static f(): any { let g = () => { return this; }; return g(); } } function main(): int32 { let t: any = C.f(); if (typeof t == \"undefined\") { return 1; } return 0; }");
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void StaticMethod_OneParamCalledWithNoArgs_Control()
+    {
+        // Diagnóstico preexistente de aridad (`Expected 1 argument(s) but
+        // got 0`); el test afirma solo el valor.
+        var result = Run("class C { static f(n: int32): int32 { return n; } } function main(): int32 { let t: any = C.f(); return t; }");
+        Assert.IsType<TsVoid>(result);
+    }
+
+    [Fact]
+    public void StaticMethod_LoopWritesField_NoLeak()
+    {
+        var result = RunWithLimits("class C { static v: int32; static f(n: int32): int32 { C.v = n; return C.v; } } function main(): int32 { let i: int32 = 0; while (i < 1100000) { C.f(i); i++; } return C.v; }");
+        Assert.Equal(1099999, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    // Ciclo 9 — T: `++`/`--` sobre `const` (§3.4). Tests de diagnóstico del
+    // binder (patrón `Increment_UnsupportedTarget_ReportsDiagnostic`,
+    // VMTests.cs:1971-1988), NO de `Run`: `Run` ignora los diagnósticos.
+    // Anotación `: int32` obligatoria (Rev 2, R1): sin ella el literal se
+    // infiere `number` y `return x` desde `main(): int32` añade un error
+    // espurio antes del arreglo.
+
+    private static List<Diagnostic> BindSourceErrors(string source)
+    {
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        binder.Bind(parser.Parse());
+        return binder.Diagnostics.GetErrors().ToList();
+    }
+
+    [Fact]
+    public void Increment_ConstLocalPrefix_ReportsDiagnostic()
+    {
+        var errors = BindSourceErrors("function main(): int32 { const x: int32 = 1; return ++x; }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to const variable 'x'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Increment_ConstLocalPostfix_ReportsDiagnostic()
+    {
+        var errors = BindSourceErrors("function main(): int32 { const x: int32 = 1; x++; return x; }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to const variable 'x'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Decrement_ConstLocalPrefix_ReportsDiagnostic()
+    {
+        var errors = BindSourceErrors("function main(): int32 { const x: int32 = 1; return --x; }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to const variable 'x'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Decrement_ConstLocalPostfix_ReportsDiagnostic()
+    {
+        var errors = BindSourceErrors("function main(): int32 { const x: int32 = 1; x--; return x; }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to const variable 'x'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Increment_ConstNonConstantInitializer_ReportsDiagnostic()
+    {
+        var errors = BindSourceErrors("function g(): int32 { return 1; } function main(): int32 { const x = g(); x++; return x; }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to const variable 'x'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Increment_ConstModuleScope_ReportsDiagnostic()
+    {
+        var errors = BindSourceErrors("const x: int32 = 1; function main(): int32 { x++; return x; }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to const variable 'x'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Increment_ConstCapturedByClosure_ReportsDiagnostic()
+    {
+        var errors = BindSourceErrors("const x: int32 = 1; function main(): int32 { let f = () => { x++; return x; }; return f(); }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to const variable 'x'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Increment_ConstForLoopVariable_ReportsDiagnostic()
+    {
+        // Consecuencia intencionada (§1.7): el bucle que "funcionaba" en
+        // ejecución pasa a ser un error de compilación.
+        var errors = BindSourceErrors("function main(): int32 { let s: int32 = 0; for (const i: int32 = 0; i < 3; i++) { s = s + i; } return s; }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to const variable 'i'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Increment_LetLocal_Control()
+    {
+        var errors = BindSourceErrors("function main(): int32 { let x: int32 = 1; x++; return x; }");
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void Increment_LetLocalAllForms_Control()
+    {
+        var errors = BindSourceErrors("function main(): int32 { let x: int32 = 1; ++x; x--; --x; return x; }");
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void Assign_ConstLocal_Control()
+    {
+        var errors = BindSourceErrors("function main(): int32 { const x: int32 = 1; x = 2; return x; }");
+        Assert.Single(errors);
+        Assert.Contains("Cannot assign to const variable 'x'", errors[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Increment_MemberOfConstObject_Control()
+    {
+        var errors = BindSourceErrors("function main(): int32 { const o = { n: 0 }; o.n++; return o.n; }");
+        Assert.Empty(errors);
+    }
+
+    // Ciclo 9 — D §8.1: asignación a nombre de función/clase (§3.5). El `Dup`
+    // del camino variable se emitía también sin `Store` y dejaba neto +2;
+    // en bucle de 1.1M moría por tope de pila.
+
+    [Fact]
+    public void InvalidAssignment_FunctionName_Loop_LeaksNoSlot()
+    {
+        var result = RunWithLimits("function f(): int32 { return 1; } function main(): int32 { let i: int32 = 0; while (i < 1100000) { f = 5; i++; } return 7; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InvalidAssignment_ClassName_Loop_LeaksNoSlot()
+    {
+        // Diagnóstico preexistente `Cannot assign '5' to variable of type
+        // 'C'`; `Run` lo ignora y el test afirma solo el valor.
+        var result = RunWithLimits("class C { static v: int32; } function main(): int32 { let i: int32 = 0; while (i < 1100000) { C = 5; i++; } return 7; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InvalidAssignment_FunctionNameInValue_Loop_LeaksNoSlot()
+    {
+        var result = RunWithLimits("function f(): int32 { return 1; } function main(): int32 { let i: int32 = 0; let y: int32 = 0; while (i < 1100000) { y = (f = 5); i++; } return y; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InvalidAssignment_ClassNameInValue_Loop_LeaksNoSlot()
+    {
+        // Diagnóstico preexistente `Cannot assign '5' to variable of type
+        // 'C'`; `Run` lo ignora y el test afirma solo el valor.
+        var result = RunWithLimits("class C { static v: int32; } function main(): int32 { let i: int32 = 0; let y: int32 = 0; while (i < 1100000) { y = (C = 5); i++; } return y; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InvalidAssignment_FunctionNameInValue_Control()
+    {
+        var result = Run("function f(): int32 { return 1; } function main(): int32 { let y: int32 = (f = 5); return y; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InvalidAssignment_ClassNameInValue_Control()
+    {
+        // Diagnóstico preexistente `Cannot assign '5' to variable of type
+        // 'C'`; el test afirma solo el valor.
+        var result = Run("class C { static v: int32; } function main(): int32 { let y: int32 = (C = 5); return y; }");
+        Assert.Equal(5, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void InvalidAssignment_FunctionNameAsStatement_Control()
+    {
+        var result = Run("function f(): int32 { return 1; } function main(): int32 { f = 5; return 7; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void WhileLoop_PlainAssignments_Control()
+    {
+        var result = RunWithLimits("function main(): int32 { let x: int32 = 0; let i: int32 = 0; while (i < 1100000) { x = i; i++; } return x; }");
+        Assert.Equal(1099999, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Fact]
+    public void WhileLoop_InvalidTargetAssignment_Control()
+    {
+        var result = RunWithLimits("function f(): int32 { return 1; } function main(): int32 { let i: int32 = 0; while (i < 1100000) { f() = 5; i++; } return 7; }");
+        Assert.Equal(7, Assert.IsType<TsInt32Value>(result).Value);
     }
 }
 
@@ -3742,6 +4207,7 @@ public class InteropTests
         Assert.IsType<TsUInt64Value>(result);
         Assert.Equal(ulong.MaxValue, ((TsUInt64Value)result!).Value);
     }
+
 }
 
 public class NegativeTests
