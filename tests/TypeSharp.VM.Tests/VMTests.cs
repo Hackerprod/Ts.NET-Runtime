@@ -665,6 +665,53 @@ public class InterpreterTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData("omitted", "const a: any[] = [7, 2, 7, 3, 7];", "7", "omitted", 4)]
+    [InlineData("inclusive-positive", "const a: any[] = [7, 2, 7, 3, 7];", "7", "2", 2)]
+    [InlineData("backward-not-forward", "const a: any[] = [7, 2, 7, 3, 7];", "7", "1", 0)]
+    [InlineData("negative-tail", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-1", 4)]
+    [InlineData("negative-relative", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-2", 2)]
+    [InlineData("negative-length", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-5", 0)]
+    [InlineData("below-negative-length", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-6", -1)]
+    [InlineData("at-length", "const a: any[] = [7, 2, 7, 3, 7];", "7", "5", 4)]
+    [InlineData("positive-fraction", "const a: any[] = [7, 2, 7, 3, 7];", "7", "1.9", 0)]
+    [InlineData("negative-fraction", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-2.9", 2)]
+    [InlineData("negative-zero", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-0", 0)]
+    [InlineData("nan", "const a: any[] = [7, 2, 7, 3, 7];", "7", "NaN", 0)]
+    [InlineData("explicit-undefined", "const a: any[] = [7, 2, 7, 3, 7];", "7", "undefined", 0)]
+    [InlineData("positive-infinity", "const a: any[] = [7, 2, 7, 3, 7];", "7", "Infinity", 4)]
+    [InlineData("negative-infinity", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-Infinity", -1)]
+    [InlineData("large-positive-finite", "const a: any[] = [7, 2, 7, 3, 7];", "7", "1e100", 4)]
+    [InlineData("large-negative-finite", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-1e100", -1)]
+    [InlineData("empty", "const a: any[] = [];", "7", "2", -1)]
+    [InlineData("hole-skipped-after-start", "const a: any[] = [undefined]; a[2] = undefined;", "undefined", "1", 0)]
+    [InlineData("hole-not-undefined", "const a: any[] = [7]; a[2] = undefined;", "undefined", "1", -1)]
+    [InlineData("strict-equality", "const a: any[] = [7, '7'];", "7", "1", 0)]
+    [InlineData("nan-needle", "const a: any[] = [NaN];", "NaN", "0", -1)]
+    public void ArrayLastIndexOf_FromIndex(string row, string prelude, string needle, string position, int expected)
+    {
+        bool omitted = position == "omitted";
+        string arguments = omitted ? needle : $"{needle}, {position}";
+        string source = $"function main(): number {{ {prelude} return a.lastIndexOf({arguments}); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "Array::lastIndexOf");
+        Assert.Equal(omitted ? 2 : 3, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsInt32Value>(
+            interpreter.Execute(BytecodeCompiler.Compile(ir), "main")).Value;
+        _output.WriteLine($"ArrayLastIndexOf row={row}; parser/binder=0/0; IR argc={call.Operand1}; actual={actual}; expected={expected}");
+        Assert.Equal(expected, actual);
+    }
+
     private static string ArraySearchReturnType(string method) => method == "includes" ? "bool" : "int32";
 
     [Theory]

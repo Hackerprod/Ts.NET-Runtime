@@ -371,7 +371,19 @@ public static class Builtins
             ["Array::lastIndexOf"] = args =>
             {
                 var arr = Arr(args[0]);
-                for (int i = arr.Count - 1; i >= 0; i--)
+                int length = arr.Count;
+                if (length == 0) return TsValue.FromInt32(-1);
+
+                int start = length - 1;
+                if (args.Length > 2)
+                {
+                    double position = D(args[2]);
+                    double index = double.IsNaN(position) ? 0 : Math.Truncate(position);
+                    if (index < -length) return TsValue.FromInt32(-1);
+                    start = index < 0 ? (int)(length + index) : (int)Math.Min(index, start);
+                }
+
+                for (int i = start; i >= 0; i--)
                     if (!arr.IsHole(i) && Interpreter.StrictEquals(arr.Get(i), args[1])) return TsValue.FromInt32(i);
                 return TsValue.FromInt32(-1);
             },
