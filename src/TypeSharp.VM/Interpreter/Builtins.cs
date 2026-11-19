@@ -489,7 +489,15 @@ public static class Builtins
                     : position >= text.Length ? text.Length : (int)Math.Truncate(position);
                 return Bool(needle.Length == 0 || text.IndexOf(needle, start, StringComparison.Ordinal) >= 0);
             },
-            ["String::startsWith"] = args => Bool(S(args[0]).StartsWith(S(args[1]), StringComparison.Ordinal)),
+            ["String::startsWith"] = args =>
+            {
+                var text = S(args[0]);
+                var needle = S(args[1]);
+                double position = args.Length > 2 ? D(args[2]) : 0.0;
+                int start = double.IsNaN(position) || position <= 0 ? 0
+                    : position >= text.Length ? text.Length : (int)Math.Truncate(position);
+                return Bool(text.AsSpan(start).StartsWith(needle.AsSpan(), StringComparison.Ordinal));
+            },
             ["String::endsWith"] = args =>
             {
                 var text = S(args[0]);

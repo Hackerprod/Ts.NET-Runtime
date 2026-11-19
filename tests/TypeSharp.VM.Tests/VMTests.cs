@@ -17,6 +17,49 @@ namespace TypeSharp.VM.Tests;
 public class InterpreterTests
 {
     [Theory]
+    [InlineData("omitted", "abcabc", "abc", null, true)]
+    [InlineData("omitted-no-match", "abcabc", "bc", null, false)]
+    [InlineData("exact-positive-offset", "abcxyz", "xyz", "3", true)]
+    [InlineData("no-backtracking", "abcxyz", "abc", "3", false)]
+    [InlineData("not-contains", "abcxyz", "xyz", "2", false)]
+    [InlineData("positive-fraction", "abcxyz", "xyz", "3.9", true)]
+    [InlineData("negative-fraction", "abcxyz", "abc", "-1.9", true)]
+    [InlineData("large-negative", "abcxyz", "abc", "-1e100", true)]
+    [InlineData("at-length", "abcxyz", "abc", "6", false)]
+    [InlineData("large-positive", "abcxyz", "abc", "1e100", false)]
+    [InlineData("positive-infinity", "abcxyz", "abc", "Infinity", false)]
+    [InlineData("negative-infinity", "abcxyz", "abc", "-Infinity", true)]
+    [InlineData("nan", "abcxyz", "abc", "NaN", true)]
+    [InlineData("undefined", "abcxyz", "abc", "undefined", true)]
+    [InlineData("empty-needle", "abcxyz", "", "Infinity", true)]
+    [InlineData("utf16-offset", "a😀z", "z", "3", true)]
+    [InlineData("utf16-not-code-point-offset", "a😀z", "z", "2", false)]
+    [InlineData("case-sensitive", "abcXYZ", "xyz", "3", false)]
+    [InlineData("empty-receiver", "", "x", "1", false)]
+    public void StringStartsWith_SearchPosition(string row, string text, string needle, string? position, bool expected)
+    {
+        string search = position is null ? "needle" : $"needle, {position}";
+        string source = $"function main(s: string, needle: string): boolean {{ return s.startsWith({search}); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "String::startsWith");
+        Assert.Equal(position is null ? 2 : 3, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsBoolValue>(interpreter.Execute(
+            BytecodeCompiler.Compile(ir), "main", [TsValue.FromString(text), TsValue.FromString(needle)])).Value;
+        _output.WriteLine($"StringStartsWith row={row}; parser/binder=0/0; IR argc={call.Operand1}; actual={actual}; expected={expected}");
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
     [InlineData("abcXYZ", "abc", "3", true)]
     [InlineData("abcXYZ", "XYZ", "3", false)]
     [InlineData("abcXYZ", "abc", "3.9", true)]
