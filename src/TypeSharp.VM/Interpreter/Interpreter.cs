@@ -2176,6 +2176,7 @@ public sealed class Interpreter
             }
             case "Array::reduce":
             {
+                int initialCount = arr.Count;
                 int start = 0;
                 TsValue accumulator;
                 if (args.Length > 2)
@@ -2184,15 +2185,15 @@ public sealed class Interpreter
                 }
                 else
                 {
-                    if (arr.Count == 0)
+                    if (initialCount == 0)
                         throw new InvalidOperationException("Reduce of empty array with no initial value");
-                    while (start < arr.Count && arr.IsHole(start)) start++;
-                    if (start >= arr.Count)
+                    while (start < initialCount && arr.IsHole(start)) start++;
+                    if (start >= initialCount)
                         throw new InvalidOperationException("Reduce of empty array with no initial value");
                     accumulator = arr.Get(start);
                     start++;
                 }
-                for (int i = start; i < arr.Count; i++)
+                for (int i = start; i < initialCount; i++)
                 {
                     if (arr.IsHole(i)) continue;
                     accumulator = Invoke(callback!, accumulator, arr.Get(i), TsValue.FromInt32(i));

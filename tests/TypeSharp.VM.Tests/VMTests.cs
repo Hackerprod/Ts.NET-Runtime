@@ -4159,6 +4159,57 @@ public class InterpreterTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData("seeded-append", "[1, 2]", "", "if (i === 0) { a.push(9); }", ", 10", "13,12,3")]
+    [InlineData("unseeded-append", "[1, 2, 3]", "", "if (i === 1) { a.push(9); }", "", "6,23,4")]
+    [InlineData("sparse-seed-append", "[0, 2, 3, 0]", "delete a[0]; delete a[3];", "if (i === 2) { a.push(9); }", "", "5,3,5")]
+    [InlineData("seeded-append-zero", "[1, 2]", "", "if (i === 0) { a.push(0); }", ", 0", "3,12,3")]
+    [InlineData("fill-original-hole", "[1, 0, 3]", "delete a[1];", "if (i === 0) { a[1] = 7; }", ", 0", "11,123,3")]
+    [InlineData("replace-original-value", "[1, 2, 3]", "", "if (i === 0) { a[1] = 7; }", ", 0", "11,123,3")]
+    [InlineData("delete-original-slot", "[1, 2, 3]", "", "if (i === 0) { delete a[1]; }", ", 0", "4,13,3")]
+    [InlineData("pop-original-slot", "[1, 2, 3]", "", "if (i === 0) { a.pop(); }", ", 0", "3,12,2")]
+    [InlineData("empty-seeded", "[]", "", "", ", 10", "10,0,0")]
+    [InlineData("only-present-unseeded", "[0, 2, 0]", "delete a[0]; delete a[2];", "", "", "2,0,3")]
+    public void ArrayReduce_UsesInitialLengthAndLiveSlots(string row, string initial, string setup,
+        string mutation, string seed, string expected)
+    {
+        var source = $$"""
+            function main(): number[] {
+                const a: number[] = {{initial}};
+                {{setup}}
+                let trace: number = 0;
+                const sum: number = a.reduce((acc: number, n: number, i: number): number => {
+                    trace = trace * 10 + i + 1;
+                    {{mutation}}
+                    return acc + n;
+                }{{seed}});
+                return [sum, trace, a.length];
+            }
+            """;
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "Array::reduce");
+        Assert.Equal(seed.Length == 0 ? 2 : 3, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var result = Assert.IsType<TsArrayValue>(interpreter.Execute(BytecodeCompiler.Compile(ir), "main"));
+        var actual = string.Join(",", Enumerable.Range(0, result.Value.Count).Select(i => result.Value.Get(i) switch
+        {
+            TsInt32Value n => n.Value.ToString(),
+            TsFloat64Value n => n.Value.ToString(),
+            var other => $"<{other.GetType().Name}>",
+        }));
+        _output.WriteLine($"ArrayReduce row={row}; expected={expected}; actual={actual}");
+        Assert.Equal(expected, actual);
+    }
+
     [Fact]
     public void Array_Map_PreservesHoles()
     {
