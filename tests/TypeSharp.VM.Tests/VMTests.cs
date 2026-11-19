@@ -609,6 +609,56 @@ public class InterpreterTests
             $"Math.hypot binary64 mismatch: expected={expected}; actual={actual}");
     }
 
+    [Theory]
+    [InlineData("nan-first", "7FF8000000000000 3FF0000000000000", "NaN")]
+    [InlineData("nan-last", "3FF0000000000000 7FF8000000000000", "NaN")]
+    [InlineData("nan-with-infinity", "7FF0000000000000 7FF8000000000000 FFF0000000000000", "NaN")]
+    [InlineData("negative-zero-first", "8000000000000000 0000000000000000", "0000000000000000")]
+    [InlineData("positive-zero-first", "0000000000000000 8000000000000000", "0000000000000000")]
+    [InlineData("negative-zeros-only", "8000000000000000 8000000000000000", "8000000000000000")]
+    [InlineData("positive-zero-with-negative", "C000000000000000 0000000000000000", "0000000000000000")]
+    [InlineData("ordinary-mixed", "C000000000000000 4008000000000000 3FF0000000000000", "4008000000000000")]
+    [InlineData("ordered-infinities", "FFF0000000000000 4008000000000000 7FF0000000000000", "7FF0000000000000")]
+    [InlineData("negative-infinity-alone", "FFF0000000000000", "FFF0000000000000")]
+    [InlineData("nan-alone", "7FF8000000000000", "NaN")]
+    public void MathMax_NumericOrdering(string row, string argumentBits, string expected)
+    {
+        var bits = argumentBits.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var args = bits.Select(value => TsValue.FromFloat64(BitConverter.Int64BitsToDouble(
+            unchecked((long)Convert.ToUInt64(value, 16))))).ToArray();
+        var parameters = string.Join(", ", bits.Select((_, i) => $"x{i}: number"));
+        var arguments = string.Join(", ", bits.Select((_, i) => $"x{i}"));
+        var source = $"function main({parameters}): number {{ return Math.max({arguments}); }}";
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"MathMax row={row}; parser={parser.Diagnostics.Count()}; binder={binder.Diagnostics.All.Count()}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        _output.WriteLine($"MathMax row={row}; target={call.OperandObject}; argc={call.Operand1}");
+        Assert.Equal("Math::max", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(args.Length, call.Operand1);
+
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue? result = null;
+        var error = Record.Exception(() => { result = interpreter.Execute(bytecode, "main", args); });
+        _output.WriteLine($"MathMax row={row}; exception={error?.GetType().Name ?? "none"}; result-type={result?.GetType().Name}");
+        Assert.Null(error);
+        var value = Assert.IsType<TsFloat64Value>(result).Value;
+        var actual = double.IsNaN(value) ? "NaN" : BitConverter.DoubleToInt64Bits(value).ToString("X16");
+        _output.WriteLine($"MathMax row={row}; args=[{argumentBits}]; expected={expected}; actual={actual}");
+        Assert.True(string.Equals(expected, actual, StringComparison.Ordinal),
+            $"Math.max binary64 mismatch: expected={expected}; actual={actual}");
+    }
+
     public static IEnumerable<object[]> ParseFloatPrefixCases()
     {
         var negativeZero = BitConverter.Int64BitsToDouble(long.MinValue);

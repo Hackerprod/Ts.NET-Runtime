@@ -41,7 +41,7 @@ public static class Builtins
             },
             ["Math::random"] = _ => Num(Random.Shared.NextDouble()),
             ["Math::min"] = args => Num(args.Select(D).Min()),
-            ["Math::max"] = args => Num(args.Select(D).Max()),
+            ["Math::max"] = Max,
             ["Math::hypot"] = Hypot,
 
             // ── Number ──
@@ -757,6 +757,36 @@ public static class Builtins
             return truncated - 1.0;
 
         return truncated == 0.0 ? Math.CopySign(0.0, value) : truncated;
+    }
+
+    private static TsValue Max(TsValue[] args)
+    {
+        if (args.Length == 0)
+            return Num(args.Select(D).Max());
+
+        // Keep the legacy coercion path for the whole call unless every
+        // argument is native numeric, even when an earlier argument is NaN.
+        foreach (var arg in args)
+        {
+            if (arg is not (TsInt32Value or TsInt64Value or TsUInt64Value or
+                TsFloat32Value or TsFloat64Value or TsDecimalValue))
+                return Num(args.Select(D).Max());
+        }
+
+        double best = double.NegativeInfinity;
+        foreach (var arg in args)
+        {
+            double value = D(arg);
+            if (double.IsNaN(value))
+                return Num(value);
+
+            if (value > best || (value == 0.0 && best == 0.0 &&
+                BitConverter.DoubleToInt64Bits(value) == 0 &&
+                BitConverter.DoubleToInt64Bits(best) < 0))
+                best = value;
+        }
+
+        return Num(best);
     }
 
     private static TsValue Hypot(TsValue[] args)
