@@ -478,6 +478,76 @@ public class InterpreterTests
             method, expected, new TsArrayValue(array), TsValue.Void);
     }
 
+    [Theory]
+    [InlineData("null-field", null, "a,,b")]
+    [InlineData("void-field", "::", "a::::b")]
+    [InlineData("sparse-field", ";", ";x;")]
+    [InlineData("all-nullish", null, ",,")]
+    [InlineData("dense-default", null, "1,2,3")]
+    [InlineData("dense-explicit", "::", "a::b::c")]
+    [InlineData("empty", null, "")]
+    [InlineData("literal-null", null, "a,null,b")]
+    public void ArrayJoin_NullishAndSparseFields(string row, string? separator, string expected)
+    {
+        static TsValue Text(string value) => TsValue.FromString(value);
+        static string Display(string value) => System.Text.Json.JsonSerializer.Serialize(value);
+        // Host null is a hole marker; present runtime null and undefined are TsValue instances.
+        TsValue?[] slots = row switch
+        {
+            "null-field" => [Text("a"), TsValue.Null, Text("b")],
+            "void-field" => [Text("a"), TsValue.Void, Text("b")],
+            "sparse-field" => [null, Text("x"), null],
+            "all-nullish" => [TsValue.Null, TsValue.Void, null],
+            "dense-default" => [TsValue.FromInt32(1), TsValue.FromInt32(2), TsValue.FromInt32(3)],
+            "dense-explicit" => [Text("a"), Text("b"), Text("c")],
+            "empty" => [],
+            "literal-null" => [Text("a"), Text("null"), Text("b")],
+            _ => throw new ArgumentOutOfRangeException(nameof(row)),
+        };
+
+        var array = new TsArray();
+        foreach (var slot in slots)
+        {
+            if (slot is null) array.SetHole(array.Count);
+            else array.Add(slot);
+        }
+
+        _output.WriteLine($"ArrayJoin row={row}; input-count={array.Count}; separator={(separator is null ? "omitted" : Display(separator))}");
+        Assert.Equal(slots.Length, array.Count);
+        for (var i = 0; i < slots.Length; i++)
+        {
+            var isHole = array.IsHole(i);
+            var value = array.Get(i);
+            _output.WriteLine($"ArrayJoin row={row}; index={i}; isHole={isHole}; get={value.GetType().Name}; value={Display(value.ToString())}");
+            Assert.Equal(slots[i] is null, isHole);
+            Assert.Same(slots[i] ?? TsValue.Void, value);
+        }
+
+        var source = separator is null
+            ? "function main(a: any[]): string { return a.join(); }"
+            : "function main(a: any[], sep: string): string { return a.join(sep); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"ArrayJoin row={row}; parser diagnostics={parser.Diagnostics.Count()}; binder diagnostics={binder.Diagnostics.All.Count()}");
+        foreach (var diagnostic in parser.Diagnostics)
+            _output.WriteLine($"parser [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        foreach (var diagnostic in binder.Diagnostics.All)
+            _output.WriteLine($"binder [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var bytecode = BytecodeCompiler.Compile(new IRGenerator().Generate(bound));
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue[] args = separator is null
+            ? [new TsArrayValue(array)]
+            : [new TsArrayValue(array), Text(separator)];
+        var actual = Assert.IsType<TsStringValue>(interpreter.Execute(bytecode, "main", args)).Value;
+        _output.WriteLine($"ArrayJoin row={row}; type=TsStringValue; expected={Display(expected)}; actual={Display(actual)}");
+        Assert.Equal(expected, actual);
+    }
+
     [Fact]
     public void ForIn_EnumeratesOwnObjectKeysInInsertionOrder()
     {

@@ -367,7 +367,11 @@ public static class Builtins
             {
                 var arr = Arr(args[0]);
                 string sep = args.Length > 1 ? S(args[1]) : ",";
-                return TsValue.FromString(string.Join(sep, Enumerable.Range(0, arr.Count).Select(i => arr.Get(i).ToString())));
+                return TsValue.FromString(string.Join(sep, Enumerable.Range(0, arr.Count).Select(i =>
+                {
+                    var element = arr.Get(i);
+                    return element is TsNull or TsVoid ? string.Empty : element.ToString();
+                })));
             },
             ["Array::slice"] = args =>
             {
