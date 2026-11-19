@@ -351,13 +351,13 @@ public static class Builtins
                 return new TsArrayValue(removed);
             },
             ["Array::reverse"] = args => { Arr(args[0]).Reverse(); return args[0]; },
-            ["Array::includes"] = args => Bool(IndexOf(Arr(args[0]), args[1]) >= 0),
+            ["Array::includes"] = args => Bool(IndexOf(Arr(args[0]), args[1], sameValueZero: true) >= 0),
             ["Array::indexOf"] = args => TsValue.FromInt32(IndexOf(Arr(args[0]), args[1])),
             ["Array::lastIndexOf"] = args =>
             {
                 var arr = Arr(args[0]);
                 for (int i = arr.Count - 1; i >= 0; i--)
-                    if (ValueEquals(arr.Get(i), args[1])) return TsValue.FromInt32(i);
+                    if (!arr.IsHole(i) && Interpreter.StrictEquals(arr.Get(i), args[1])) return TsValue.FromInt32(i);
                 return TsValue.FromInt32(-1);
             },
             ["Array::join"] = args =>
@@ -546,21 +546,28 @@ public static class Builtins
         return Math.Clamp(index, 0, length);
     }
 
-    private static int IndexOf(TsArray arr, TsValue value)
+    private static int IndexOf(TsArray arr, TsValue value, bool sameValueZero = false)
     {
         for (int i = 0; i < arr.Count; i++)
-            if (ValueEquals(arr.Get(i), value)) return i;
+        {
+            // includes reads holes as Void; indexOf searches only present slots.
+            if (!sameValueZero && arr.IsHole(i)) continue;
+            var item = arr.Get(i);
+            if (sameValueZero ? SameValueZero(item, value) : Interpreter.StrictEquals(item, value))
+                return i;
+        }
         return -1;
     }
 
-    private static bool ValueEquals(TsValue left, TsValue right)
+    private static bool SameValueZero(TsValue left, TsValue right) =>
+        Interpreter.StrictEquals(left, right) || (IsNumericNaN(left) && IsNumericNaN(right));
+
+    private static bool IsNumericNaN(TsValue value) => value switch
     {
-        if (left is TsStringValue ls && right is TsStringValue rs) return ls.Value == rs.Value;
-        if (left is TsBoolValue lb && right is TsBoolValue rb) return lb.Value == rb.Value;
-        if (left is TsNull && right is TsNull) return true;
-        double dl = D(left), dr = D(right);
-        return !double.IsNaN(dl) && dl == dr;
-    }
+        TsFloat32Value number => float.IsNaN(number.Value),
+        TsFloat64Value number => double.IsNaN(number.Value),
+        _ => false,
+    };
 
     private static object? ToJsonCompatible(TsValue value, HashSet<object> ancestors, int depth) => value switch
     {

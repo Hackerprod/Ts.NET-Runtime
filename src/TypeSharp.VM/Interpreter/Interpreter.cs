@@ -2281,7 +2281,7 @@ public sealed class Interpreter
         _ => TsValue.Null,
     };
 
-    private static bool StrictEquals(TsValue left, TsValue right)
+    internal static bool StrictEquals(TsValue left, TsValue right)
     {
         // Even the same wrapper must obey IEEE equality for NaN.
         if (ReferenceEquals(left, right))

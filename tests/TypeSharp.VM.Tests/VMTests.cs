@@ -93,6 +93,159 @@ public class InterpreterTests
         AssertStrictAnyEquality("function main(x: any, y: any): bool { return x !== y; }", !equal, left, right);
     }
 
+    private readonly Xunit.Abstractions.ITestOutputHelper _output;
+
+    public InterpreterTests(Xunit.Abstractions.ITestOutputHelper output) => _output = output;
+
+    private void AssertArraySearchEquality(string source, string method, int expected, params TsValue[] args)
+    {
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        foreach (var diagnostic in parser.Diagnostics)
+            _output.WriteLine($"parser [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        Assert.Empty(parser.Diagnostics);
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        binder.Bind(tree);
+        foreach (var diagnostic in binder.Diagnostics.All)
+            _output.WriteLine($"binder [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        Assert.Empty(binder.Diagnostics.All);
+        _output.WriteLine("parser diagnostics=0; binder diagnostics=0");
+
+        var result = Run(source, args: args);
+        if (method == "includes")
+        {
+            var actual = Assert.IsType<TsBoolValue>(result).Value;
+            _output.WriteLine($"Expected: {expected != 0}; Actual: {actual}");
+            Assert.Equal(expected != 0, actual);
+        }
+        else
+        {
+            var actual = Assert.IsType<TsInt32Value>(result).Value;
+            _output.WriteLine($"Expected: {expected}; Actual: {actual}");
+            Assert.Equal(expected, actual);
+        }
+    }
+
+    private static string ArraySearchReturnType(string method) => method == "includes" ? "bool" : "int32";
+
+    [Theory]
+    [InlineData("literal NaN", "NaN", "NaN", "includes", 1)]
+    [InlineData("coercion includes", "'1'", "1", "includes", 0)]
+    [InlineData("coercion indexOf", "'1', 1, '1'", "1", "indexOf", 1)]
+    [InlineData("coercion lastIndexOf", "'1', 1, '1'", "1", "lastIndexOf", 1)]
+    [InlineData("literal NaN indexOf", "NaN", "NaN", "indexOf", -1)]
+    [InlineData("literal NaN lastIndexOf", "NaN", "NaN", "lastIndexOf", -1)]
+    [InlineData("duplicate", "1, 2, 1", "1", "includes", 1)]
+    [InlineData("duplicate", "1, 2, 1", "1", "indexOf", 0)]
+    [InlineData("duplicate", "1, 2, 1", "1", "lastIndexOf", 2)]
+    [InlineData("empty", "", "1", "includes", 0)]
+    [InlineData("empty", "", "1", "indexOf", -1)]
+    [InlineData("empty", "", "1", "lastIndexOf", -1)]
+    [InlineData("not numeric NaN", "'not a number'", "NaN", "includes", 0)]
+    public void ArraySearchEquality_Literals(string scenario, string elements, string needle, string method, int expected)
+    {
+        _output.WriteLine(scenario);
+        AssertArraySearchEquality(
+            $"function main(): {ArraySearchReturnType(method)} {{ const a: any[] = [{elements}]; return a.{method}({needle}); }}",
+            method, expected);
+    }
+
+    [Theory]
+    [InlineData("F32 wrapper NaN", "includes", 1)]
+    [InlineData("F32 wrapper NaN", "indexOf", -1)]
+    [InlineData("F32 wrapper NaN", "lastIndexOf", -1)]
+    [InlineData("F64 wrapper NaN", "includes", 1)]
+    [InlineData("F64 wrapper NaN", "indexOf", -1)]
+    [InlineData("F64 wrapper NaN", "lastIndexOf", -1)]
+    public void ArraySearchEquality_SameNaNWrapper(string scenario, string method, int expected)
+    {
+        var value = scenario == "F32 wrapper NaN" ? TsValue.FromFloat32(float.NaN) : TsValue.FromFloat64(double.NaN);
+        AssertArraySearchEquality(
+            $"function main(x: any): {ArraySearchReturnType(method)} {{ const a: any[] = [x]; return a.{method}(x); }}",
+            method, expected, value);
+    }
+
+    [Theory]
+    [InlineData("mixed NaN", "includes", 1)]
+    [InlineData("mixed NaN", "indexOf", -1)]
+    [InlineData("mixed NaN", "lastIndexOf", -1)]
+    [InlineData("signed zero", "includes", 1)]
+    [InlineData("signed zero", "indexOf", 0)]
+    [InlineData("signed zero", "lastIndexOf", 0)]
+    [InlineData("same object", "includes", 1)]
+    [InlineData("same object", "indexOf", 0)]
+    [InlineData("same object", "lastIndexOf", 0)]
+    [InlineData("distinct objects", "includes", 0)]
+    [InlineData("distinct objects", "indexOf", -1)]
+    [InlineData("distinct objects", "lastIndexOf", -1)]
+    [InlineData("Null vs Void", "includes", 0)]
+    [InlineData("Null vs Void", "indexOf", -1)]
+    [InlineData("Null vs Void", "lastIndexOf", -1)]
+    [InlineData("Void vs Null", "includes", 0)]
+    [InlineData("Void vs Null", "indexOf", -1)]
+    [InlineData("Void vs Null", "lastIndexOf", -1)]
+    [InlineData("Null vs Null", "includes", 1)]
+    [InlineData("Null vs Null", "indexOf", 0)]
+    [InlineData("Null vs Null", "lastIndexOf", 0)]
+    [InlineData("Void vs Void", "includes", 1)]
+    [InlineData("Void vs Void", "indexOf", 0)]
+    [InlineData("Void vs Void", "lastIndexOf", 0)]
+    public void ArraySearchEquality_HostValues(string scenario, string method, int expected)
+    {
+        var shared = new TsObject("Box");
+        (TsValue left, TsValue right) = scenario switch
+        {
+            "mixed NaN" => (TsValue.FromFloat32(float.NaN), TsValue.FromFloat64(double.NaN)),
+            "signed zero" => (TsValue.FromFloat64(-0.0), TsValue.FromFloat64(0.0)),
+            "same object" => (TsValue.FromObject(shared), TsValue.FromObject(shared)),
+            "distinct objects" => (TsValue.FromObject(shared), TsValue.FromObject(new TsObject("Box"))),
+            "Null vs Void" => (TsValue.Null, TsValue.Void),
+            "Void vs Null" => (TsValue.Void, TsValue.Null),
+            "Null vs Null" => (TsValue.Null, TsValue.Null),
+            "Void vs Void" => (TsValue.Void, TsValue.Void),
+            _ => throw new System.ArgumentOutOfRangeException(nameof(scenario)),
+        };
+        if (scenario == "same object") Assert.NotSame(left, right);
+
+        AssertArraySearchEquality(
+            $"function main(x: any, y: any): {ArraySearchReturnType(method)} {{ const a: any[] = [x]; return a.{method}(y); }}",
+            method, expected, left, right);
+    }
+
+    [Theory]
+    [InlineData(false, "includes", 1)]
+    [InlineData(false, "indexOf", -1)]
+    [InlineData(false, "lastIndexOf", -1)]
+    [InlineData(true, "includes", 1)]
+    [InlineData(true, "indexOf", 1)]
+    [InlineData(true, "lastIndexOf", 1)]
+    public void ArraySearchEquality_Sparse(bool hasPresentVoid, string method, int expected)
+    {
+        var array = new TsArray();
+        array.SetHole(0);
+        if (hasPresentVoid)
+        {
+            array.Set(1, TsValue.Void);
+            array.SetHole(2);
+        }
+
+        Assert.Equal(hasPresentVoid ? 3 : 1, array.Count);
+        Assert.True(array.IsHole(0));
+        Assert.Same(TsValue.Void, array.Get(0));
+        if (hasPresentVoid)
+        {
+            Assert.False(array.IsHole(1));
+            Assert.Same(TsValue.Void, array.Get(1));
+            Assert.True(array.IsHole(2));
+            Assert.Same(TsValue.Void, array.Get(2));
+        }
+
+        AssertArraySearchEquality(
+            $"function main(a: any[], x: any): {ArraySearchReturnType(method)} {{ return a.{method}(x); }}",
+            method, expected, new TsArrayValue(array), TsValue.Void);
+    }
+
     [Fact]
     public void ForIn_EnumeratesOwnObjectKeysInInsertionOrder()
     {
