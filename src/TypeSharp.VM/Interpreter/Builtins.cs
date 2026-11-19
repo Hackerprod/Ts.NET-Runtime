@@ -600,7 +600,28 @@ public static class Builtins
                     state.text.AsSpan().CopyTo(destination[prefix.Length..]);
                 }));
             },
-            ["String::padEnd"] = args => TsValue.FromString(S(args[0]).PadRight(I(args[1]), args.Length > 2 ? S(args[2])[0] : ' ')),
+            ["String::padEnd"] = args =>
+            {
+                string text = S(args[0]);
+                int width = I(args[1]);
+                string fill = args.Length > 2 ? S(args[2]) : " ";
+                if (width < 0) return TsValue.FromString(text.PadRight(width));
+                if (width <= text.Length || fill.Length == 0) return TsValue.FromString(text);
+                if (fill.Length == 1) return TsValue.FromString(text.PadRight(width, fill[0]));
+
+                return TsValue.FromString(string.Create(width, (text, fill), static (destination, state) =>
+                {
+                    state.text.AsSpan().CopyTo(destination);
+                    var suffix = destination[state.text.Length..];
+                    var pattern = state.fill.AsSpan();
+                    for (int offset = 0; offset < suffix.Length;)
+                    {
+                        int count = Math.Min(pattern.Length, suffix.Length - offset);
+                        pattern[..count].CopyTo(suffix[offset..]);
+                        offset += count;
+                    }
+                }));
+            },
             ["String::split"] = args =>
             {
                 string s = S(args[0]);

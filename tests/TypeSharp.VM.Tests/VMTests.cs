@@ -1073,6 +1073,55 @@ public class InterpreterTests
     }
 
     [Theory]
+    [InlineData("repeat-and-truncate", "7", 6.0, "ab", "0037 0061 0062 0061 0062 0061")]
+    [InlineData("repeat-exact", "7", 5.0, "ab", "0037 0061 0062 0061 0062")]
+    [InlineData("fill-longer-than-gap", "7", 3.0, "abcd", "0037 0061 0062")]
+    [InlineData("one-unit-needed", "7", 2.0, "xy", "0037 0078")]
+    [InlineData("fractional-width", "7", 3.9, "xyz", "0037 0078 0079")]
+    [InlineData("utf16-surrogate-cut", "7", 4.0, "\ud83d\ude00", "0037 D83D DE00 D83D")]
+    [InlineData("utf16-receiver", "\ud83d\ude00", 4.0, "ab", "D83D DE00 0061 0062")]
+    [InlineData("utf16-exact-pair", "7", 3.0, "\ud83d\ude00", "0037 D83D DE00")]
+    [InlineData("empty-receiver", "", 3.0, "ab", "0061 0062 0061")]
+    [InlineData("empty-fill-grow", "7", 6.0, "", "0037")]
+    [InlineData("empty-fill-no-grow", "123", 3.0, "", "0031 0032 0033")]
+    [InlineData("empty-fill-huge", "7", 2147483647.0, "", "0037")]
+    [InlineData("already-wide", "123", 1.0, "ab", "0031 0032 0033")]
+    [InlineData("default-space", "7", 3.0, null, "0037 0020 0020")]
+    [InlineData("single-code-unit-fill", "7", 3.0, "0", "0037 0030 0030")]
+    [InlineData("both-empty", "", 0.0, "", "")]
+    public void StringPadEnd_FillPattern(string row, string text, double width, string? fill, string expectedHex)
+    {
+        var source = fill is null
+            ? "function main(s: string, w: number): string { return s.padEnd(w); }"
+            : "function main(s: string, w: number, f: string): string { return s.padEnd(w, f); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "String::padEnd");
+        TsValue widthValue = width == Math.Truncate(width) ? TsValue.FromInt32((int)width) : TsValue.FromFloat64(width);
+        TsValue[] arguments = fill is null
+            ? [TsValue.FromString(text), widthValue]
+            : [TsValue.FromString(text), widthValue, TsValue.FromString(fill)];
+        Assert.Equal(arguments.Length, call.Operand1);
+
+        var bytes = BytecodeCompiler.Compile(ir);
+        var vm = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue? result = null;
+        var exception = Record.Exception(() => { result = vm.Execute(bytes, "main", arguments); });
+        string actual = result is TsStringValue value
+            ? string.Join(" ", value.Value.Select(unit => ((int)unit).ToString("X4")))
+            : $"<{exception?.GetType().Name ?? result?.GetType().Name ?? "null"}>";
+        _output.WriteLine($"StringPadEnd row={row}; parser/binder=0/0; IR=String::padEnd/{call.Operand1}; expected=[{expectedHex}]; VM=[{actual}]");
+        Assert.Equal(expectedHex, actual);
+    }
+
+    [Theory]
     [InlineData("repeat-and-truncate", "7", 6, "ab", "ababa7")]
     [InlineData("empty-fill", "7", 6, "", "7")]
     [InlineData("empty-fill-huge-width", "7", int.MaxValue, "", "7")]
