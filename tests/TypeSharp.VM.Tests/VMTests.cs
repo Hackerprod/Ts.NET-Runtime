@@ -4108,6 +4108,57 @@ public class InterpreterTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData("append-false", "[1, 2]", "", "if (i === 0) { a.push(0); }", "n > 0", "1,12,3")]
+    [InlineData("append-true", "[1, 2]", "", "if (i === 0) { a.push(9); }", "n > 0", "1,12,3")]
+    [InlineData("append-beyond-trailing-hole", "[1, 2]", "delete a[1];", "if (i === 0) { a.push(0); }", "n > 0", "1,1,3")]
+    [InlineData("append-then-short-circuit", "[1, 2]", "", "if (i === 0) { a.push(9); }", "n !== 1", "0,1,3")]
+    [InlineData("fill-original-hole", "[1, 2, 3]", "delete a[1];", "if (i === 0) { a[1] = 0; }", "n > 0", "0,12,3")]
+    [InlineData("replace-original-value", "[1, 2, 3]", "", "if (i === 0) { a[1] = 0; }", "n > 0", "0,12,3")]
+    [InlineData("delete-original-slot", "[1, 0, 3]", "", "if (i === 0) { delete a[1]; }", "n > 0", "1,13,3")]
+    [InlineData("pop-original-slot", "[1, 2, 0]", "", "if (i === 0) { a.pop(); }", "n > 0", "1,12,2")]
+    [InlineData("dense-false", "[1, 0, 3]", "", "", "n > 0", "0,12,3")]
+    [InlineData("empty", "[]", "", "", "false", "1,0,0")]
+    public void ArrayEvery_UsesInitialLengthAndLiveSlots(string row, string initial, string setup,
+        string mutation, string predicate, string expected)
+    {
+        var source = $$"""
+            function main(): number[] {
+                const a: number[] = {{initial}};
+                {{setup}}
+                let trace: number = 0;
+                const allPass: boolean = a.every((n: number, i: number): boolean => {
+                    trace = trace * 10 + i + 1;
+                    {{mutation}}
+                    return {{predicate}};
+                });
+                return [allPass ? 1 : 0, trace, a.length];
+            }
+            """;
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "Array::every");
+        Assert.Equal(2, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var result = Assert.IsType<TsArrayValue>(interpreter.Execute(BytecodeCompiler.Compile(ir), "main"));
+        var actual = string.Join(",", Enumerable.Range(0, result.Value.Count).Select(i => result.Value.Get(i) switch
+        {
+            TsInt32Value n => n.Value.ToString(),
+            TsFloat64Value n => n.Value.ToString(),
+            var other => $"<{other.GetType().Name}>",
+        }));
+        _output.WriteLine($"ArrayEvery row={row}; expected={expected}; actual={actual}");
+        Assert.Equal(expected, actual);
+    }
+
     [Fact]
     public void Array_Map_PreservesHoles()
     {
