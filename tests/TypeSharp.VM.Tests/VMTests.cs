@@ -1073,6 +1073,66 @@ public class InterpreterTests
     }
 
     [Theory]
+    [InlineData("match-each", "aba", "a", "<$&>", "<a>b<a>")]
+    [InlineData("literal-dollar-each", "aba", "a", "$$", "$b$")]
+    [InlineData("prefix-each", "aba", "a", "$`", "bab")]
+    [InlineData("suffix-each", "aba", "a", "$'", "bab")]
+    [InlineData("mixed-original-context", "xy.xy", "xy", "[$`|$&|$'|$$]", "[|xy|.xy|$].[xy.|xy||$]")]
+    [InlineData("do-not-rescan-generated", "a$&a", "a", "$`", "$&a$&")]
+    [InlineData("adjacent-non-overlap", "aaaaa", "aa", "[$&]", "[aa][aa]a")]
+    [InlineData("utf16-surrogate-match", "x😀x😀", "😀", "<$&>", "x<😀>x<😀>")]
+    [InlineData("plain-ordinal", "x.a.a", ".", "!", "x!a!a")]
+    [InlineData("plain-adjacent", "aaaaa", "aa", "X", "XXa")]
+    [InlineData("plain-deletion", "abcabc", "b", "", "acac")]
+    [InlineData("no-match-with-tokens", "ab", "z", "$&$$", "ab")]
+    [InlineData("unknown-and-capture-tokens-literal", "aba", "a", "$1$01$<x>$x$", "$1$01$<x>$x$b$1$01$<x>$x$")]
+    [InlineData("empty-receiver-no-match", "", "a", "$&", "")]
+    public void StringReplaceAll_ReplacementTemplate(string row, string input, string find, string template, string expected)
+    {
+        static string Quote(string value) => "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        static string Hex(string value) => string.Join(" ", value.Select(unit => ((int)unit).ToString("X4")));
+
+        var source = $"function main(s: string): string {{ return s.replaceAll({Quote(find)}, {Quote(template)}); }}";
+        var tokens = new TypeSharp.Syntax.Lexer(source).Tokenize();
+        var literals = tokens.Where(token => token.Kind == TypeSharp.Syntax.TokenKind.StringLiteral).ToArray();
+        Assert.Equal(2, literals.Length);
+        Assert.Equal(find, literals[0].Text);
+        Assert.Equal(template, literals[1].Text);
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"StringReplaceAll row={row}; parser={parser.Diagnostics.Count()}; binder={binder.Diagnostics.All.Count()}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        _output.WriteLine($"StringReplaceAll row={row}; target={call.OperandObject}; argc={call.Operand1}");
+        Assert.Equal("String::replaceAll", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(3, call.Operand1);
+
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var compiledMain = bytecode.Functions[bytecode.FunctionIndex["main"]];
+        Assert.Contains(find, compiledMain.StringConstants);
+        Assert.Contains(template, compiledMain.StringConstants);
+        _output.WriteLine($"StringReplaceAll row={row}; lexer-and-pool-find=[{Hex(find)}]; template=[{Hex(template)}]");
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue? result = null;
+        var error = Record.Exception(() => { result = interpreter.Execute(bytecode, "main", [TsValue.FromString(input)]); });
+        _output.WriteLine($"StringReplaceAll row={row}; exception={error?.GetType().Name ?? "none"}; result-type={result?.GetType().Name}");
+        Assert.Null(error);
+        var actual = Assert.IsType<TsStringValue>(result).Value;
+        var expectedHex = Hex(expected);
+        var actualHex = Hex(actual);
+        _output.WriteLine($"StringReplaceAll row={row}; expected=[{expectedHex}]; actual=[{actualHex}]");
+        Assert.True(string.Equals(expected, actual, StringComparison.Ordinal),
+            $"Ordinal UTF-16 mismatch: expected=[{expectedHex}]; actual=[{actualHex}]");
+    }
+
+    [Theory]
     [InlineData("repeat-and-truncate", "7", 6.0, "ab", "0037 0061 0062 0061 0062 0061")]
     [InlineData("repeat-exact", "7", 5.0, "ab", "0037 0061 0062 0061 0062")]
     [InlineData("fill-longer-than-gap", "7", 3.0, "abcd", "0037 0061 0062")]

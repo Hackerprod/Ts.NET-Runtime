@@ -575,7 +575,59 @@ public static class Builtins
                     ? string.Concat(prefix, template.AsSpan(), suffix)
                     : result.Append(template.AsSpan(literalStart)).Append(suffix).ToString());
             },
-            ["String::replaceAll"] = args => TsValue.FromString(S(args[0]).Replace(S(args[1]), S(args[2]))),
+            ["String::replaceAll"] = args =>
+            {
+                string s = S(args[0]);
+                string find = S(args[1]);
+                string template = S(args[2]);
+                if (find.Length == 0 || args[0] is not TsStringValue ||
+                    args[1] is not TsStringValue || args[2] is not TsStringValue)
+                    return TsValue.FromString(s.Replace(find, template));
+
+                static bool IsToken(char c) => c is '$' or '&' or '`' or '\'';
+
+                int firstToken = 0;
+                while (firstToken < template.Length - 1 &&
+                    (template[firstToken] != '$' || !IsToken(template[firstToken + 1])))
+                    firstToken++;
+                if (firstToken >= template.Length - 1)
+                    return TsValue.FromString(s.Replace(find, template));
+
+                int match = s.IndexOf(find, StringComparison.Ordinal);
+                if (match < 0) return TsValue.FromString(s);
+
+                var result = new StringBuilder();
+                int consumed = 0;
+                do
+                {
+                    result.Append(s.AsSpan(consumed, match - consumed));
+                    int tail = match + find.Length;
+                    int literalStart = 0;
+                    // Only scan the template. Both context tokens refer to the original source.
+                    for (int i = firstToken; i < template.Length - 1; i++)
+                    {
+                        if (template[i] != '$') continue;
+                        char token = template[i + 1];
+                        if (!IsToken(token)) continue;
+
+                        result.Append(template.AsSpan(literalStart, i - literalStart));
+                        switch (token)
+                        {
+                            case '$': result.Append('$'); break;
+                            case '&': result.Append(s.AsSpan(match, find.Length)); break;
+                            case '`': result.Append(s.AsSpan(0, match)); break;
+                            case '\'': result.Append(s.AsSpan(tail)); break;
+                        }
+                        literalStart = i + 2;
+                        i++;
+                    }
+                    result.Append(template.AsSpan(literalStart));
+                    consumed = tail;
+                    match = s.IndexOf(find, consumed, StringComparison.Ordinal);
+                } while (match >= 0);
+
+                return TsValue.FromString(result.Append(s.AsSpan(consumed)).ToString());
+            },
             ["String::padStart"] = args =>
             {
                 string text = S(args[0]);
