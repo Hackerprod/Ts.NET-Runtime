@@ -396,7 +396,13 @@ public static class Builtins
                 foreach (var arg in args)
                 {
                     if (arg is TsArrayValue av)
-                        for (int i = 0; i < av.Value.Count; i++) result.Add(av.Value.Get(i));
+                    {
+                        for (int i = 0; i < av.Value.Count; i++)
+                        {
+                            if (av.Value.IsHole(i)) result.SetHole(result.Count);
+                            else result.Add(av.Value.Get(i));
+                        }
+                    }
                     else
                         result.Add(arg);
                 }

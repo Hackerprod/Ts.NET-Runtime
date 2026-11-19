@@ -201,6 +201,82 @@ public class InterpreterTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData("receiver-only", "1HUH", "", "", "1HUH")]
+    [InlineData("operand-only", "1", "H2H", "", "1H2H")]
+    [InlineData("mixed-offsets", "H1H", "UH2H", ", 9, c", "H1HUH2H9HN")]
+    [InlineData("all-holes", "HH", "HHH", "", "HHHHH")]
+    [InlineData("self-concat", "1HUH", "", ", a", "1HUH1HUH")]
+    [InlineData("dense-control", "1U", "2N", ", 9, c", "1U2N9N")]
+    [InlineData("all-empty", "", "", ", c", "")]
+    public void ArrayConcat_PreservesSparseSlots(string row, string left, string right, string tail, string expected)
+    {
+        var nested = new TsArrayValue(new TsArray());
+        nested.Value.Add(TsValue.FromInt32(8));
+        TsArrayValue MakeArray(string slots)
+        {
+            var array = new TsArray();
+            foreach (char slot in slots)
+            {
+                if (slot == 'H') array.SetHole(array.Count);
+                else array.Add(slot switch
+                {
+                    'U' => TsValue.Void,
+                    'N' => nested,
+                    _ => TsValue.FromInt32(slot - '0'),
+                });
+            }
+            return new TsArrayValue(array);
+        }
+
+        string Describe(TsArray array) => new(Enumerable.Range(0, array.Count).Select(i =>
+        {
+            if (array.IsHole(i)) return 'H';
+            var value = array.Get(i);
+            if (ReferenceEquals(value, TsValue.Void)) return 'U';
+            if (ReferenceEquals(value, nested)) return 'N';
+            return value switch
+            {
+                TsInt32Value n => (char)('0' + n.Value),
+                TsFloat64Value n => (char)('0' + (int)n.Value),
+                _ => '?',
+            };
+        }).ToArray());
+
+        var first = MakeArray(left);
+        var second = MakeArray(right);
+        string thirdSlots = row switch { "mixed-offsets" => "HN", "dense-control" => "N", _ => "" };
+        var third = MakeArray(thirdSlots);
+        var argumentList = row == "receiver-only" ? "" : row == "self-concat" ? "a" : "b" + tail;
+        var source = $"function main(a: any[], b: any[], c: any[]): any[] {{ return a.concat({argumentList}); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions), instruction => instruction.Opcode == Opcode.Call);
+        Assert.Equal("Array::concat", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(argumentList.Length == 0 ? 1 : argumentList.Count(c => c == ',') + 2, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actualArray = Assert.IsType<TsArrayValue>(
+            interpreter.Execute(BytecodeCompiler.Compile(ir), "main", [first, second, third])).Value;
+        Assert.NotSame(first.Value, actualArray);
+        Assert.NotSame(second.Value, actualArray);
+        Assert.NotSame(third.Value, actualArray);
+        Assert.Equal(left, Describe(first.Value));
+        Assert.Equal(right, Describe(second.Value));
+        Assert.Equal(thirdSlots, Describe(third.Value));
+
+        string actual = Describe(actualArray);
+        _output.WriteLine($"ArrayConcat row={row}; IR argc={call.Operand1}; actual=[{actual}]; expected=[{expected}]");
+        Assert.Equal(expected.Length, actualArray.Count);
+        Assert.Equal(expected, actual);
+    }
+
     private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)
     {
         var lexer = new TypeSharp.Syntax.Lexer(code);
