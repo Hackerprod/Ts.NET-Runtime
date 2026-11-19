@@ -477,7 +477,22 @@ public static class Builtins
                     : position >= text.Length ? text.Length : (int)Math.Truncate(position);
                 return TsValue.FromInt32(needle.Length == 0 ? start : text.IndexOf(needle, start, StringComparison.Ordinal));
             },
-            ["String::lastIndexOf"] = args => TsValue.FromInt32(S(args[0]).LastIndexOf(S(args[1]), StringComparison.Ordinal)),
+            ["String::lastIndexOf"] = args =>
+            {
+                var text = S(args[0]);
+                var needle = S(args[1]);
+                var maxStart = text.Length - needle.Length;
+                if (maxStart < 0) return TsValue.FromInt32(-1);
+
+                var position = args.Length > 2 ? D(args[2]) : double.NaN;
+                var start = double.IsNaN(position) || position >= maxStart
+                    ? maxStart
+                    : position <= 0 ? 0 : (int)Math.Truncate(position);
+                if (needle.Length == 0) return TsValue.FromInt32(start);
+
+                // Position limits the start of the match, not its final character.
+                return TsValue.FromInt32(text.AsSpan(0, start + needle.Length).LastIndexOf(needle.AsSpan()));
+            },
             ["String::replace"] = args =>
             {
                 string s = S(args[0]);

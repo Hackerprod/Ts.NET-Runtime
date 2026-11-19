@@ -101,6 +101,51 @@ public class InterpreterTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData("last-default", "banana", "ana", "omitted", 3)]
+    [InlineData("undefined-is-default", "banana", "ana", "undefined", 3)]
+    [InlineData("nan-is-default", "banana", "ana", "NaN", 3)]
+    [InlineData("start-bound-inclusive", "banana", "ana", "1", 1)]
+    [InlineData("match-may-extend-past-bound", "banana", "ana", "2", 1)]
+    [InlineData("fraction-truncates", "banana", "ana", "2.9", 1)]
+    [InlineData("below-first-match", "banana", "ana", "0", -1)]
+    [InlineData("negative-clamps-to-zero", "abcabc", "abc", "-100", 0)]
+    [InlineData("negative-infinity-clamps-to-zero", "abcabc", "abc", "-Infinity", 0)]
+    [InlineData("positive-infinity-is-full", "banana", "ana", "Infinity", 3)]
+    [InlineData("large-finite-is-full", "banana", "ana", "1e100", 3)]
+    [InlineData("empty-needle-returns-position", "banana", "", "2.9", 2)]
+    [InlineData("empty-needle-returns-length", "banana", "", "omitted", 6)]
+    [InlineData("no-match", "banana", "ANA", "1", -1)]
+    [InlineData("needle-longer-than-text", "a", "abc", "2", -1)]
+    [InlineData("utf16-start-bound", "a😀😀z", "😀", "2", 1)]
+    public void StringLastIndexOf_StartPosition(string row, string text, string needle, string position, int expected)
+    {
+        bool omitted = position == "omitted";
+        var source = omitted
+            ? "function main(s: string, needle: string): number { return s.lastIndexOf(needle); }"
+            : "function main(s: string, needle: string, p: number | undefined): number { return s.lastIndexOf(needle, p); }";
+        TsValue[] args = omitted
+            ? [TsValue.FromString(text), TsValue.FromString(needle)]
+            : [TsValue.FromString(text), TsValue.FromString(needle),
+               position == "undefined" ? TsValue.Void : TsValue.FromFloat64(double.Parse(position, System.Globalization.CultureInfo.InvariantCulture))];
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "String::lastIndexOf");
+        Assert.Equal(omitted ? 2 : 3, call.Operand1);
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsInt32Value>(interpreter.Execute(bytecode, "main", args)).Value;
+        _output.WriteLine($"{row}: actual={actual} expected={expected}, IR argc={call.Operand1}");
+        Assert.Equal(expected, actual);
+    }
+
     private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)
     {
         var lexer = new TypeSharp.Syntax.Lexer(code);
