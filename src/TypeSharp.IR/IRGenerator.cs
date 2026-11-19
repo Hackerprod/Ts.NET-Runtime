@@ -1628,7 +1628,7 @@ public sealed class IRGenerator
         }
     }
 
-    private void GenerateBinary(BoundBinaryExpression bin)
+    private void GenerateBinary(BoundBinaryExpression bin, Action? emitLeft = null)
     {
         if (bin.Operator == TokenKind.QuestionQuestion)
         {
@@ -1671,7 +1671,10 @@ public sealed class IRGenerator
             return;
         }
 
-        GenerateExpression(bin.Left);
+        if (emitLeft is null)
+            GenerateExpression(bin.Left);
+        else
+            emitLeft();
         GenerateExpression(bin.Right);
 
         var leftType = GetRuntimeType(bin.Left.Type);
@@ -2229,12 +2232,20 @@ public sealed class IRGenerator
         _currentBlock = endBlock;
     }
 
-    private void GenerateIndex(BoundIndexExpression index)
+    private void GenerateExpressionOrLoadCaptured(BoundNode expression, int? slot)
     {
-        GenerateExpression(index.Object);
+        if (slot is int captured)
+            EmitLoadLocal(captured);
+        else
+            GenerateExpression(expression);
+    }
+
+    private void GenerateIndex(BoundIndexExpression index, int? objectSlot = null, int? indexSlot = null)
+    {
+        GenerateExpressionOrLoadCaptured(index.Object, objectSlot);
         if (!index.IsNullConditional)
         {
-            GenerateExpression(index.Index);
+            GenerateExpressionOrLoadCaptured(index.Index, indexSlot);
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadElement));
             return;
         }
@@ -2257,7 +2268,7 @@ public sealed class IRGenerator
 
         _currentBlock = loadBlock;
         _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
-        GenerateExpression(index.Index);
+        GenerateExpressionOrLoadCaptured(index.Index, indexSlot);
         _currentBlock.Instructions.Add(new Instruction(Opcode.LoadElement));
         EmitBranch(endBlock.Id);
         _currentBlock = endBlock;
@@ -2304,6 +2315,17 @@ public sealed class IRGenerator
 
     private void GenerateAssignment(BoundAssignmentExpression assign)
     {
+        // The Binder shares this node only when it desugars a compound
+        // assignment. Textually identical operands in a plain assignment
+        // are bound independently and must retain their own evaluation.
+        var compound = assign.Value is BoundBinaryExpression bin &&
+            ReferenceEquals(bin.Left, assign.Target) &&
+            bin.Operator is TokenKind.Plus or TokenKind.Minus or TokenKind.Star or TokenKind.Slash
+                or TokenKind.Percent or TokenKind.StarStar or TokenKind.Ampersand or TokenKind.Pipe
+                or TokenKind.Caret or TokenKind.ShiftLeft or TokenKind.ShiftRight
+            ? bin
+            : null;
+
         if (assign.Target is BoundMemberAccessExpression memberAccess &&
             memberAccess.Member is FieldSymbol or PropertySymbol)
         {
@@ -2329,11 +2351,22 @@ public sealed class IRGenerator
                 // el acceso es estático, y el `argCount` pasa a ser 2 en
                 // ambos caminos.
                 int tmpVal = _tempCounter++;
-                if (!prop.IsStatic)
+                if (!prop.IsStatic && compound is not null)
+                {
+                    int receiverSlot = _tempCounter++;
                     GenerateExpression(memberAccess.Object);
+                    EmitStoreLocal(receiverSlot);
+                    EmitLoadLocal(receiverSlot);
+                    GenerateBinary(compound, () => GenerateMemberAccess(memberAccess, receiverSlot));
+                }
                 else
-                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
-                GenerateExpression(assign.Value);
+                {
+                    if (!prop.IsStatic)
+                        GenerateExpression(memberAccess.Object);
+                    else
+                        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+                    GenerateExpression(assign.Value);
+                }
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
                 EmitStoreLocal(tmpVal);
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 2,
@@ -2354,7 +2387,10 @@ public sealed class IRGenerator
             int tmpMemberVal = _tempCounter++;
             GenerateExpression(memberAccess.Object);
             EmitStoreLocal(tmpMemberObj);
-            GenerateExpression(assign.Value);
+            if (compound is not null)
+                GenerateBinary(compound, () => GenerateMemberAccess(memberAccess, tmpMemberObj));
+            else
+                GenerateExpression(assign.Value);
             EmitStoreLocal(tmpMemberVal);
             EmitLoadLocal(tmpMemberVal);
             EmitLoadLocal(tmpMemberObj);
@@ -2378,7 +2414,10 @@ public sealed class IRGenerator
             EmitStoreLocal(tmpIndexObj);
             GenerateExpression(indexTarget.Index);
             EmitStoreLocal(tmpIndexIdx);
-            GenerateExpression(assign.Value);
+            if (compound is not null)
+                GenerateBinary(compound, () => GenerateIndex(indexTarget, tmpIndexObj, tmpIndexIdx));
+            else
+                GenerateExpression(assign.Value);
             EmitStoreLocal(tmpIndexVal);
             EmitLoadLocal(tmpIndexVal);
             EmitLoadLocal(tmpIndexObj);
@@ -2453,7 +2492,7 @@ public sealed class IRGenerator
         GenerateExpression(assign.Result);
     }
 
-    private void GenerateMemberAccess(BoundMemberAccessExpression member)
+    private void GenerateMemberAccess(BoundMemberAccessExpression member, int? objectSlot = null)
     {
         // Ciclo 10 (W, W-8, Rev 2 R1): el método como valor es su función.
         // El receptor NO se emite: la llamada por valor antepone el receptor
@@ -2488,7 +2527,7 @@ public sealed class IRGenerator
             // así que el ficticio es incondicional aquí y el `argCount` pasa
             // a ser 1 en ambos caminos.
             if (!prop.IsStatic)
-                GenerateExpression(member.Object);
+                GenerateExpressionOrLoadCaptured(member.Object, objectSlot);
             else
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
             _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 1,
@@ -2496,7 +2535,7 @@ public sealed class IRGenerator
             return;
         }
 
-        GenerateExpression(member.Object);
+        GenerateExpressionOrLoadCaptured(member.Object, objectSlot);
 
         if (member.Member is not (FieldSymbol or PropertySymbol))
             return;

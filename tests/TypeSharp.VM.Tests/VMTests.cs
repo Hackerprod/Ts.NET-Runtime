@@ -2776,14 +2776,128 @@ public class InterpreterTests
     }
 
     [Fact]
-    public void CompoundAssignment_EvaluatesTargetTwice_DocumentsN33()
+    public void CompoundAssignment_N33_IndexEvaluatedOnce()
     {
-        // Documenta la doble evaluación de += (N33), FUERA de alcance del
-        // ciclo 8: el desazucarado del binder evalúa el objetivo dos veces
-        // (calls = 2, arr[1] = 21). Un ciclo futuro que arregle N33 debe
-        // actualizar este test.
         var result = Run("let t = { calls: 0 }; function next(): int32 { t.calls = t.calls + 1; return 1; } function main(): int32 { let arr = [10, 20, 30]; arr[next()] += 1; return t.calls * 100 + arr[1]; }");
-        Assert.Equal(221, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Equal(121, Assert.IsType<TsInt32Value>(result).Value);
+    }
+
+    [Theory]
+    [InlineData("arr[next()] += 1", 11230)]
+    [InlineData("arr[next()] = arr[next()] + 1", 22330)]
+    public void CompoundAssignment_N33_ChangingIndexAndIndependentReferences(string assignment, int expected)
+    {
+        string source = $$"""
+            let calls: int32 = 0;
+            function next(): int32 { let i: int32 = calls; calls = calls + 1; return i; }
+            function main(): int32 {
+                let arr: int32[] = [10, 20];
+                let r: int32 = ({{assignment}});
+                return calls * 10000 + r * 100 + arr[0] * 10 + arr[1];
+            }
+            """;
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Equal(expected, Assert.IsType<TsInt32Value>(Run(source)).Value);
+    }
+
+    [Fact]
+    public void CompoundAssignment_N33_ChangingReceiverReadsAndWritesSameField()
+    {
+        const string source = """
+            class C { v: int32 = 10; }
+            function main(): int32 {
+                let first: C = new C();
+                let second: C = new C();
+                second.v = 20;
+                let calls: int32 = 0;
+                function pick(): C {
+                    calls = calls + 1;
+                    if (calls == 1) { return first; }
+                    return second;
+                }
+                let r: int32 = (pick().v ^= 3);
+                return calls * 1000000 + r * 10000 + first.v * 100 + second.v;
+            }
+            """;
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Equal(1090920, Assert.IsType<TsInt32Value>(Run(source)).Value);
+    }
+
+    [Fact]
+    public void CompoundAssignment_N33_AccessorOrderAndCapturedReceiver()
+    {
+        const string source = """
+            let trace: int32 = 0;
+            class C {
+                v: int32 = 10;
+                get p(): int32 { trace = trace * 10 + 2; return this.v; }
+                set p(n: int32) { trace = trace * 10 + 4; this.v = n; }
+            }
+            function main(): int32 {
+                let first: C = new C();
+                let second: C = new C();
+                second.v = 20;
+                let selected: C = first;
+                function pick(): C { trace = trace * 10 + 1; return selected; }
+                function rhs(): int32 {
+                    trace = trace * 10 + 3;
+                    selected = second;
+                    first.v = 99;
+                    return 5;
+                }
+                let r: int32 = (pick().p += rhs());
+                return trace * 100000 + r * 1000 + first.v * 25 + second.v;
+            }
+            """;
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Equal(123415395, Assert.IsType<TsInt32Value>(Run(source)).Value);
+    }
+
+    [Fact]
+    public void CompoundAssignment_N33_ConcatenatesMember()
+    {
+        const string source = """
+            class C { text: string = 'a'; }
+            function main(): string {
+                let c: C = new C();
+                let r: string = (c.text += 'b');
+                return r + ':' + c.text;
+            }
+            """;
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Equal("ab:ab", Assert.IsType<TsStringValue>(Run(source)).Value);
+    }
+
+    [Fact]
+    public void CompoundAssignment_N33_PromotesIntegerRhs()
+    {
+        const string source = """
+            class C { value: number = 1.5; }
+            function main(): number {
+                let c: C = new C();
+                let n: int32 = 2;
+                let r: number = (c.value += n);
+                return r * 10 + c.value;
+            }
+            """;
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Equal(38.5, Assert.IsType<TsFloat64Value>(Run(source)).Value);
+    }
+
+    [Fact]
+    public void CompoundAssignment_N33_NestedRhsKeepsOuterIndex()
+    {
+        const string source = """
+            function main(): int32 {
+                let a: int32[] = [10, 20];
+                let b: int32[] = [30, 40];
+                let i: int32 = 0;
+                let r: int32 = (a[i] += (b[i] += (i = 1)));
+                return r * 1000000 + a[0] * 10000 + a[1] * 100 + b[0];
+            }
+            """;
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Equal(41412031, Assert.IsType<TsInt32Value>(Run(source)).Value);
     }
 
     [Fact]
@@ -4537,12 +4651,12 @@ public class InterpreterTests
     }
 
     [Fact]
-    public void LocalClass_CallReceiverCompoundAssign()
+    public void LocalClass_CallReceiverCompoundAssignment_N33()
     {
         const string source = "function main(): int32 { class O { n: int32 = 10; } let calls: int32 = 0; function getO(): O { calls = calls + 1; return new O(); } getO().n += 5; return calls; }";
         Assert.Empty(BindSourceErrors(source));
         var result = Run(source);
-        Assert.Equal(2, Assert.IsType<TsInt32Value>(result).Value);
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(result).Value);
     }
 
     [Fact]
