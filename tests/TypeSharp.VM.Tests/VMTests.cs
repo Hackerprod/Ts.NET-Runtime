@@ -17,6 +17,51 @@ namespace TypeSharp.VM.Tests;
 public class InterpreterTests
 {
     [Theory]
+    [InlineData("omitted-end", "abcdef", "2", "", "cdef")]
+    [InlineData("undefined-end", "abcdef", "2", "undefined", "cdef")]
+    [InlineData("undefined-end-start-past-length", "abcdef", "8", "undefined", "")]
+    [InlineData("undefined-end-negative-start", "abcdef", "-1", "undefined", "abcdef")]
+    [InlineData("infinite-start", "abcdef", "Infinity", "", "")]
+    [InlineData("infinite-start-swap", "abcdef", "Infinity", "2", "cdef")]
+    [InlineData("infinite-end", "abcdef", "2", "Infinity", "cdef")]
+    [InlineData("huge-finite-start", "abcdef", "2147483648", "4", "ef")]
+    [InlineData("huge-finite-end", "abcdef", "1", "1e100", "bcdef")]
+    [InlineData("negative-infinity", "abcdef", "-Infinity", "2", "ab")]
+    [InlineData("nan-end", "abcdef", "2", "NaN", "ab")]
+    [InlineData("nan-start", "abcdef", "NaN", "3", "abc")]
+    [InlineData("negative-large-end", "abcdef", "2", "-1e100", "ab")]
+    [InlineData("fraction-swap", "abcdef", "4.9", "1.7", "bcd")]
+    [InlineData("negative-start", "abcdef", "-2", "4", "abcd")]
+    [InlineData("empty-receiver", "", "Infinity", "undefined", "")]
+    [InlineData("utf16-positions", "a😀z", "1", "3", "😀")]
+    [InlineData("equal-bounds", "abcdef", "2", "2", "")]
+    [InlineData("undefined-start", "abcdef", "undefined", "3", "abc")]
+    public void StringSubstring_NumericBounds(string row, string text, string start, string end, string expected)
+    {
+        string bounds = end.Length == 0 ? start : $"{start}, {end}";
+        string source = $"function main(s: string): string {{ return s.substring({bounds}); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        Assert.Equal("String::substring", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(end.Length == 0 ? 2 : 3, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsStringValue>(interpreter.Execute(
+            BytecodeCompiler.Compile(ir), "main", [TsValue.FromString(text)])).Value;
+        _output.WriteLine($"StringSubstring row={row}; parser/binder=0/0; target={call.OperandObject}; argc={call.Operand1}; result=string; expected=[{expected}]; actual=[{actual}]");
+        Assert.True(string.Equals(expected, actual, StringComparison.Ordinal),
+            $"String.substring result mismatch: expected=[{expected}]; actual=[{actual}]");
+    }
+
+    [Theory]
     [InlineData("omitted", "abcabc", "abc", null, true)]
     [InlineData("omitted-no-match", "abcabc", "bc", null, false)]
     [InlineData("exact-positive-offset", "abcxyz", "xyz", "3", true)]

@@ -466,7 +466,7 @@ public static class Builtins
             {
                 string s = S(args[0]);
                 int start = Math.Clamp(args.Length > 1 ? I(args[1]) : 0, 0, s.Length);
-                int end = Math.Clamp(args.Length > 2 ? I(args[2]) : s.Length, 0, s.Length);
+                int end = Math.Clamp(args.Length > 2 && args[2] is not TsVoid ? I(args[2]) : s.Length, 0, s.Length);
                 if (start > end) (start, end) = (end, start);
                 return TsValue.FromString(s[start..end]);
             },
