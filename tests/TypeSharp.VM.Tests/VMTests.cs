@@ -2326,6 +2326,68 @@ public class InterpreterTests
         Assert.Equal(2, ((TsInt32Value)result).Value);
     }
 
+    [Theory]
+    [InlineData("mixed-with-insertions", "7HUOHH9", "1, 4, 8, 9", 5, "789H9", "HUOH")]
+    [InlineData("all-holes", "7HH9", "1, 2", 3, "79", "HH")]
+    [InlineData("trailing-holes-delete-rest", "78HH", "1", 2, "7", "8HH")]
+    [InlineData("negative-start", "7HOH9", "-3, 2", 3, "7H9", "OH")]
+    [InlineData("explicit-undefined-control", "7UO9", "1, 2", 3, "79", "UO")]
+    [InlineData("hole-survives-shift-control", "7OH9", "0, 1", 3, "OH9", "7")]
+    [InlineData("insert-undefined-without-delete-control", "7H9", "1, 0, undefined", 4, "7UH9", "")]
+    [InlineData("outside-length-control", "7H", "5, 2, 9", 4, "7H9", "")]
+    public void ArraySplice_PreservesRemovedSparseSlots(
+        string row, string input, string arguments, int argc, string expectedReceiver, string expectedRemoved)
+    {
+        var elements = string.Join(", ", input.Select(c => c switch
+        {
+            'H' or 'U' => "undefined",
+            'O' => "token",
+            _ => c.ToString(),
+        }));
+        var deletes = string.Join(" ", Enumerable.Range(0, input.Length)
+            .Where(i => input[i] == 'H').Select(i => $"delete a[{i}];"));
+        var source = $"function main(token: any): any[][] {{ const a: any[] = [{elements}]; {deletes} const removed = a.splice({arguments}); return [a, removed]; }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var syntax = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(syntax);
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        Assert.Equal("Array::splice", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(argc, call.Operand1);
+
+        var token = TsValue.FromObject(new TsObject("SpliceToken"));
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var output = Assert.IsType<TsArrayValue>(interpreter.Execute(BytecodeCompiler.Compile(ir), "main", [token])).Value;
+        Assert.Equal(2, output.Count);
+        var receiver = Assert.IsType<TsArrayValue>(output.Get(0)).Value;
+        var removed = Assert.IsType<TsArrayValue>(output.Get(1)).Value;
+        Assert.NotSame(receiver, removed);
+
+        string Describe(TsArray array) => new(Enumerable.Range(0, array.Count).Select(i =>
+        {
+            var value = array.Get(i);
+            if (array.IsHole(i))
+            {
+                Assert.Same(TsValue.Void, value);
+                return 'H';
+            }
+            if (ReferenceEquals(value, TsValue.Void)) return 'U';
+            if (ReferenceEquals(value, token)) return 'O';
+            return (char)('0' + Assert.IsType<TsInt32Value>(value).Value);
+        }).ToArray());
+
+        var actualReceiver = Describe(receiver);
+        var actualRemoved = Describe(removed);
+        _output.WriteLine($"ArraySplice row={row}; argc={call.Operand1}; receiver actual=[{actualReceiver}] expected=[{expectedReceiver}]; removed actual=[{actualRemoved}] expected=[{expectedRemoved}]");
+        Assert.Equal(expectedReceiver, actualReceiver);
+        Assert.Equal(expectedRemoved, actualRemoved);
+    }
+
     [Fact]
     public void ArraySplice_RemovesAndInsertsElements()
     {

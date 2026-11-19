@@ -345,7 +345,10 @@ public static class Builtins
                 var removed = new TsArray(deleteCount);
                 for (int i = 0; i < deleteCount; i++)
                 {
-                    removed.Add(arr.Get(start));
+                    if (arr.IsHole(start))
+                        removed.SetHole(i);
+                    else
+                        removed.Add(arr.Get(start));
                     arr.RemoveAt(start);
                 }
 
