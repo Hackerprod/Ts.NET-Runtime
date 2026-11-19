@@ -42,7 +42,7 @@ public static class Builtins
             ["Math::random"] = _ => Num(Random.Shared.NextDouble()),
             ["Math::min"] = args => Num(args.Select(D).Min()),
             ["Math::max"] = args => Num(args.Select(D).Max()),
-            ["Math::hypot"] = args => Num(Math.Sqrt(args.Select(D).Sum(v => v * v))),
+            ["Math::hypot"] = Hypot,
 
             // ── Number ──
             ["Number::isInteger"] = args => Bool(args[0] switch
@@ -757,6 +757,51 @@ public static class Builtins
             return truncated - 1.0;
 
         return truncated == 0.0 ? Math.CopySign(0.0, value) : truncated;
+    }
+
+    private static TsValue Hypot(TsValue[] args)
+    {
+        double max = 0.0;
+        bool hasInfinity = false;
+        bool hasNaN = false;
+        foreach (var arg in args)
+        {
+            // Preserve the original coercion path for the entire call if any
+            // argument is outside the native numeric domain.
+            if (arg is not (TsInt32Value or TsInt64Value or TsUInt64Value or
+                TsFloat32Value or TsFloat64Value or TsDecimalValue))
+                return Num(Math.Sqrt(args.Select(D).Sum(v => v * v)));
+
+            double magnitude = Math.Abs(D(arg));
+            if (double.IsInfinity(magnitude))
+                hasInfinity = true;
+            else if (double.IsNaN(magnitude))
+                hasNaN = true;
+            else if (magnitude > max)
+                max = magnitude;
+        }
+
+        if (hasInfinity)
+            return Num(double.PositiveInfinity);
+        if (hasNaN)
+            return Num(double.NaN);
+        if (max == 0.0)
+            return Num(0.0);
+
+        double sum = 0.0;
+        double compensation = 0.0;
+        foreach (var arg in args)
+        {
+            // Divide directly, including when the scale is subnormal.
+            double scaled = Math.Abs(D(arg)) / max;
+            // Kahan summation retains small contributions to the norm.
+            double term = scaled * scaled - compensation;
+            double next = sum + term;
+            compensation = (next - sum) - term;
+            sum = next;
+        }
+
+        return Num(max * Math.Sqrt(sum));
     }
 
     private static double D(TsValue v) => v switch

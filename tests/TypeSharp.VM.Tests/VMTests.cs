@@ -558,6 +558,57 @@ public class InterpreterTests
             Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(value));
     }
 
+    [Theory]
+    [InlineData("large-one", "7FEFFFFFFFFFFFFF", "7FEFFFFFFFFFFFFF")]
+    [InlineData("large-multiple", "6BB0000000000000 6BB0000000000000 6BB0000000000000 6BB0000000000000", "6BC0000000000000")]
+    [InlineData("small-multiple", "1430000000000000 1430000000000000 1430000000000000 1430000000000000", "1440000000000000")]
+    [InlineData("negative-subnormal", "8000000000000001", "0000000000000001")]
+    [InlineData("nan-before-positive-infinity", "7FF8000000000000 7FF0000000000000", "7FF0000000000000")]
+    [InlineData("negative-infinity-before-nan", "FFF0000000000000 7FF8000000000000", "7FF0000000000000")]
+    [InlineData("ordinary-mixed-signs", "C008000000000000 4010000000000000", "4014000000000000")]
+    [InlineData("empty", "", "0000000000000000")]
+    [InlineData("signed-zeros", "8000000000000000 0000000000000000 8000000000000000", "0000000000000000")]
+    [InlineData("nan-with-finite", "3FF0000000000000 7FF8000000000000", "NaN")]
+    [InlineData("negative-infinity-alone", "FFF0000000000000", "7FF0000000000000")]
+    [InlineData("actual-overflow", "7FEFFFFFFFFFFFFF 7FEFFFFFFFFFFFFF", "7FF0000000000000")]
+    public void MathHypot_NumericMagnitude(string row, string argumentBits, string expected)
+    {
+        var bits = argumentBits.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var args = bits.Select(value => TsValue.FromFloat64(BitConverter.Int64BitsToDouble(
+            unchecked((long)Convert.ToUInt64(value, 16))))).ToArray();
+        var parameters = string.Join(", ", bits.Select((_, i) => $"x{i}: number"));
+        var arguments = string.Join(", ", bits.Select((_, i) => $"x{i}"));
+        var source = $"function main({parameters}): number {{ return Math.hypot({arguments}); }}";
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"MathHypot row={row}; parser={parser.Diagnostics.Count()}; binder={binder.Diagnostics.All.Count()}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        _output.WriteLine($"MathHypot row={row}; target={call.OperandObject}; argc={call.Operand1}");
+        Assert.Equal("Math::hypot", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(args.Length, call.Operand1);
+
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue? result = null;
+        var error = Record.Exception(() => { result = interpreter.Execute(bytecode, "main", args); });
+        _output.WriteLine($"MathHypot row={row}; exception={error?.GetType().Name ?? "none"}; result-type={result?.GetType().Name}");
+        Assert.Null(error);
+        var value = Assert.IsType<TsFloat64Value>(result).Value;
+        var actual = double.IsNaN(value) ? "NaN" : BitConverter.DoubleToInt64Bits(value).ToString("X16");
+        _output.WriteLine($"MathHypot row={row}; args=[{argumentBits}]; expected={expected}; actual={actual}");
+        Assert.True(string.Equals(expected, actual, StringComparison.Ordinal),
+            $"Math.hypot binary64 mismatch: expected={expected}; actual={actual}");
+    }
+
     public static IEnumerable<object[]> ParseFloatPrefixCases()
     {
         var negativeZero = BitConverter.Int64BitsToDouble(long.MinValue);
