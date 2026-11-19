@@ -24,7 +24,7 @@ public static class Builtins
             ["Math::abs"] = args => Num(Math.Abs(D(args[0]))),
             ["Math::floor"] = args => Num(Math.Floor(D(args[0]))),
             ["Math::ceil"] = args => Num(Math.Ceiling(D(args[0]))),
-            ["Math::round"] = args => Num(Math.Round(D(args[0]), MidpointRounding.AwayFromZero)),
+            ["Math::round"] = args => Num(RoundJsNumber(D(args[0]))),
             ["Math::trunc"] = args => Num(Math.Truncate(D(args[0]))),
             ["Math::sqrt"] = args => Num(Math.Sqrt(D(args[0]))),
             ["Math::cbrt"] = args => Num(Math.Cbrt(D(args[0]))),
@@ -455,6 +455,25 @@ public static class Builtins
             },
         };
         return t;
+    }
+
+    private static double RoundJsNumber(double value)
+    {
+        if (!double.IsFinite(value) || value == 0.0)
+            return value;
+
+        double truncated = Math.Truncate(value);
+        if (truncated == value)
+            return value;
+
+        // Compare the fraction directly, without rounding value + 0.5.
+        double fraction = value - truncated;
+        if (fraction >= 0.5)
+            return truncated + 1.0;
+        if (fraction < -0.5)
+            return truncated - 1.0;
+
+        return truncated == 0.0 ? Math.CopySign(0.0, value) : truncated;
     }
 
     private static double D(TsValue v) => v switch

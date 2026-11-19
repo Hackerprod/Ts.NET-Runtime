@@ -97,6 +97,102 @@ public class InterpreterTests
 
     public InterpreterTests(Xunit.Abstractions.ITestOutputHelper output) => _output = output;
 
+    [Theory]
+    [InlineData("negative-tie-one")]
+    [InlineData("negative-tie-two")]
+    [InlineData("negative-tie-zero")]
+    [InlineData("negative-tie-large")]
+    [InlineData("negative-zero")]
+    [InlineData("positive-zero")]
+    [InlineData("negative-small")]
+    [InlineData("positive-small")]
+    [InlineData("negative-subnormal")]
+    [InlineData("positive-subnormal")]
+    [InlineData("negative-half-predecessor")]
+    [InlineData("negative-half-successor")]
+    [InlineData("positive-half-predecessor")]
+    [InlineData("positive-half-tie")]
+    [InlineData("positive-half-successor")]
+    [InlineData("positive-tie-two")]
+    [InlineData("negative-past-half")]
+    [InlineData("negative-before-half")]
+    [InlineData("positive-past-half")]
+    [InlineData("positive-before-half")]
+    [InlineData("positive-tie-large")]
+    [InlineData("positive-large-odd")]
+    [InlineData("negative-large-odd")]
+    [InlineData("positive-max-finite")]
+    [InlineData("negative-max-finite")]
+    [InlineData("nan")]
+    [InlineData("positive-infinity")]
+    [InlineData("negative-infinity")]
+    [InlineData("floor-control")]
+    [InlineData("ceil-control")]
+    [InlineData("trunc-control")]
+    public void MathRound_JavaScriptNumberSemantics(string scenario)
+    {
+        var negativeZero = BitConverter.Int64BitsToDouble(long.MinValue);
+        var (method, input, expected) = scenario switch
+        {
+            "negative-tie-one" => ("round", -1.5, -1.0),
+            "negative-tie-two" => ("round", -2.5, -2.0),
+            "negative-tie-zero" => ("round", -0.5, negativeZero),
+            "negative-tie-large" => ("round", -4503599627370495.5, -4503599627370495.0),
+            "negative-zero" => ("round", negativeZero, negativeZero),
+            "positive-zero" => ("round", 0.0, 0.0),
+            "negative-small" => ("round", -0.1, negativeZero),
+            "positive-small" => ("round", 0.1, 0.0),
+            "negative-subnormal" => ("round", -double.Epsilon, negativeZero),
+            "positive-subnormal" => ("round", double.Epsilon, 0.0),
+            "negative-half-predecessor" => ("round", Math.BitDecrement(-0.5), -1.0),
+            "negative-half-successor" => ("round", Math.BitIncrement(-0.5), negativeZero),
+            "positive-half-predecessor" => ("round", Math.BitDecrement(0.5), 0.0),
+            "positive-half-tie" => ("round", 0.5, 1.0),
+            "positive-half-successor" => ("round", Math.BitIncrement(0.5), 1.0),
+            "positive-tie-two" => ("round", 2.5, 3.0),
+            "negative-past-half" => ("round", -1.6, -2.0),
+            "negative-before-half" => ("round", -1.4, -1.0),
+            "positive-past-half" => ("round", 1.6, 2.0),
+            "positive-before-half" => ("round", 1.4, 1.0),
+            "positive-tie-large" => ("round", 4503599627370495.5, 4503599627370496.0),
+            "positive-large-odd" => ("round", 4503599627370497.0, 4503599627370497.0),
+            "negative-large-odd" => ("round", -4503599627370497.0, -4503599627370497.0),
+            "positive-max-finite" => ("round", double.MaxValue, double.MaxValue),
+            "negative-max-finite" => ("round", -double.MaxValue, -double.MaxValue),
+            "nan" => ("round", double.NaN, double.NaN),
+            "positive-infinity" => ("round", double.PositiveInfinity, double.PositiveInfinity),
+            "negative-infinity" => ("round", double.NegativeInfinity, double.NegativeInfinity),
+            "floor-control" => ("floor", -1.5, -2.0),
+            "ceil-control" => ("ceil", -1.5, -1.0),
+            "trunc-control" => ("trunc", -1.5, -1.0),
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, null),
+        };
+
+        var source = $"function main(x: number): number {{ return Math.{method}(x); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        foreach (var diagnostic in parser.Diagnostics)
+            _output.WriteLine($"parser [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        Assert.Empty(parser.Diagnostics);
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        binder.Bind(tree);
+        foreach (var diagnostic in binder.Diagnostics.All)
+            _output.WriteLine($"binder [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        Assert.Empty(binder.Diagnostics.All);
+        _output.WriteLine("parser diagnostics=0; binder diagnostics=0");
+
+        var actual = Assert.IsType<TsFloat64Value>(Run(source, args: [TsValue.FromFloat64(input)])).Value;
+        static string Display(double value) =>
+            FormattableString.Invariant($"{value:R}/0x{BitConverter.DoubleToInt64Bits(value):X16}");
+        _output.WriteLine($"MathRound row={scenario}; method={method}; type=TsFloat64Value; input={Display(input)}; expected={Display(expected)}; actual={Display(actual)}");
+
+        if (double.IsNaN(expected))
+            Assert.True(double.IsNaN(actual), "Expected NaN");
+        else
+            Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(actual));
+    }
+
     private void AssertArraySearchEquality(string source, string method, int expected, params TsValue[] args)
     {
         var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
