@@ -560,6 +560,68 @@ public class InterpreterTests
     }
 
     [Theory]
+    [InlineData("repeat-and-truncate", "7", 6, "ab", "ababa7")]
+    [InlineData("empty-fill", "7", 6, "", "7")]
+    [InlineData("empty-fill-huge-width", "7", int.MaxValue, "", "7")]
+    [InlineData("fill-longer-than-gap", "7", 3, "abcd", "ab7")]
+    [InlineData("utf16-truncate", "7", 4, "😀", null)]
+    [InlineData("utf16-receiver", "😀", 3, "ab", "a😀")]
+    [InlineData("width-equal", "123", 3, "ab", "123")]
+    [InlineData("width-below", "123", 2, "ab", "123")]
+    [InlineData("default-space", "7", 3, null, "  7")]
+    [InlineData("single-unit", "7", 3, "0", "007")]
+    [InlineData("fractional-width", "7", 3, "0", "007")]
+    [InlineData("negative-width-unchanged", "7", -1, null, null)]
+    public void StringPadStart_FillPattern(string row, string text, int width, string? fill, string? expected)
+    {
+        static string Hex(string value) => string.Join(" ", value.Select(unit => ((int)unit).ToString("X4")));
+        if (row == "utf16-truncate") expected = "\uD83D\uDE00\uD83D\u0037";
+
+        var source = fill is null
+            ? "function main(s: string, w: any): string { return s.padStart(w); }"
+            : "function main(s: string, w: any, f: any): string { return s.padStart(w, f); }";
+        var widthArgument = row == "fractional-width" ? TsValue.FromFloat64(3.9) : TsValue.FromInt32(width);
+        TsValue[] args = fill is null
+            ? [TsValue.FromString(text), widthArgument]
+            : [TsValue.FromString(text), widthArgument, TsValue.FromString(fill)];
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"StringPadStart row={row}; parser diagnostics={parser.Diagnostics.Count()}; binder diagnostics={binder.Diagnostics.All.Count()}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        _output.WriteLine($"StringPadStart row={row}; target={call.OperandObject}; IR argc={call.Operand1}; host argc={args.Length}");
+        Assert.Equal("String::padStart", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(args.Length, call.Operand1);
+
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue? result = null;
+        var error = Record.Exception(() => { result = interpreter.Execute(bytecode, "main", args); });
+        if (row == "negative-width-unchanged")
+        {
+            _output.WriteLine($"StringPadStart row={row}; expected=ArgumentOutOfRangeException(totalWidth); exception={error?.GetType().Name}; param={(error as ArgumentException)?.ParamName}");
+            Assert.Equal("totalWidth", Assert.IsType<ArgumentOutOfRangeException>(error).ParamName);
+            return;
+        }
+
+        if (error is not null)
+            _output.WriteLine($"StringPadStart row={row}; expected={Hex(expected!)}; Execute exception={error.GetType().Name}; stack={error.StackTrace}");
+        Assert.Null(error);
+        var actual = Assert.IsType<TsStringValue>(result).Value;
+        _output.WriteLine($"StringPadStart row={row}; type={result.GetType().Name}; expected={Hex(expected!)}; actual={Hex(actual)}");
+        Assert.True(string.Equals(expected, actual, StringComparison.Ordinal),
+            $"Expected UTF-16 [{Hex(expected!)}], actual [{Hex(actual)}]");
+    }
+
+    [Theory]
     [InlineData("null-field", null, "a,,b")]
     [InlineData("void-field", "::", "a::::b")]
     [InlineData("sparse-field", ";", ";x;")]

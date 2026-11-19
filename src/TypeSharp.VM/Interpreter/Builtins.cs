@@ -456,7 +456,30 @@ public static class Builtins
                 return TsValue.FromString(idx < 0 ? s : s[..idx] + S(args[2]) + s[(idx + find.Length)..]);
             },
             ["String::replaceAll"] = args => TsValue.FromString(S(args[0]).Replace(S(args[1]), S(args[2]))),
-            ["String::padStart"] = args => TsValue.FromString(S(args[0]).PadLeft(I(args[1]), args.Length > 2 ? S(args[2])[0] : ' ')),
+            ["String::padStart"] = args =>
+            {
+                string text = S(args[0]);
+                int width = I(args[1]);
+                if (width < 0) return TsValue.FromString(text.PadLeft(width));
+                if (width <= text.Length) return TsValue.FromString(text);
+
+                string fill = args.Length > 2 ? S(args[2]) : " ";
+                if (fill.Length == 0) return TsValue.FromString(text);
+                if (fill.Length == 1) return TsValue.FromString(text.PadLeft(width, fill[0]));
+
+                return TsValue.FromString(string.Create(width, (text, fill), static (destination, state) =>
+                {
+                    var prefix = destination[..(destination.Length - state.text.Length)];
+                    var pattern = state.fill.AsSpan();
+                    for (int offset = 0; offset < prefix.Length;)
+                    {
+                        int count = Math.Min(pattern.Length, prefix.Length - offset);
+                        pattern[..count].CopyTo(prefix[offset..]);
+                        offset += count;
+                    }
+                    state.text.AsSpan().CopyTo(destination[prefix.Length..]);
+                }));
+            },
             ["String::padEnd"] = args => TsValue.FromString(S(args[0]).PadRight(I(args[1]), args.Length > 2 ? S(args[2])[0] : ' ')),
             ["String::split"] = args =>
             {
