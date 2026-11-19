@@ -712,6 +712,56 @@ public class InterpreterTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData("omitted", "const a: any[] = [7, 2, 7, 3, 7];", "7", null, true)]
+    [InlineData("inclusive-positive", "const a: any[] = [7, 2, 7, 3, 7];", "7", "2", true)]
+    [InlineData("after-last-match", "const a: any[] = [7, 2, 7, 3, 7];", "2", "2", false)]
+    [InlineData("negative-tail", "const a: any[] = [7, 2, 7, 3, 7];", "2", "-1", false)]
+    [InlineData("negative-relative", "const a: any[] = [7, 2, 7, 3, 7];", "3", "-2", true)]
+    [InlineData("negative-length", "const a: any[] = [7, 2, 7, 3, 7];", "2", "-5", true)]
+    [InlineData("below-negative-length", "const a: any[] = [7, 2, 7, 3, 7];", "2", "-6", true)]
+    [InlineData("at-length", "const a: any[] = [7, 2, 7, 3, 7];", "7", "5", false)]
+    [InlineData("positive-fraction", "const a: any[] = [7, 2, 7, 3, 7];", "2", "1.9", true)]
+    [InlineData("positive-fraction-no-backtrack", "const a: any[] = [7, 2, 7, 3, 7];", "2", "2.9", false)]
+    [InlineData("negative-fraction", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-1.9", true)]
+    [InlineData("negative-fraction-no-backtrack", "const a: any[] = [7, 2, 7, 3, 7];", "3", "-1.9", false)]
+    [InlineData("negative-zero", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-0", true)]
+    [InlineData("nan", "const a: any[] = [7, 2, 7, 3, 7];", "7", "NaN", true)]
+    [InlineData("explicit-undefined", "const a: any[] = [7, 2, 7, 3, 7];", "7", "undefined", true)]
+    [InlineData("positive-infinity", "const a: any[] = [7, 2, 7, 3, 7];", "7", "Infinity", false)]
+    [InlineData("negative-infinity", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-Infinity", true)]
+    [InlineData("large-positive-finite", "const a: any[] = [7, 2, 7, 3, 7];", "7", "1e100", false)]
+    [InlineData("large-negative-finite", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-1e100", true)]
+    [InlineData("empty", "const a: any[] = [];", "7", "2", false)]
+    [InlineData("hole-read-as-undefined", "const a: any[] = [7]; a[2] = undefined;", "undefined", "1", true)]
+    [InlineData("present-undefined", "const a: any[] = [7]; a[2] = undefined;", "undefined", "2", true)]
+    [InlineData("skip-hole-and-undefined", "const a: any[] = [7]; a[2] = undefined;", "undefined", "3", false)]
+    [InlineData("strict-types", "const a: any[] = [7, \"7\"];", "7", "1", false)]
+    [InlineData("nan-needle", "const a: any[] = [7, NaN];", "NaN", "1", true)]
+    [InlineData("skip-nan-needle", "const a: any[] = [NaN, 7];", "NaN", "1", false)]
+    public void ArrayIncludes_FromIndex(string row, string prelude, string needle, string? position, bool expected)
+    {
+        string arguments = position is null ? needle : $"{needle}, {position}";
+        string source = $"function main(): bool {{ {prelude} return a.includes({arguments}); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "Array::includes");
+        Assert.Equal(position is null ? 2 : 3, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsBoolValue>(
+            interpreter.Execute(BytecodeCompiler.Compile(ir), "main")).Value;
+        _output.WriteLine($"ArrayIncludes row={row}; parser/binder=0/0; IR argc={call.Operand1}; actual={actual}; expected={expected}");
+        Assert.Equal(expected, actual);
+    }
+
     private static string ArraySearchReturnType(string method) => method == "includes" ? "bool" : "int32";
 
     [Theory]

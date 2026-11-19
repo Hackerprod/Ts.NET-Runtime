@@ -358,7 +358,15 @@ public static class Builtins
                 return new TsArrayValue(removed);
             },
             ["Array::reverse"] = args => { Arr(args[0]).Reverse(); return args[0]; },
-            ["Array::includes"] = args => Bool(IndexOf(Arr(args[0]), args[1], sameValueZero: true) >= 0),
+            ["Array::includes"] = args =>
+            {
+                var arr = Arr(args[0]);
+                int length = arr.Count;
+                if (length == 0) return Bool(false);
+
+                int start = args.Length > 2 ? FillIndex(args[2], length) : 0;
+                return Bool(IndexOf(arr, args[1], sameValueZero: true, start: start) >= 0);
+            },
             ["Array::indexOf"] = args =>
             {
                 var arr = Arr(args[0]);
