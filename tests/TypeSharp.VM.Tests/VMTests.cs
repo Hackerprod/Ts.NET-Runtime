@@ -36,6 +36,63 @@ public class InterpreterTests
         return interpreter.Execute(bytecodeModule, entryPoint, args);
     }
 
+    private static void AssertStrictAnyEquality(string source, bool expected, params TsValue[] args)
+    {
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        parser.Parse();
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(BindSourceErrors(source));
+
+        Assert.Equal(expected, Assert.IsType<TsBoolValue>(Run(source, args: args)).Value);
+    }
+
+    [Theory]
+    [InlineData(true, "===", false)]
+    [InlineData(true, "!==", true)]
+    [InlineData(false, "===", false)]
+    [InlineData(false, "!==", true)]
+    public void StrictAnyEquality_SameNaNArgument(bool float32, string op, bool expected)
+    {
+        var value = float32 ? TsValue.FromFloat32(float.NaN) : TsValue.FromFloat64(double.NaN);
+        AssertStrictAnyEquality($"function main(x: any): bool {{ return x {op} x; }}", expected, value);
+    }
+
+    [Theory]
+    [InlineData(true, false, false, true)]
+    [InlineData(true, false, true, true)]
+    [InlineData(true, true, true, false)]
+    [InlineData(false, false, false, true)]
+    [InlineData(false, false, true, true)]
+    [InlineData(false, true, true, false)]
+    public void StrictAnyEquality_NumericControls(bool float32, bool nan, bool distinctWrappers, bool equal)
+    {
+        TsValue Box() => float32
+            ? TsValue.FromFloat32(nan ? float.NaN : 1.25f)
+            : TsValue.FromFloat64(nan ? double.NaN : 1.25);
+
+        var left = Box();
+        var right = distinctWrappers ? Box() : left;
+        if (distinctWrappers) Assert.NotSame(left, right);
+
+        AssertStrictAnyEquality("function main(x: any, y: any): bool { return x === y; }", equal, left, right);
+        AssertStrictAnyEquality("function main(x: any, y: any): bool { return x !== y; }", !equal, left, right);
+    }
+
+    [Theory]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    public void StrictAnyEquality_ObjectControls(bool distinctWrappers, bool distinctObjects, bool equal)
+    {
+        var obj = new TsObject("Box");
+        var left = TsValue.FromObject(obj);
+        var right = distinctWrappers ? TsValue.FromObject(distinctObjects ? new TsObject("Box") : obj) : left;
+        if (distinctWrappers) Assert.NotSame(left, right);
+
+        AssertStrictAnyEquality("function main(x: any, y: any): bool { return x === y; }", equal, left, right);
+        AssertStrictAnyEquality("function main(x: any, y: any): bool { return x !== y; }", !equal, left, right);
+    }
+
     [Fact]
     public void ForIn_EnumeratesOwnObjectKeysInInsertionOrder()
     {

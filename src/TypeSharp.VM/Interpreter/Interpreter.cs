@@ -2283,7 +2283,14 @@ public sealed class Interpreter
 
     private static bool StrictEquals(TsValue left, TsValue right)
     {
-        if (ReferenceEquals(left, right)) return true;
+        // Even the same wrapper must obey IEEE equality for NaN.
+        if (ReferenceEquals(left, right))
+            return left switch
+            {
+                TsFloat32Value f32 => !float.IsNaN(f32.Value),
+                TsFloat64Value f64 => !double.IsNaN(f64.Value),
+                _ => true
+            };
         if (left is TsNull && right is TsNull) return true;
         if (left is TsVoid && right is TsVoid) return true;
         if (left is TsNull or TsVoid || right is TsNull or TsVoid) return false;
