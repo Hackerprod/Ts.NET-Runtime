@@ -316,7 +316,7 @@ public static class Builtins
             ["Array::pop"] = args =>
             {
                 var arr = Arr(args[0]);
-                if (arr.Count == 0) return TsValue.Null;
+                if (arr.Count == 0) return TsValue.Void;
                 var last = arr.Get(arr.Count - 1);
                 arr.RemoveLast();
                 return last;
