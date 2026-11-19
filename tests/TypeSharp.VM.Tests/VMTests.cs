@@ -691,6 +691,127 @@ public class InterpreterTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData("explicit-window", "1994")]
+    [InlineData("omitted-bounds", "9999")]
+    [InlineData("start-only", "1299")]
+    [InlineData("negative-fractions", "1994")]
+    [InlineData("reverse-interval", "1234")]
+    [InlineData("negative-infinity-start", "9934")]
+    [InlineData("positive-infinity-end", "1299")]
+    [InlineData("positive-infinity-start", "1234")]
+    [InlineData("huge-negative-end", "1234")]
+    [InlineData("huge-positive-end", "1299")]
+    [InlineData("nan-start-string-end", "9934")]
+    [InlineData("undefined-end", "1299")]
+    [InlineData("null-end", "1234")]
+    [InlineData("nan-end", "1234")]
+    [InlineData("empty", "")]
+    [InlineData("sparse-identity", "hoo4")]
+    public void ArrayFill_OptionalBounds(string row, string expectedSlots)
+    {
+        static TsValue N(int n) => TsValue.FromInt32(n);
+        static TsValue F(double n) => TsValue.FromFloat64(n);
+        static string Describe(TsValue value) => value switch
+        {
+            TsInt32Value n => $"Int32:{n.Value}",
+            TsObjectValue o => $"Object:{o.Value.TypeName}",
+            _ => value.GetType().Name,
+        };
+
+        var array = new TsArray();
+        TsValue?[] slots = row switch
+        {
+            "empty" => [],
+            "sparse-identity" => [null, N(2), null, N(4)],
+            _ => [N(1), N(2), N(3), N(4)],
+        };
+        foreach (var slot in slots)
+        {
+            if (slot is null) array.SetHole(array.Count);
+            else array.Add(slot);
+        }
+
+        var wrapper = new TsArrayValue(array);
+        var fillValue = row == "sparse-identity" ? TsValue.FromObject(new TsObject("FillToken")) : N(9);
+        TsValue[] bounds = row switch
+        {
+            "explicit-window" or "omitted-bounds" => [],
+            "start-only" => [N(2)],
+            "negative-fractions" => [F(-3.8), F(-1.2)],
+            "reverse-interval" => [N(3), N(2)],
+            "negative-infinity-start" => [F(double.NegativeInfinity), N(2)],
+            "positive-infinity-end" => [N(2), F(double.PositiveInfinity)],
+            "positive-infinity-start" => [F(double.PositiveInfinity)],
+            "huge-negative-end" => [F(-1e100), F(-1e100)],
+            "huge-positive-end" => [N(2), F(1e100)],
+            "nan-start-string-end" => [F(double.NaN), TsValue.FromString("2.9")],
+            "undefined-end" => [N(2), TsValue.Void],
+            "null-end" => [TsValue.Void, TsValue.Null],
+            "nan-end" => [N(0), F(double.NaN)],
+            "empty" => [F(double.NegativeInfinity), F(double.PositiveInfinity)],
+            "sparse-identity" => [N(1), N(3)],
+            _ => throw new ArgumentOutOfRangeException(nameof(row)),
+        };
+        var source = row == "explicit-window"
+            ? "function main(a: any[]): any[] { return a.fill(9, 1, 3); }"
+            : bounds.Length switch
+            {
+                0 => "function main(a: any[], v: any): any[] { return a.fill(v); }",
+                1 => "function main(a: any[], v: any, s: any): any[] { return a.fill(v, s); }",
+                _ => "function main(a: any[], v: any, s: any, e: any): any[] { return a.fill(v, s, e); }",
+            };
+        TsValue[] args = row == "explicit-window" ? [wrapper] : [wrapper, fillValue, .. bounds];
+        var expectedArgc = row == "explicit-window" ? 4 : args.Length;
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"ArrayFill row={row}; parser={parser.Diagnostics.Count()}; binder={binder.Diagnostics.All.Count()}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        _output.WriteLine($"ArrayFill row={row}; target={call.OperandObject}; argc={call.Operand1}; expected-argc={expectedArgc}");
+        Assert.Equal("Array::fill", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(expectedArgc, call.Operand1);
+
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue? result = null;
+        var error = Record.Exception(() => { result = interpreter.Execute(bytecode, "main", args); });
+        _output.WriteLine($"ArrayFill row={row}; exception={error?.GetType().Name ?? "none"}; same-wrapper={ReferenceEquals(wrapper, result)}; count={array.Count}; expected-count={slots.Length}");
+        Assert.Null(error);
+        Assert.Same(wrapper, Assert.IsType<TsArrayValue>(result));
+        Assert.Equal(slots.Length, array.Count);
+
+        var actualCode = new char[array.Count];
+        for (var i = 0; i < array.Count; i++)
+        {
+            var isHole = array.IsHole(i);
+            var value = array.Get(i);
+            actualCode[i] = (isHole, value) switch
+            {
+                (true, TsVoid) => 'h',
+                (false, TsObjectValue) when ReferenceEquals(fillValue, value) => 'o',
+                (false, TsInt32Value n) when row == "explicit-window" && n.Value == 9 => '9',
+                (false, TsInt32Value n) when ReferenceEquals(fillValue, value) && n.Value == 9 => '9',
+                (false, TsInt32Value n) when ReferenceEquals(slots[i], value) && n.Value is >= 1 and <= 4
+                    => (char)('0' + n.Value),
+                _ => '?',
+            };
+            _output.WriteLine($"ArrayFill row={row}; index={i}; isHole={isHole}; get={Describe(value)}; original-identity={ReferenceEquals(slots[i], value)}; fill-identity={ReferenceEquals(fillValue, value)}; actual={actualCode[i]}; expected={expectedSlots[i]}");
+        }
+
+        var actualSlots = new string(actualCode);
+        _output.WriteLine($"ArrayFill row={row}; actual=[{actualSlots}]; expected=[{expectedSlots}]");
+        Assert.Equal(expectedSlots, actualSlots);
+    }
+
     [Fact]
     public void ForIn_EnumeratesOwnObjectKeysInInsertionOrder()
     {

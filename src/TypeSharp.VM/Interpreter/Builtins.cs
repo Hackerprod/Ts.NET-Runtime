@@ -397,7 +397,10 @@ public static class Builtins
             ["Array::fill"] = args =>
             {
                 var arr = Arr(args[0]);
-                for (int i = 0; i < arr.Count; i++) arr.Set(i, args[1]);
+                int length = arr.Count;
+                int start = args.Length > 2 ? FillIndex(args[2], length) : 0;
+                int end = args.Length > 3 && args[3] is not TsVoid ? FillIndex(args[3], length) : length;
+                for (int i = start; i < end; i++) arr.Set(i, args[1]);
                 return args[0];
             },
 
@@ -650,6 +653,16 @@ public static class Builtins
     private static TsValue Num(double value) => TsValue.FromFloat64(value);
 
     private static TsValue Bool(bool value) => new TsBoolValue(value);
+
+    private static int FillIndex(TsValue value, int length)
+    {
+        double number = D(value);
+        if (double.IsNaN(number)) return 0;
+        double index = Math.Truncate(number);
+        if (index < 0)
+            return index <= -length ? 0 : (int)(length + index);
+        return index >= length ? length : (int)index;
+    }
 
     private static int Normalize(int index, int length)
     {
