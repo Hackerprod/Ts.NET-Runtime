@@ -4152,6 +4152,7 @@ public sealed class Binder
             case "padEnd":
                 return BuiltinMethod(name, TsType.String, "String", range);
             case "charCodeAt":
+                return BuiltinMethod(name, TsType.Number, "String", range);
             case "indexOf":
             case "lastIndexOf":
                 return BuiltinMethod(name, TsType.Int32, "String", range);

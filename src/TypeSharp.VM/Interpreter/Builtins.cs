@@ -457,7 +457,7 @@ public static class Builtins
             {
                 string s = S(args[0]);
                 int i = I(args[1]);
-                return TsValue.FromInt32(i >= 0 && i < s.Length ? s[i] : -1);
+                return i >= 0 && i < s.Length ? TsValue.FromInt32(s[i]) : TsValue.FromFloat64(double.NaN);
             },
             ["String::toUpperCase"] = args => TsValue.FromString(S(args[0]).ToUpperInvariant()),
             ["String::toLowerCase"] = args => TsValue.FromString(S(args[0]).ToLowerInvariant()),

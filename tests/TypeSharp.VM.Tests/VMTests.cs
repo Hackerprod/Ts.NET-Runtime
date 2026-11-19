@@ -747,6 +747,50 @@ public class InterpreterTests
             $"Math.max binary64 mismatch: expected={expected}; actual={actual}");
     }
 
+    [Theory]
+    [InlineData("negative", "ABC", -1, "NaN")]
+    [InlineData("equal-length", "ABC", 3, "NaN")]
+    [InlineData("past-length", "ABC", 99, "NaN")]
+    [InlineData("empty-zero", "", 0, "NaN")]
+    [InlineData("first", "ABC", 0, "65")]
+    [InlineData("last", "ABC", 2, "67")]
+    [InlineData("nul", "\u0000", 0, "0")]
+    [InlineData("utf16-high", "A😀Z", 1, "55357")]
+    [InlineData("utf16-low", "A😀Z", 2, "56832")]
+    [InlineData("utf16-final", "A😀Z", 3, "90")]
+    [InlineData("utf16-past", "A😀Z", 4, "NaN")]
+    public void StringCharCodeAt_IntegerBounds(string row, string text, int index, string expected)
+    {
+        const string source = "function main(text: string, index: number): number { return text.charCodeAt(index); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        Assert.Equal("String::charCodeAt", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(2, call.Operand1);
+
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var result = interpreter.Execute(bytecode, "main", [TsValue.FromString(text), TsValue.FromFloat64(index)]);
+        double number = result switch
+        {
+            TsInt32Value i => i.Value,
+            TsFloat64Value d => d.Value,
+            _ => throw new InvalidOperationException($"Expected a numeric TsValue, got {result?.GetType().Name}.")
+        };
+        var actual = number.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _output.WriteLine($"charCodeAt row={row}; parser/binder=0/0; target=String::charCodeAt; argc=2; result={result!.GetType().Name}; expected={expected}; actual={actual}");
+        Assert.True(string.Equals(expected, actual, StringComparison.Ordinal),
+            $"String.charCodeAt numeric mismatch: expected={expected}; actual={actual}");
+    }
+
     public static IEnumerable<object[]> ParseFloatPrefixCases()
     {
         var negativeZero = BitConverter.Int64BitsToDouble(long.MinValue);
