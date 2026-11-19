@@ -2201,7 +2201,8 @@ public sealed class Interpreter
             }
             case "Array::some":
             {
-                for (int i = 0; i < arr.Count; i++)
+                int initialCount = arr.Count;
+                for (int i = 0; i < initialCount; i++)
                 {
                     if (arr.IsHole(i)) continue;
                     if (AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i))))
