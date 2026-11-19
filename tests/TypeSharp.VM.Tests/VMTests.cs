@@ -4012,6 +4012,52 @@ public class InterpreterTests
         Assert.Equal((expectedVisits, expectedIndex), (actualVisits, index.Value));
     }
 
+    [Theory]
+    [InlineData("internal-hole", "const nested: any[] = [1, 2, 3]; delete nested[1]; return [0].flatMap((n: number): any[] => nested);", "13")]
+    [InlineData("leading-trailing-holes", "const nested: any[] = [1, 2, 3]; delete nested[0]; delete nested[2]; return [0, 0].flatMap((n: number): any[] => nested);", "22")]
+    [InlineData("all-holes", "const nested: any[] = [1, 2]; delete nested[0]; delete nested[1]; return [0].flatMap((n: number): any[] => nested);", "")]
+    [InlineData("mixed-hole-undefined-null", "const nested: any[] = [1, undefined, null, 4]; delete nested[0]; return [0].flatMap((n: number): any[] => nested);", "UN4")]
+    [InlineData("explicit-undefined-null", "return [0].flatMap((n: number): any[] => [undefined, null]);", "UN")]
+    [InlineData("dense-mapper", "return [1, 2].flatMap((n: number): any[] => [n, 9]);", "1929")]
+    [InlineData("scalar-mapper", "return [1, 2].flatMap((n: number): number => n);", "12")]
+    [InlineData("empty-callback-array", "return [1, 2].flatMap((n: number): any[] => []);", "")]
+    [InlineData("one-level-only", "const inner: any[] = [1, 2]; delete inner[0]; return [0].flatMap((n: number): any[] => [inner]);", "[H2]")]
+    public void ArrayFlatMap_SkipsMissingSlotsInCallbackArrays(string row, string body, string expected)
+    {
+        var source = $$"""
+            function main(): any[] {
+                {{body}}
+            }
+            """;
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "Array::flatMap");
+        Assert.Equal(2, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var result = Assert.IsType<TsArrayValue>(interpreter.Execute(BytecodeCompiler.Compile(ir), "main"));
+        static string Slots(TsArray array) => string.Concat(Enumerable.Range(0, array.Count).Select(
+            i => array.IsHole(i) ? "H" : array.Get(i) switch
+            {
+                TsInt32Value n => n.Value.ToString(),
+                TsFloat64Value n => n.Value.ToString(),
+                TsVoid => "U",
+                TsNull => "N",
+                TsArrayValue nested => "[" + Slots(nested.Value) + "]",
+                var other => $"<{other.GetType().Name}>",
+            }));
+        var actual = Slots(result.Value);
+        _output.WriteLine($"ArrayFlatMap row={row}; parser/binder=0/0; IR=Array::flatMap/2; result-length={result.Value.Count}; actual={actual}; expected={expected}");
+        Assert.Equal(expected, actual);
+    }
+
     [Fact]
     public void Array_Map_PreservesHoles()
     {

@@ -2140,7 +2140,13 @@ public sealed class Interpreter
                     if (arr.IsHole(i)) continue;
                     var produced = Invoke(callback!, arr.Get(i), TsValue.FromInt32(i));
                     if (produced is TsArrayValue nested)
-                        for (int j = 0; j < nested.Value.Count; j++) flat.Add(nested.Value.Get(j));
+                    {
+                        for (int j = 0; j < nested.Value.Count; j++)
+                        {
+                            if (nested.Value.IsHole(j)) continue;
+                            flat.Add(nested.Value.Get(j));
+                        }
+                    }
                     else
                         flat.Add(produced);
                 }
