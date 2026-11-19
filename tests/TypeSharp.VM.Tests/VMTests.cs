@@ -16,6 +16,48 @@ namespace TypeSharp.VM.Tests;
 
 public class InterpreterTests
 {
+    [Theory]
+    [InlineData("abcXYZ", "abc", "3", true)]
+    [InlineData("abcXYZ", "XYZ", "3", false)]
+    [InlineData("abcXYZ", "abc", "3.9", true)]
+    [InlineData("abcXYZ", "XYZ", "-2", false)]
+    [InlineData("abcXYZ", "XYZ", "999", true)]
+    [InlineData("abcXYZ", "XYZ", "Infinity", true)]
+    [InlineData("abcXYZ", "XYZ", "-Infinity", false)]
+    [InlineData("abcXYZ", "XYZ", "NaN", false)]
+    [InlineData("abcXYZ", "XYZ", "undefined", true)]
+    [InlineData("abcXYZ", "XYZ", "omitted", true)]
+    [InlineData("abcXYZ", "", "0", true)]
+    [InlineData("abcXYZ", "ABC", "3", false)]
+    [InlineData("a😀z", "😀", "3", true)]
+    public void StringEndsWith_EndPosition(string text, string suffix, string position, bool expected)
+    {
+        bool omitted = position == "omitted";
+        var source = omitted
+            ? "function main(s: string, needle: string): boolean { return s.endsWith(needle); }"
+            : "function main(s: string, needle: string, p: number | undefined): boolean { return s.endsWith(needle, p); }";
+        TsValue[] args = omitted
+            ? [TsValue.FromString(text), TsValue.FromString(suffix)]
+            : [TsValue.FromString(text), TsValue.FromString(suffix),
+               position == "undefined" ? TsValue.Void : TsValue.FromFloat64(double.Parse(position, System.Globalization.CultureInfo.InvariantCulture))];
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "String::endsWith");
+        Assert.Equal(omitted ? 2 : 3, call.Operand1);
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsBoolValue>(interpreter.Execute(bytecode, "main", args)).Value;
+        _output.WriteLine($"endsWith({text}, {suffix}, {position}) => {actual}, expected {expected}, IR argc={call.Operand1}");
+        Assert.Equal(expected, actual);
+    }
+
     private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)
     {
         var lexer = new TypeSharp.Syntax.Lexer(code);

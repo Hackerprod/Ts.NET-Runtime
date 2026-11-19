@@ -444,7 +444,20 @@ public static class Builtins
             ["String::concat"] = args => TsValue.FromString(string.Concat(args.Select(a => a is TsStringValue sv ? sv.Value : a.ToString()))),
             ["String::includes"] = args => Bool(S(args[0]).Contains(S(args[1]), StringComparison.Ordinal)),
             ["String::startsWith"] = args => Bool(S(args[0]).StartsWith(S(args[1]), StringComparison.Ordinal)),
-            ["String::endsWith"] = args => Bool(S(args[0]).EndsWith(S(args[1]), StringComparison.Ordinal)),
+            ["String::endsWith"] = args =>
+            {
+                var text = S(args[0]);
+                var needle = S(args[1]);
+                int end = text.Length;
+                if (args.Length > 2 && args[2] is not TsVoid)
+                {
+                    var position = D(args[2]);
+                    end = double.IsNaN(position) || position <= 0
+                        ? 0
+                        : position >= text.Length ? text.Length : (int)Math.Truncate(position);
+                }
+                return Bool(text.AsSpan(0, end).EndsWith(needle.AsSpan(), StringComparison.Ordinal));
+            },
             ["String::indexOf"] = args =>
             {
                 var text = S(args[0]);
