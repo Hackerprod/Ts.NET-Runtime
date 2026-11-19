@@ -379,7 +379,11 @@ public static class Builtins
                 int start = args.Length > 1 ? Normalize(I(args[1]), arr.Count) : 0;
                 int end = args.Length > 2 ? Normalize(I(args[2]), arr.Count) : arr.Count;
                 var result = new TsArray(Math.Max(end - start, 0));
-                for (int i = start; i < end; i++) result.Add(arr.Get(i));
+                for (int i = start; i < end; i++)
+                {
+                    if (arr.IsHole(i)) result.SetHole(i - start);
+                    else result.Add(arr.Get(i));
+                }
                 return new TsArrayValue(result);
             },
             ["Array::concat"] = args =>

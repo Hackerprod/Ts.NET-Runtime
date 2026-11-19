@@ -812,6 +812,97 @@ public class InterpreterTests
         Assert.Equal(expectedSlots, actualSlots);
     }
 
+    [Theory]
+    [InlineData("offset-mixed", "7HUOH9", "1, 5", 3, "HUOH")]
+    [InlineData("all-holes", "7HH9", "1, 3", 3, "HH")]
+    [InlineData("trailing-default-end", "78HH", "1", 2, "8HH")]
+    [InlineData("dense", "7UO9", "", 1, "7UO9")]
+    [InlineData("negative-range", "789A", "-3, -1", 3, "89")]
+    [InlineData("reverse-range", "7HO9", "3, 1", 3, "")]
+    [InlineData("empty", "", "", 1, "")]
+    public void ArraySlice_PreservesSparseSlots(string row, string input, string bounds, int argc, string expected)
+    {
+        var token = TsValue.FromObject(new TsObject("SliceToken"));
+        var array = new TsArray();
+        TsValue?[] slots = input.Select(c => c switch
+        {
+            'H' => null,
+            'U' => TsValue.Void,
+            'O' => token,
+            'A' => TsValue.FromInt32(10),
+            _ => TsValue.FromInt32(c - '0'),
+        }).ToArray();
+        foreach (var slot in slots)
+        {
+            if (slot is null) array.SetHole(array.Count);
+            else array.Add(slot);
+        }
+
+        static string ExpectedMask(string values) => new(values.Select(c => c == 'H' ? 'H' : 'P').ToArray());
+        static string ActualMask(TsArray values) => new(Enumerable.Range(0, values.Count)
+            .Select(i => values.IsHole(i) ? 'H' : 'P').ToArray());
+
+        void CheckSlots(string stage, TsArray values, string specification)
+        {
+            for (var i = 0; i < specification.Length; i++)
+            {
+                var value = values.Get(i);
+                var expectedSlot = specification[i];
+                var description = value is TsInt32Value n ? $"Int32:{n.Value}" : value.GetType().Name;
+                _output.WriteLine($"ArraySlice row={row}; stage={stage}; index={i}; hole={values.IsHole(i)}; value={description}; token-identity={ReferenceEquals(value, token)}; expected-slot={expectedSlot}");
+                if (expectedSlot is 'H' or 'U') Assert.Same(TsValue.Void, value);
+                else if (expectedSlot == 'O') Assert.Same(token, value);
+                else Assert.Equal(expectedSlot == 'A' ? 10 : expectedSlot - '0', Assert.IsType<TsInt32Value>(value).Value);
+            }
+        }
+
+        void CheckReceiver(string stage)
+        {
+            _output.WriteLine($"ArraySlice row={row}; stage={stage}; count={array.Count}; expected-count={input.Length}; mask=[{ActualMask(array)}]; expected-mask=[{ExpectedMask(input)}]");
+            Assert.Equal(input.Length, array.Count);
+            Assert.Equal(ExpectedMask(input), ActualMask(array));
+            CheckSlots(stage, array, input);
+        }
+
+        CheckReceiver("receiver-before");
+        var wrapper = new TsArrayValue(array);
+        var source = $"function main(a: any[]): any[] {{ return a.slice({bounds}); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"ArraySlice row={row}; parser={parser.Diagnostics.Count()}; binder={binder.Diagnostics.All.Count()}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        _output.WriteLine($"ArraySlice row={row}; target={call.OperandObject}; argc={call.Operand1}; expected-argc={argc}");
+        Assert.Equal("Array::slice", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(argc, call.Operand1);
+
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue? result = null;
+        var error = Record.Exception(() => { result = interpreter.Execute(bytecode, "main", [wrapper]); });
+        _output.WriteLine($"ArraySlice row={row}; exception={error?.GetType().Name ?? "none"}; result-type={result?.GetType().Name}");
+        Assert.Null(error);
+        var resultWrapper = Assert.IsType<TsArrayValue>(result);
+        var sliced = resultWrapper.Value;
+        _output.WriteLine($"ArraySlice row={row}; same-wrapper={ReferenceEquals(wrapper, resultWrapper)}; same-backing={ReferenceEquals(array, sliced)}; count={sliced.Count}; expected-count={expected.Length}");
+        Assert.NotSame(wrapper, resultWrapper);
+        Assert.NotSame(array, sliced);
+        Assert.Equal(expected.Length, sliced.Count);
+        CheckReceiver("receiver-after");
+        CheckSlots("result", sliced, expected);
+        var actualMask = ActualMask(sliced);
+        var expectedMask = ExpectedMask(expected);
+        _output.WriteLine($"ArraySlice row={row}; result-mask=[{actualMask}]; expected-mask=[{expectedMask}]");
+        Assert.Equal(expectedMask, actualMask);
+    }
+
     [Fact]
     public void ForIn_EnumeratesOwnObjectKeysInInsertionOrder()
     {
