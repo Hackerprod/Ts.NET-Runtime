@@ -33,7 +33,11 @@ public static class Builtins
             ["Math::log2"] = args => Num(Math.Log2(D(args[0]))),
             ["Math::log10"] = args => Num(Math.Log10(D(args[0]))),
             ["Math::exp"] = args => Num(Math.Exp(D(args[0]))),
-            ["Math::sign"] = args => Num(Math.Sign(D(args[0]))),
+            ["Math::sign"] = args =>
+            {
+                var n = D(args[0]);
+                return Num(double.IsNaN(n) || n == 0.0 ? n : n < 0.0 ? -1.0 : 1.0);
+            },
             ["Math::random"] = _ => Num(Random.Shared.NextDouble()),
             ["Math::min"] = args => Num(args.Select(D).Min()),
             ["Math::max"] = args => Num(args.Select(D).Max()),

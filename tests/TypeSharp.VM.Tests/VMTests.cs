@@ -193,6 +193,67 @@ public class InterpreterTests
             Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(actual));
     }
 
+    [Theory]
+    [InlineData("nan")]
+    [InlineData("negative-zero")]
+    [InlineData("positive-zero")]
+    [InlineData("negative-finite")]
+    [InlineData("positive-finite")]
+    [InlineData("negative-subnormal")]
+    [InlineData("positive-subnormal")]
+    [InlineData("negative-infinity")]
+    [InlineData("positive-infinity")]
+    public void MathSign_JavaScriptNumberSemantics(string scenario)
+    {
+        var negativeZero = BitConverter.Int64BitsToDouble(long.MinValue);
+        var (input, expected) = scenario switch
+        {
+            "nan" => (double.NaN, double.NaN),
+            "negative-zero" => (negativeZero, negativeZero),
+            "positive-zero" => (0.0, 0.0),
+            "negative-finite" => (-2.75, -1.0),
+            "positive-finite" => (2.75, 1.0),
+            "negative-subnormal" => (-double.Epsilon, -1.0),
+            "positive-subnormal" => (double.Epsilon, 1.0),
+            "negative-infinity" => (double.NegativeInfinity, -1.0),
+            "positive-infinity" => (double.PositiveInfinity, 1.0),
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario), scenario, null),
+        };
+
+        const string source = "function main(x: number): number { return Math.sign(x); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        foreach (var diagnostic in parser.Diagnostics)
+            _output.WriteLine($"parser [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        Assert.Empty(parser.Diagnostics);
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var boundTree = binder.Bind(tree);
+        foreach (var diagnostic in binder.Diagnostics.All)
+            _output.WriteLine($"binder [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        Assert.Empty(binder.Diagnostics.All);
+        _output.WriteLine("parser diagnostics=0; binder diagnostics=0");
+
+        var bytecodeModule = BytecodeCompiler.Compile(new IRGenerator().Generate(boundTree));
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var argument = TsValue.FromFloat64(input);
+        static string Display(double value) =>
+            FormattableString.Invariant($"{value:R}/0x{BitConverter.DoubleToInt64Bits(value):X16}");
+        _output.WriteLine($"MathSign row={scenario}; input={Display(input)}; expected={Display(expected)}");
+        TsValue? actual = null;
+        var exception = Record.Exception(() => { actual = interpreter.Execute(bytecodeModule, "main", [argument]); });
+        if (exception is not null)
+            _output.WriteLine(exception.ToString());
+        Assert.Null(exception);
+
+        var value = Assert.IsType<TsFloat64Value>(actual).Value;
+        _output.WriteLine($"MathSign type=TsFloat64Value; actual={Display(value)}");
+        if (double.IsNaN(expected))
+            Assert.True(double.IsNaN(value), "Expected NaN");
+        else
+            Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(value));
+    }
+
     public static IEnumerable<object[]> ParseFloatPrefixCases()
     {
         var negativeZero = BitConverter.Int64BitsToDouble(long.MinValue);
