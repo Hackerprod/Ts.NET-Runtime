@@ -341,7 +341,7 @@ public static class Builtins
                 int start = args.Length > 1 ? Normalize(I(args[1]), arr.Count) : 0;
                 int deleteCount = args.Length > 2
                     ? Math.Clamp(I(args[2]), 0, arr.Count - start)
-                    : arr.Count - start;
+                    : args.Length == 1 ? 0 : arr.Count - start;
                 var removed = new TsArray(deleteCount);
                 for (int i = 0; i < deleteCount; i++)
                 {
