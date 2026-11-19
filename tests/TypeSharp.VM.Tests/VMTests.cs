@@ -3793,6 +3793,73 @@ public class InterpreterTests
         AssertSlots("mapped", mapped.Value, expectedMapped);
     }
 
+    [Theory]
+    [InlineData("append-accepted", "12", "if (i === 0) { a.push(9); }", "true", "129", "01", "12")]
+    [InlineData("append-rejected", "12", "if (i === 0) { a.push(9); }", "n !== 9", "129", "01", "12")]
+    [InlineData("append-after-ending-at-hole", "1H", "if (i === 0) { a.push(9); }", "true", "1H9", "0", "1")]
+    [InlineData("pop-future-slot", "123", "if (i === 0) { a.pop(); }", "true", "12", "01", "12")]
+    [InlineData("replace-future-slot", "123", "if (i === 0) { a[1] = 7; }", "n !== 7", "173", "012", "13")]
+    [InlineData("fill-future-hole", "1H3", "if (i === 0) { a[1] = 7; }", "true", "173", "012", "173")]
+    [InlineData("delete-future-slot", "123", "if (i === 0) { delete a[1]; }", "true", "1H3", "02", "13")]
+    [InlineData("replace-current-slot", "12", "if (i === 0) { a[0] = 7; }", "true", "72", "01", "12")]
+    [InlineData("dense-predicate", "123", "", "n !== 2", "123", "012", "13")]
+    [InlineData("sparse-no-mutation", "1H2", "", "true", "1H2", "02", "12")]
+    [InlineData("all-holes", "HHH", "", "true", "HHH", "", "")]
+    [InlineData("empty", "", "", "true", "", "", "")]
+    public void ArrayFilter_UsesInitialLengthAndLiveSlots(string row, string initial, string mutation,
+        string predicate, string expectedSource, string expectedVisits, string expectedFiltered)
+    {
+        var source = $$"""
+            function main(a: number[], visits: number[]): number[] {
+                return a.filter((n: number, i: number): boolean => {
+                    visits.push(i);
+                    {{mutation}}
+                    return {{predicate}};
+                });
+            }
+            """;
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "Array::filter");
+        Assert.Equal(2, call.Operand1);
+
+        var array = new TsArray(initial.Length);
+        for (var i = 0; i < initial.Length; i++)
+        {
+            if (initial[i] == 'H') array.SetHole(i);
+            else array.Add(TsValue.FromInt32(initial[i] - '0'));
+        }
+
+        static string Slots(TsArray values) => string.Concat(
+            Enumerable.Range(0, values.Count).Select(i => values.IsHole(i) ? "H" : values.Get(i) switch
+            {
+                TsInt32Value number => number.Value.ToString(),
+                TsFloat64Value number => number.Value.ToString(),
+                var other => $"<{other.GetType().Name}>"
+            }));
+
+        Assert.Equal(initial, Slots(array));
+        var visits = new TsArray();
+        var receiver = new TsArrayValue(array);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var filtered = Assert.IsType<TsArrayValue>(interpreter.Execute(
+            BytecodeCompiler.Compile(ir), "main", [receiver, new TsArrayValue(visits)]));
+        Assert.NotSame(array, filtered.Value);
+        var actualSource = Slots(array);
+        var actualVisits = Slots(visits);
+        var actualFiltered = Slots(filtered.Value);
+        _output.WriteLine($"ArrayFilter row={row}; parser/binder=0/0; IR=Array::filter/2; source={actualSource}; visits={actualVisits}; filtered={actualFiltered}");
+        Assert.Equal(expectedSource, actualSource);
+        Assert.Equal((expectedVisits, expectedFiltered), (actualVisits, actualFiltered));
+    }
+
     [Fact]
     public void Array_Map_PreservesHoles()
     {

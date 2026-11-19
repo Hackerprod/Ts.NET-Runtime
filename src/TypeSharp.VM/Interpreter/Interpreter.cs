@@ -2148,8 +2148,9 @@ public sealed class Interpreter
             }
             case "Array::filter":
             {
+                var initialLength = arr.Count;
                 var filtered = new TsArray();
-                for (int i = 0; i < arr.Count; i++)
+                for (int i = 0; i < initialLength; i++)
                 {
                     if (arr.IsHole(i)) continue;
                     var element = arr.Get(i);
