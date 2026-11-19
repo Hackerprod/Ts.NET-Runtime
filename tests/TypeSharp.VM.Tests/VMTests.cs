@@ -193,6 +193,81 @@ public class InterpreterTests
             Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(actual));
     }
 
+    public static IEnumerable<object[]> ParseFloatPrefixCases()
+    {
+        var negativeZero = BitConverter.Int64BitsToDouble(long.MinValue);
+        (string Id, string Input, double Expected)[] cases =
+        [
+            ("suffix", "12.5px", 12.5),
+            ("exp-sign-no-digit", "1e+kg", 1.0),
+            ("comma", "1,234", 1.0),
+            ("dot-leading", "+.5kg", 0.5),
+            ("dot-trailing", "73.", 73.0),
+            ("dot-exp-complete", "1.E+2kg", 100.0),
+            ("dot-exp-incomplete", "1.e-", 1.0),
+            ("exponent-signed", "-6.25E-2", -0.0625),
+            ("finite", " \t+12.5 \r\n", 12.5),
+            ("infinity-positive", "+InfinityTail", double.PositiveInfinity),
+            ("infinity-negative", "-InfinityTail", double.NegativeInfinity),
+            ("infinity-case", "infinity", double.NaN),
+            ("infinity-control", "Infinity", double.PositiveInfinity),
+            ("bom-and-lines", "\ufeff\u00a0\u2028\u2029\u000b\f-3.5s", -3.5),
+            ("nel", "\u008542", double.NaN),
+            ("no-prefix", "junk2.5", double.NaN),
+            ("no-mantissa", "+.e4", double.NaN),
+            ("empty", " ", double.NaN),
+            ("ascii-only", "\u06612", double.NaN),
+            ("ascii-exp-only", "1e+\u0661", 1.0),
+            ("no-inner-trim", "- 1", double.NaN),
+            ("non-decimal", "0x10", 0.0),
+            ("underscore", "9_9", 9.0),
+            ("negative-zero-suffix", "-0.0px", negativeZero),
+            ("negative-zero-control", "-0", negativeZero),
+            ("overflow-plus", "9e9999px", double.PositiveInfinity),
+            ("overflow-minus", "-9e9999px", double.NegativeInfinity),
+            ("overflow-control", "9e9999", double.PositiveInfinity),
+            ("neg-underflow", "-1e-9999px", negativeZero),
+            ("exponent-two", "1e2e3", 100.0),
+        ];
+        foreach (var (id, input, expected) in cases)
+        {
+            yield return ["parseFloat", id, input, expected];
+        }
+        yield return ["Number", "number-suffix", "12.5px", double.NaN];
+        yield return ["Number", "number-finite", "12.5", 12.5];
+        yield return ["parseInt", "parse-int", "42", 42.0];
+    }
+
+    [Theory]
+    [MemberData(nameof(ParseFloatPrefixCases))]
+    public void ParseFloatPrefix_JavaScriptDecimalPrefix(string route, string id, string input, double expected)
+    {
+        var source = $"function main(x: string): number {{ return {route}(x); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        foreach (var diagnostic in parser.Diagnostics)
+            _output.WriteLine($"parser [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        Assert.Empty(parser.Diagnostics);
+
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        binder.Bind(tree);
+        foreach (var diagnostic in binder.Diagnostics.All)
+            _output.WriteLine($"binder [{diagnostic.Code}] {diagnostic.Location}: {diagnostic.Message}");
+        Assert.Empty(binder.Diagnostics.All);
+        _output.WriteLine("parser diagnostics=0; binder diagnostics=0");
+
+        var actual = Assert.IsType<TsFloat64Value>(Run(source, args: [TsValue.FromString(input)])).Value;
+        static string Display(double value) =>
+            FormattableString.Invariant($"{value:R}/0x{BitConverter.DoubleToInt64Bits(value):X16}");
+        var escaped = string.Concat(input.Select(ch => FormattableString.Invariant($"\\u{(int)ch:X4}")));
+        _output.WriteLine($"ParseFloatPrefix route={route}; row={id}; type=TsFloat64Value; input={escaped}; expected={Display(expected)}; actual={Display(actual)}");
+
+        if (double.IsNaN(expected))
+            Assert.True(double.IsNaN(actual), "Expected NaN");
+        else
+            Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(actual));
+    }
+
     private void AssertArraySearchEquality(string source, string method, int expected, params TsValue[] args)
     {
         var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());

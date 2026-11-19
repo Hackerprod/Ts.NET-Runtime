@@ -271,8 +271,7 @@ public static class Builtins
                     return Num(long.TryParse(text, out var direct) ? direct : double.NaN);
                 }
             },
-            ["parseFloat"] = args => Num(double.TryParse(S(args[0]).Trim(),
-                System.Globalization.CultureInfo.InvariantCulture, out var pf) ? pf : double.NaN),
+            ["parseFloat"] = args => Num(ParseFloatPrefix(S(args[0]))),
             ["isNaN"] = args => Bool(double.IsNaN(D(args[0]))),
             ["isFinite"] = args => Bool(double.IsFinite(D(args[0]))),
             ["String"] = args => TsValue.FromString(args.Length > 0 ? S(args[0]) : ""),
@@ -510,6 +509,59 @@ public static class Builtins
         TsBoolValue b => TsValue.FromBigInt(b.Value ? System.Numerics.BigInteger.One : System.Numerics.BigInteger.Zero),
         _ => throw new InvalidOperationException("Cannot convert value to BigInt")
     };
+
+    private static double ParseFloatPrefix(ReadOnlySpan<char> text)
+    {
+        static bool IsDigit(char ch) => ch is >= '0' and <= '9';
+
+        int index = 0;
+        // ECMAScript WhiteSpace and LineTerminator; char.IsWhiteSpace also accepts NEL.
+        while (index < text.Length &&
+            (text[index] is '\t' or '\v' or '\f' or '\uFEFF' or '\r' or '\n' or '\u2028' or '\u2029' ||
+             char.GetUnicodeCategory(text[index]) == UnicodeCategory.SpaceSeparator))
+            index++;
+
+        int start = index;
+        bool negative = index < text.Length && text[index] == '-';
+        if (index < text.Length && text[index] is '+' or '-')
+            index++;
+
+        if (text[index..].StartsWith("Infinity", StringComparison.Ordinal))
+            return negative ? double.NegativeInfinity : double.PositiveInfinity;
+
+        int integerStart = index;
+        while (index < text.Length && IsDigit(text[index]))
+            index++;
+        bool hasDigits = index > integerStart;
+        if (index < text.Length && text[index] == '.')
+        {
+            int fractionStart = ++index;
+            while (index < text.Length && IsDigit(text[index]))
+                index++;
+            hasDigits |= index > fractionStart;
+        }
+
+        if (!hasDigits)
+            return double.NaN;
+
+        int end = index;
+        if (index < text.Length && text[index] is 'e' or 'E')
+        {
+            index++;
+            if (index < text.Length && text[index] is '+' or '-')
+                index++;
+            int exponentStart = index;
+            while (index < text.Length && IsDigit(text[index]))
+                index++;
+            // An incomplete exponent leaves the mantissa as the longest valid prefix.
+            if (index > exponentStart)
+                end = index;
+        }
+
+        if (!double.TryParse(text[start..end], NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            return double.NaN;
+        return negative && value == 0d ? Math.CopySign(0d, -1d) : value;
+    }
 
     private static string S(TsValue v) => v switch
     {
