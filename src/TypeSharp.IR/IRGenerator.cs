@@ -2497,8 +2497,7 @@ public sealed class IRGenerator
         // `Void` en `InvokeCallable`. Solo cuando se conoce la clase
         // declarante; con receptor de tipo interfaz (DeclaringClassName ==
         // null) se mantiene el comportamiento actual. Y solo en accesos NO
-        // opcionales: con `?.`, el camino actual cortocircuita a `null`
-        // cuando el receptor es null y la rama no debe puentearlo.
+        // opcionales: este atajo no se aplica a accesos con `?.`.
         // Consecuencia: `C?.f` como valor deja el valor-clase (W-7) en vez
         // del método; arreglar ese caso es otro ciclo.
         if (member.Member is MethodSymbol methodSym && methodSym.DeclaringClassName != null
@@ -2540,7 +2539,7 @@ public sealed class IRGenerator
 
         if (member.IsNullConditional)
         {
-            // obj?.field — yield null without touching the field when obj is null.
+            // obj?.field — yield undefined without reading the field when obj is nullish.
             var func = _currentFunction!;
             var nullBlock = func.CreateBlock();
             var loadBlock = func.CreateBlock();
@@ -2555,7 +2554,7 @@ public sealed class IRGenerator
             _currentBlock = nullBlock;
             _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // duplicated obj
             _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // original obj
-            _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Null));
+            _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
             EmitBranch(endBlock.Id);
 
             _currentBlock = loadBlock;

@@ -103,6 +103,72 @@ public class InterpreterTests
         Assert.IsType<TsVoid>(callResult);
     }
 
+    private static TsValue? RunOptionalDataMember(string source, string entryPoint = "main", TsValue[]? args = null)
+    {
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        parser.Parse();
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(BindSourceErrors(source));
+        return Run(source, entryPoint, args);
+    }
+
+    private static double OptionalDataMemberNumber(TsValue? value)
+    {
+        Assert.True(value is TsInt32Value or TsFloat64Value,
+            $"Expected a numeric VM result, got {value?.GetType().Name ?? "<no result>"}.");
+        return value is TsInt32Value int32 ? int32.Value : ((TsFloat64Value)value!).Value;
+    }
+
+    [Theory]
+    [InlineData("let obj: any = null; return fallback(obj?.count);", 7)]
+    [InlineData("let obj: any = undefined; return fallback(obj?.count);", 7)]
+    [InlineData("return fallback(null);", 99)]
+    [InlineData("return fallback(undefined);", 7)]
+    [InlineData("let obj: any = { count: 0 }; return fallback(obj?.count);", 0)]
+    [InlineData("let obj: any = { count: null }; return fallback(obj?.count);", 99)]
+    public void OptionalDataMember_DistinguishesShortCircuitFromExplicitNull(string body, int expected)
+    {
+        var source = $$"""
+            function fallback(value: any = 7): number {
+                if (value === null) return 99;
+                return value;
+            }
+            function main(): number { {{body}} }
+            """;
+
+        Assert.Equal((double)expected, OptionalDataMemberNumber(RunOptionalDataMember(source)));
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("undefined")]
+    public void OptionalDataMember_DynamicNullishReceiverProducesUndefined(string receiver)
+    {
+        var source = $$"""
+            function main(): any { let obj: any = {{receiver}}; return obj?.count; }
+            """;
+
+        Assert.IsType<TsVoid>(RunOptionalDataMember(source));
+    }
+
+    private const string OptionalDataMemberTypedSource = """
+        class Box { constructor(public count: int32) {} }
+        function main(obj: Box | null): any { return obj?.count; }
+        function entry(): any { return main(new Box(8)); }
+        """;
+
+    [Fact]
+    public void OptionalDataMember_TypedNullReceiverProducesUndefined()
+    {
+        Assert.IsType<TsVoid>(RunOptionalDataMember(OptionalDataMemberTypedSource, args: new[] { TsValue.Null }));
+    }
+
+    [Fact]
+    public void OptionalDataMember_TypedPresentReceiverLoadsField()
+    {
+        Assert.Equal(8d, OptionalDataMemberNumber(RunOptionalDataMember(OptionalDataMemberTypedSource, "entry")));
+    }
+
     [Fact]
     public void FunctionExpression_CapturesItsLexicalEnvironment()
     {
