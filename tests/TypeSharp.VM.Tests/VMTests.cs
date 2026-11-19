@@ -3947,6 +3947,71 @@ public class InterpreterTests
         Assert.Equal((expectedVisits, expectedFiltered), (actualVisits, actualFiltered));
     }
 
+    [Theory]
+    [InlineData("append-matching", "12", "if (i === 0) { a.push(9); }", "n === 9", "129", "01", -1)]
+    [InlineData("append-nonmatching", "12", "if (i === 0) { a.push(9); }", "n === 8", "129", "01", -1)]
+    [InlineData("append-after-hole", "1H", "if (i === 0) { a.push(9); }", "n === 9", "1H9", "01", -1)]
+    [InlineData("pop-future-slot", "123", "if (i === 0) { a.pop(); }", "n === undefined", "12", "012", 2)]
+    [InlineData("pop-two-future-slots-no-match", "123", "if (i === 0) { a.pop(); a.pop(); }", "false", "1", "012", -1)]
+    [InlineData("replace-future-slot", "123", "if (i === 0) { a[1] = 7; }", "n === 7", "173", "01", 1)]
+    [InlineData("populate-future-hole", "1H3", "if (i === 0) { a[1] = 7; }", "n === 7", "173", "01", 1)]
+    [InlineData("delete-future-slot", "123", "if (i === 0) { delete a[1]; }", "n === undefined", "1H3", "01", 1)]
+    [InlineData("append-short-circuit", "12", "if (i === 0) { a.push(9); }", "n === 1", "129", "0", 0)]
+    [InlineData("dense-found", "123", "", "n === 2", "123", "01", 1)]
+    [InlineData("initial-holes-visited", "HH", "", "n === undefined", "HH", "0", 0)]
+    [InlineData("empty", "", "", "true", "", "", -1)]
+    public void ArrayFindIndex_UsesInitialLengthAndLiveReads(string row, string initial, string mutation,
+        string predicate, string expectedSource, string expectedVisits, int expectedIndex)
+    {
+        var source = $$"""
+            function main(a: number[], visits: number[]): number {
+                return a.findIndex((n: number, i: number): boolean => {
+                    visits.push(i);
+                    {{mutation}}
+                    return {{predicate}};
+                });
+            }
+            """;
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "Array::findIndex");
+        Assert.Equal(2, call.Operand1);
+
+        var array = new TsArray(initial.Length);
+        for (var i = 0; i < initial.Length; i++)
+        {
+            if (initial[i] == 'H') array.SetHole(i);
+            else array.Add(TsValue.FromInt32(initial[i] - '0'));
+        }
+
+        static string Slots(TsArray values) => string.Concat(
+            Enumerable.Range(0, values.Count).Select(i => values.IsHole(i) ? "H" : values.Get(i) switch
+            {
+                TsInt32Value number => number.Value.ToString(),
+                TsFloat64Value number => number.Value.ToString(),
+                var other => $"<{other.GetType().Name}>"
+            }));
+
+        Assert.Equal(initial, Slots(array));
+        var visits = new TsArray();
+        var receiver = new TsArrayValue(array);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var index = Assert.IsType<TsInt32Value>(interpreter.Execute(
+            BytecodeCompiler.Compile(ir), "main", [receiver, new TsArrayValue(visits)]));
+        var actualSource = Slots(array);
+        var actualVisits = Slots(visits);
+        _output.WriteLine($"ArrayFindIndex row={row}; parser/binder=0/0; IR=Array::findIndex/2; source={actualSource}; visits={actualVisits}; index={index.Value}; expected-visits={expectedVisits}; expected-index={expectedIndex}");
+        Assert.Equal(expectedSource, actualSource);
+        Assert.Equal((expectedVisits, expectedIndex), (actualVisits, index.Value));
+    }
+
     [Fact]
     public void Array_Map_PreservesHoles()
     {
