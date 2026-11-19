@@ -437,7 +437,16 @@ public static class Builtins
             ["String::includes"] = args => Bool(S(args[0]).Contains(S(args[1]), StringComparison.Ordinal)),
             ["String::startsWith"] = args => Bool(S(args[0]).StartsWith(S(args[1]), StringComparison.Ordinal)),
             ["String::endsWith"] = args => Bool(S(args[0]).EndsWith(S(args[1]), StringComparison.Ordinal)),
-            ["String::indexOf"] = args => TsValue.FromInt32(S(args[0]).IndexOf(S(args[1]), StringComparison.Ordinal)),
+            ["String::indexOf"] = args =>
+            {
+                var text = S(args[0]);
+                var needle = S(args[1]);
+                var position = args.Length > 2 ? D(args[2]) : 0.0;
+                var start = double.IsNaN(position) || position <= 0
+                    ? 0
+                    : position >= text.Length ? text.Length : (int)Math.Truncate(position);
+                return TsValue.FromInt32(needle.Length == 0 ? start : text.IndexOf(needle, start, StringComparison.Ordinal));
+            },
             ["String::lastIndexOf"] = args => TsValue.FromInt32(S(args[0]).LastIndexOf(S(args[1]), StringComparison.Ordinal)),
             ["String::replace"] = args =>
             {

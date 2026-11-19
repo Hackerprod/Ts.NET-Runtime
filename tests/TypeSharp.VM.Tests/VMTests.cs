@@ -479,6 +479,87 @@ public class InterpreterTests
     }
 
     [Theory]
+    [InlineData("second-match", "ababa", "ba", 3)]
+    [InlineData("fractional", "ababa", "ba", 3)]
+    [InlineData("empty-at-end", "abc", "", 3)]
+    [InlineData("empty-over-length", "abc", "", 3)]
+    [InlineData("nonempty-over-length", "abc", "a", -1)]
+    [InlineData("positive-infinity", "abc", "a", -1)]
+    [InlineData("utf16", "😀x😀x", "x", 5)]
+    [InlineData("d-string", "ababa", "ba", 3)]
+    [InlineData("omitted", "ababa", "ba", 1)]
+    [InlineData("negative", "ababa", "ba", 1)]
+    [InlineData("negative-infinity", "ababa", "ba", 1)]
+    [InlineData("nan", "ababa", "ba", 1)]
+    [InlineData("negative-zero", "ababa", "ba", 1)]
+    [InlineData("explicit-void", "ababa", "ba", 1)]
+    [InlineData("empty-receiver", "", "", 0)]
+    [InlineData("ordinal-case", "aAa", "A", -1)]
+    public void StringIndexOf_Position(string row, string text, string needle, int expected)
+    {
+        TsValue? position = row switch
+        {
+            "omitted" => null,
+            "second-match" or "ordinal-case" => TsValue.FromInt32(2),
+            "empty-at-end" or "utf16" => TsValue.FromInt32(3),
+            "nonempty-over-length" => TsValue.FromInt32(99),
+            "fractional" => TsValue.FromFloat64(3.9),
+            "empty-over-length" => TsValue.FromFloat64(2147483648.0),
+            "positive-infinity" or "empty-receiver" => TsValue.FromFloat64(double.PositiveInfinity),
+            "negative" => TsValue.FromFloat64(-2.7),
+            "negative-infinity" => TsValue.FromFloat64(double.NegativeInfinity),
+            "nan" => TsValue.FromFloat64(double.NaN),
+            "negative-zero" => TsValue.FromFloat64(BitConverter.Int64BitsToDouble(long.MinValue)),
+            "explicit-void" => TsValue.Void,
+            "d-string" => TsValue.FromString(" 2 "),
+            _ => throw new ArgumentOutOfRangeException(nameof(row)),
+        };
+
+        var source = position is null
+            ? "function main(s: string, needle: string): int32 { return s.indexOf(needle); }"
+            : "function main(s: string, needle: string, p: any): int32 { return s.indexOf(needle, p); }";
+        TsValue[] args = position is null
+            ? [TsValue.FromString(text), TsValue.FromString(needle)]
+            : [TsValue.FromString(text), TsValue.FromString(needle), position];
+        var positionDisplay = position switch
+        {
+            TsFloat64Value value => value.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+            TsStringValue value => System.Text.Json.JsonSerializer.Serialize(value.Value),
+            null => "omitted",
+            TsVoid => "undefined",
+            _ => position.ToString(),
+        };
+        _output.WriteLine($"StringIndexOf row={row}; host argc={args.Length}; position type={position?.GetType().Name ?? "omitted"}; position={positionDisplay}");
+        if (row == "negative-zero")
+        {
+            var bits = BitConverter.DoubleToInt64Bits(Assert.IsType<TsFloat64Value>(position).Value);
+            _output.WriteLine($"StringIndexOf row={row}; position bits={bits:X16}");
+            Assert.Equal(long.MinValue, bits);
+        }
+
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"StringIndexOf row={row}; parser diagnostics={parser.Diagnostics.Count()}; binder diagnostics={binder.Diagnostics.All.Count()}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "String::indexOf");
+        _output.WriteLine($"StringIndexOf row={row}; target={call.OperandObject}; IR argc={call.Operand1}");
+        Assert.Equal(position is null ? 2 : 3, call.Operand1);
+
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsInt32Value>(interpreter.Execute(bytecode, "main", args)).Value;
+        _output.WriteLine($"StringIndexOf row={row}; type=TsInt32Value; expected={expected}; actual={actual}");
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
     [InlineData("null-field", null, "a,,b")]
     [InlineData("void-field", "::", "a::::b")]
     [InlineData("sparse-field", ";", ";x;")]
