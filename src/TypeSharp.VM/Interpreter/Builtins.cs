@@ -442,7 +442,16 @@ public static class Builtins
             },
             ["String::repeat"] = args => TsValue.FromString(string.Concat(Enumerable.Repeat(S(args[0]), Math.Max(I(args[1]), 0)))),
             ["String::concat"] = args => TsValue.FromString(string.Concat(args.Select(a => a is TsStringValue sv ? sv.Value : a.ToString()))),
-            ["String::includes"] = args => Bool(S(args[0]).Contains(S(args[1]), StringComparison.Ordinal)),
+            ["String::includes"] = args =>
+            {
+                var text = S(args[0]);
+                var needle = S(args[1]);
+                var position = args.Length > 2 ? D(args[2]) : 0.0;
+                var start = double.IsNaN(position) || position <= 0
+                    ? 0
+                    : position >= text.Length ? text.Length : (int)Math.Truncate(position);
+                return Bool(needle.Length == 0 || text.IndexOf(needle, start, StringComparison.Ordinal) >= 0);
+            },
             ["String::startsWith"] = args => Bool(S(args[0]).StartsWith(S(args[1]), StringComparison.Ordinal)),
             ["String::endsWith"] = args =>
             {

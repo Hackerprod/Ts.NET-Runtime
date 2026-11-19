@@ -58,6 +58,49 @@ public class InterpreterTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData("abcabc", "abc", "3", true)]
+    [InlineData("abcABC", "abc", "1", false)]
+    [InlineData("abcABC", "abc", "1.9", false)]
+    [InlineData("abcABC", "abc", "0.9", true)]
+    [InlineData("abcABC", "abc", "-1.9", true)]
+    [InlineData("abcABC", "bc", "999", false)]
+    [InlineData("abcABC", "bc", "Infinity", false)]
+    [InlineData("abcABC", "bc", "-Infinity", true)]
+    [InlineData("abcABC", "bc", "NaN", true)]
+    [InlineData("abcABC", "bc", "undefined", true)]
+    [InlineData("abcABC", "bc", "omitted", true)]
+    [InlineData("abcABC", "", "Infinity", true)]
+    [InlineData("a😀z", "😀", "2", false)]
+    [InlineData("a😀z", "z", "2", true)]
+    public void StringIncludes_SearchPosition(string text, string needle, string position, bool expected)
+    {
+        bool omitted = position == "omitted";
+        var source = omitted
+            ? "function main(s: string, needle: string): boolean { return s.includes(needle); }"
+            : "function main(s: string, needle: string, p: number | undefined): boolean { return s.includes(needle, p); }";
+        TsValue[] args = omitted
+            ? [TsValue.FromString(text), TsValue.FromString(needle)]
+            : [TsValue.FromString(text), TsValue.FromString(needle),
+               position == "undefined" ? TsValue.Void : TsValue.FromFloat64(double.Parse(position, System.Globalization.CultureInfo.InvariantCulture))];
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "String::includes");
+        Assert.Equal(omitted ? 2 : 3, call.Operand1);
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsBoolValue>(interpreter.Execute(bytecode, "main", args)).Value;
+        _output.WriteLine($"includes({text}, {needle}, {position}) => {actual}, expected {expected}, IR argc={call.Operand1}, parser/binder diagnostics=0/0");
+        Assert.Equal(expected, actual);
+    }
+
     private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)
     {
         var lexer = new TypeSharp.Syntax.Lexer(code);
