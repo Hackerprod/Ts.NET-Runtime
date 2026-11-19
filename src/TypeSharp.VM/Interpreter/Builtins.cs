@@ -461,7 +461,7 @@ public static class Builtins
             },
             ["String::toUpperCase"] = args => TsValue.FromString(S(args[0]).ToUpperInvariant()),
             ["String::toLowerCase"] = args => TsValue.FromString(S(args[0]).ToLowerInvariant()),
-            ["String::trim"] = args => TsValue.FromString(S(args[0]).Trim()),
+            ["String::trim"] = args => TsValue.FromString(TrimEcmaWhitespace(S(args[0]))),
             ["String::substring"] = args =>
             {
                 string s = S(args[0]);
@@ -742,15 +742,28 @@ public static class Builtins
         _ => throw new InvalidOperationException("Cannot convert value to BigInt")
     };
 
+    // ECMAScript WhiteSpace and LineTerminator; NEL is not included.
+    private static bool IsEcmaTrimWhitespace(char ch) =>
+        ch is '\t' or '\v' or '\f' or '\uFEFF' or '\r' or '\n' or '\u2028' or '\u2029' ||
+        char.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator;
+
+    private static string TrimEcmaWhitespace(string text)
+    {
+        int start = 0;
+        int end = text.Length;
+        while (start < end && IsEcmaTrimWhitespace(text[start]))
+            start++;
+        while (end > start && IsEcmaTrimWhitespace(text[end - 1]))
+            end--;
+        return start == 0 && end == text.Length ? text : text[start..end];
+    }
+
     private static double ParseFloatPrefix(ReadOnlySpan<char> text)
     {
         static bool IsDigit(char ch) => ch is >= '0' and <= '9';
 
         int index = 0;
-        // ECMAScript WhiteSpace and LineTerminator; char.IsWhiteSpace also accepts NEL.
-        while (index < text.Length &&
-            (text[index] is '\t' or '\v' or '\f' or '\uFEFF' or '\r' or '\n' or '\u2028' or '\u2029' ||
-             char.GetUnicodeCategory(text[index]) == UnicodeCategory.SpaceSeparator))
+        while (index < text.Length && IsEcmaTrimWhitespace(text[index]))
             index++;
 
         int start = index;

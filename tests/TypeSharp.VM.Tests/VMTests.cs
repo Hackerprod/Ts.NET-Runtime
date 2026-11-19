@@ -1122,6 +1122,44 @@ public class InterpreterTests
     }
 
     [Theory]
+    [InlineData("bom-both", "\ufeffname\ufeff", "006E 0061 006D 0065")]
+    [InlineData("bom-left", "\ufeffname", "006E 0061 006D 0065")]
+    [InlineData("bom-right", "name\ufeff", "006E 0061 006D 0065")]
+    [InlineData("bom-mixed", " \t\ufeff\u00a0name\u2029\ufeff\n ", "006E 0061 006D 0065")]
+    [InlineData("bom-only", "\n\ufeff\u2028", "")]
+    [InlineData("nel-both", "\u0085name\u0085", "0085 006E 0061 006D 0065 0085")]
+    [InlineData("nel-stops-trim", " \u0085\u00a0name\u00a0\u0085\n", "0085 00A0 006E 0061 006D 0065 00A0 0085")]
+    [InlineData("bom-outside-nel", "\ufeff\u0085name\u0085\ufeff", "0085 006E 0061 006D 0065 0085")]
+    [InlineData("ecmascript-whitespace-and-lines", "\t\u000b\f\r\n \u00a0\u1680\u2000\u200a\u2028\u2029\u202f\u205f\u3000name\u3000\u2003", "006E 0061 006D 0065")]
+    [InlineData("unicode-nonspaces", " \u180e\u200bname\u200b\u180e ", "180E 200B 006E 0061 006D 0065 200B 180E")]
+    [InlineData("interior-and-pair", " \ud83d\ude00\ufeff\u0085 X\tY \u00a0", "D83D DE00 FEFF 0085 0020 0058 0009 0059")]
+    [InlineData("whitespace-only", "\u2003\t\u2029", "")]
+    [InlineData("unchanged", "name", "006E 0061 006D 0065")]
+    [InlineData("empty", "", "")]
+    public void StringTrim_EcmaWhitespace(string row, string text, string expectedHex)
+    {
+        const string source = "function main(s: string): string { return s.trim(); }";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "String::trim");
+        Assert.Equal(1, call.Operand1);
+
+        var bytes = BytecodeCompiler.Compile(ir);
+        var vm = new TypeSharp.VM.Interpreter.Interpreter();
+        var result = Assert.IsType<TsStringValue>(vm.Execute(bytes, "main", [TsValue.FromString(text)]));
+        string actual = string.Join(" ", result.Value.Select(unit => ((int)unit).ToString("X4")));
+        _output.WriteLine($"StringTrim row={row}; parser/binder=0/0; IR=String::trim/1; expected=[{expectedHex}]; VM=[{actual}]");
+        Assert.Equal(expectedHex, actual);
+    }
+
+    [Theory]
     [InlineData("repeat-and-truncate", "7", 6, "ab", "ababa7")]
     [InlineData("empty-fill", "7", 6, "", "7")]
     [InlineData("empty-fill-huge-width", "7", int.MaxValue, "", "7")]
