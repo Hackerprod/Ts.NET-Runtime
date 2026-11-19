@@ -642,6 +642,81 @@ public class InterpreterTests
         Assert.Equal(8080, Assert.IsType<TsInt32Value>(result).Value);
     }
 
+    [Theory]
+    [InlineData("other: 5", "x", false)]
+    [InlineData("x: undefined", "x", true)]
+    [InlineData("x: null", "x", true)]
+    [InlineData("x: 0", "x", true)]
+    [InlineData("'': 0", "", true)]
+    [InlineData("xy: 0, X: 0", "x", false)]
+    public void InOperatorTestsOwnLiteralKeyPresence(string fields, string key, bool expected)
+    {
+        var source = $"function main(): bool {{ let o = {{ {fields} }}; return '{key}' in o; }}";
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Equal(expected, Assert.IsType<TsBoolValue>(Run(source)).Value);
+    }
+
+    [Fact]
+    public void InOperatorEvaluatesReceiverOnce()
+    {
+        const string source = """
+            let calls: int32 = 0;
+            function pick(): { x: int32 } { calls = calls + 1; return { x: 5 }; }
+            function main(): int32 {
+                let found = 'x' in pick();
+                if (found) { return calls; }
+                return -1;
+            }
+            """;
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Equal(1, Assert.IsType<TsInt32Value>(Run(source)).Value);
+    }
+
+    [Fact]
+    public void InOperatorNarrowsUnionOnAbsentProperty()
+    {
+        const string source = """
+            type Circle = { kind: 'circle'; radius: int32; };
+            type Square = { kind: 'square'; size: int32; };
+            type Shape = Circle | Square;
+            function main(): int32 {
+                let shape: Shape = { kind: 'circle', radius: 4 } as Shape;
+                if ('size' in shape) { return shape.size; }
+                else { return shape.radius; }
+            }
+            """;
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Equal(4, Assert.IsType<TsInt32Value>(Run(source)).Value);
+    }
+
+    [Fact]
+    public void InOperatorRetainsDynamicKeyGuard()
+    {
+        const string source = "function main(): bool { let o = { x: 0 }; let key: string = 'x'; return key in o; }";
+        Assert.Empty(BindSourceErrors(source));
+        var ex = Assert.Throws<InvalidOperationException>(() => Run(source));
+        Assert.Equal("The 'in' operator currently requires a string literal property name", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("length", "[1]")]
+    [InlineData("unrecognized", "[1]")]
+    [InlineData("unrecognized", "null")]
+    public void InOperatorRetainsNonObjectFallback(string key, string receiver)
+    {
+        var source = $"function check(o: any): bool {{ return '{key}' in o; }} function main(): bool {{ return check({receiver}); }}";
+        Assert.Empty(BindSourceErrors(source));
+        Assert.True(Assert.IsType<TsBoolValue>(Run(source)).Value);
+    }
+
+    [Fact]
+    public void InOperatorDoesNotChangeReadingAbsentField()
+    {
+        const string source = "function read(o: any): any { return o.x; } function main(): any { return read({ other: 5 }); }";
+        Assert.Empty(BindSourceErrors(source));
+        Assert.Same(TsValue.Null, Run(source));
+    }
+
     [Fact]
     public void InOperatorNarrowsUnionByPropertyPresence()
     {

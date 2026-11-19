@@ -65,6 +65,7 @@ public static class Opcodes
     public const byte StoreField               = 0x15;
     public const byte LoadGlobal               = 0x16;
     public const byte StoreGlobal              = 0x17;
+    public const byte HasFieldLiteral          = 0x18;
 
     public const byte AddI32                   = 0x20;
     public const byte SubI32                   = 0x21;
@@ -282,6 +283,7 @@ public static class OpcodeFormats
         Reg(0x15, OperandKind.Int32);  // STORE_FIELD (string index)
         Reg(0x16, OperandKind.Int32);  // LOAD_GLOBAL (string index)
         Reg(0x17, OperandKind.Int32);  // STORE_GLOBAL (string index)
+        Reg(Opcodes.HasFieldLiteral, OperandKind.Int32); // HAS_FIELD_LITERAL (string index)
 
         // ── I32 arithmetic ──
         Reg(0x20); Reg(0x21); Reg(0x22); Reg(0x23); Reg(0x24); Reg(0x25);

@@ -223,6 +223,7 @@ public static class BytecodeCompiler
         Opcode.TypeCheck => 1, // peek + push
 
         // Delete
+        Opcode.HasFieldLiteral => 0, // pop receiver, push bool
         Opcode.DeleteField => -1, // pop obj, push bool
         Opcode.DeleteIndex => -2, // pop obj + index, push bool
 
@@ -301,6 +302,10 @@ public static class BytecodeCompiler
                 break;
             case Opcode.LoadThis:
                 writer.Write(Opcodes.LoadThis);
+                break;
+            case Opcode.HasFieldLiteral:
+                writer.Write(Opcodes.HasFieldLiteral);
+                writer.WriteInt32(instr.Operand0);
                 break;
             case Opcode.LoadField:
                 writer.Write(Opcodes.LoadField);
@@ -589,6 +594,7 @@ public static class BytecodeCompiler
                         Opcode.CallVirt or
                         Opcode.NewObject or
                         Opcode.LoadField or
+                        Opcode.HasFieldLiteral or
                         Opcode.StoreField or
                         Opcode.DeleteField or
                         Opcode.LoadGlobal or

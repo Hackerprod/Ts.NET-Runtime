@@ -391,21 +391,21 @@ public sealed class Interpreter
                 {
                     int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var fieldName = strings[fieldIdx];
-                    var obj = frame.Pop();
-                    if (obj is TsObjectValue objVal)
-                        frame.Push(objVal.Value.GetField(fieldName));
-                    else if (obj is TsArrayValue arrVal && fieldName == "length")
-                        frame.Push(TsValue.FromInt32(arrVal.Value.Count));
-                    else if (obj is TsMapValue mapVal && fieldName == "size")
-                        frame.Push(TsValue.FromFloat64(mapVal.Value.Count));
-                    else if (obj is TsSetValue setVal && fieldName == "size")
-                        frame.Push(TsValue.FromFloat64(setVal.Value.Count));
-                    else if (obj is TsUint8ArrayValue bytesVal && fieldName == "length")
-                        frame.Push(TsValue.FromFloat64(bytesVal.Length));
-                    else if (obj is TsStringValue strVal && fieldName == "length")
-                        frame.Push(TsValue.FromInt32(strVal.Value.Length));
-                    else
-                        frame.Push(TsValue.Null);
+                    frame.Push(ReadFieldValue(frame.Pop(), fieldName));
+                    break;
+                }
+
+                case Opcodes.HasFieldLiteral:
+                {
+                    int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    var fieldName = strings[fieldIdx];
+                    var receiver = frame.Pop();
+                    // Only TsObject gets own-key semantics; preserve the old read/compare
+                    // result for other receivers.
+                    bool hasField = receiver is TsObjectValue objVal
+                        ? objVal.Value.Fields.ContainsKey(fieldName)
+                        : !StrictEquals(ReadFieldValue(receiver, fieldName), TsValue.Void);
+                    frame.Push(new TsBoolValue(hasField));
                     break;
                 }
 
@@ -2269,6 +2269,17 @@ public sealed class Interpreter
             return StrictEquals(left, right);
         return false;
     }
+
+    private static TsValue ReadFieldValue(TsValue receiver, string fieldName) => receiver switch
+    {
+        TsObjectValue objVal => objVal.Value.GetField(fieldName),
+        TsArrayValue arrVal when fieldName == "length" => TsValue.FromInt32(arrVal.Value.Count),
+        TsMapValue mapVal when fieldName == "size" => TsValue.FromFloat64(mapVal.Value.Count),
+        TsSetValue setVal when fieldName == "size" => TsValue.FromFloat64(setVal.Value.Count),
+        TsUint8ArrayValue bytesVal when fieldName == "length" => TsValue.FromFloat64(bytesVal.Length),
+        TsStringValue strVal when fieldName == "length" => TsValue.FromInt32(strVal.Value.Length),
+        _ => TsValue.Null,
+    };
 
     private static bool StrictEquals(TsValue left, TsValue right)
     {

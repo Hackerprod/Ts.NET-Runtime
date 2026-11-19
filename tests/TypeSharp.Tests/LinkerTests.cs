@@ -4,6 +4,7 @@ using TypeSharp.Runtime.Generations;
 using TypeSharp.Runtime.Modules;
 using TypeSharp.VM.Bytecode;
 using TypeSharp.VM.Interpreter;
+using TypeSharp.VM.Memory;
 using Xunit;
 
 namespace TypeSharp.Tests;
@@ -97,7 +98,7 @@ public class LinkerTests
             Assert.True(OpcodeFormats.TryGet(opcode, out var format),
                 $"Unknown opcode 0x{opcode:X2} at {ip}");
             if (opcode is Opcodes.Call or Opcodes.LoadFunc or Opcodes.MakeClosure
-                or Opcodes.CallVirt or Opcodes.CallHost or Opcodes.LoadField
+                or Opcodes.CallVirt or Opcodes.CallHost or Opcodes.LoadField or Opcodes.HasFieldLiteral
                 or Opcodes.StoreField or Opcodes.LoadGlobal or Opcodes.StoreGlobal
                 or Opcodes.NewObject or Opcodes.LoadConstString or Opcodes.LoadConstRegex
                 or Opcodes.LoadConstBigInt or Opcodes.TypeCheck)
@@ -161,6 +162,43 @@ public class LinkerTests
         var leftSaveAgain = linkedAgain.Functions[linkedAgain.FunctionIndex["$module_left_save"]];
         Assert.Equal(new[] { "save", "other", "$module_left_save" }, leftSaveAgain.StringConstants);
         Assert.Equal(new[] { 0, 2, 0, 2, 1 }, ReadStringOperands(leftSaveAgain));
+    }
+
+    [Fact]
+    public void LinkedModulePreservesInOperatorKeyAndRenamesFollowingCall()
+    {
+        var generation = TwoModuleGeneration(module => new[]
+        {
+            new BytecodeFunction("save",
+                Concat(I32(Opcodes.LoadConstI32, module == "left" ? 41 : 42), new[] { Opcodes.Return }),
+                0, 0, false, Array.Empty<string>(), Array.Empty<long>(), Array.Empty<double>()),
+            new BytecodeFunction(module == "left" ? "entryLeft" : "entryRight",
+                Concat(
+                    I32(Opcodes.LoadArg, 0),
+                    I32(Opcodes.HasFieldLiteral, 0),
+                    I32(Opcodes.BranchFalse, 25),
+                    I32x2(Opcodes.Call, 0, 0),
+                    new[] { Opcodes.Return },
+                    I32(Opcodes.LoadConstI32, -1),
+                    new[] { Opcodes.Return }),
+                1, 0, false, new[] { "save" }, Array.Empty<long>(), Array.Empty<double>()),
+        });
+        var (callReserved, valueReserved) = RealReserved();
+        var linked = TypeSharpRuntime.CreateLinkedModule(generation, callReserved, valueReserved);
+        BytecodeVerifier.Verify(linked);
+
+        var interpreter = new Interpreter();
+        foreach (var (side, entry, expected) in new[] { ("left", "entryLeft", 41), ("right", "entryRight", 42) })
+        {
+            var function = linked.Functions[linked.FunctionIndex[entry]];
+            Assert.Equal(new[] { "save", $"$module_{side}_save" }, function.StringConstants);
+            Assert.Equal(new[] { 0, 1 }, ReadStringOperands(function));
+
+            var obj = new TsObject("Object");
+            obj.SetField("save", TsValue.Void);
+            Assert.Equal(expected, Assert.IsType<TsInt32Value>(
+                interpreter.Execute(linked, entry, new[] { TsValue.FromObject(obj) })).Value);
+        }
     }
 
     [Fact]

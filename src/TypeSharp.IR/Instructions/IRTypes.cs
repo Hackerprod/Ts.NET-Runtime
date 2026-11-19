@@ -133,6 +133,7 @@ public enum Opcode
     // Utilities
     TypeCheck,
     NullCheck,
+    HasFieldLiteral,
 }
 
 public sealed class Instruction
@@ -165,6 +166,7 @@ public sealed class Instruction
             Opcode.Call or Opcode.CallVirt => $"method#{Operand0} args={Operand1}",
             Opcode.NewObject => $"type#{Operand0} args={Operand1}",
             Opcode.LoadField or Opcode.StoreField => $"field#{Operand0}",
+            Opcode.HasFieldLiteral => OperandObject is string key ? $"'{key}'" : $"field#{Operand0}",
             _ when Operand0 != 0 || Operand1 != 0 => $"{Operand0}, {Operand1}",
             _ => ""
         };

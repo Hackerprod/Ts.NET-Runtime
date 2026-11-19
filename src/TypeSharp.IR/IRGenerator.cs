@@ -1715,9 +1715,7 @@ public sealed class IRGenerator
             throw new InvalidOperationException("The 'in' operator currently requires a string literal property name");
 
         GenerateExpression(bin.Right);
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, propertyName));
-        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
-        _currentBlock.Instructions.Add(new Instruction(Opcode.CmpStrictNe_Any));
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.HasFieldLiteral, 0, 0, propertyName));
     }
 
     private static TsType GetRuntimeType(TsType type) =>
