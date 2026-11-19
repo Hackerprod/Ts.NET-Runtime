@@ -620,6 +620,51 @@ public class InterpreterTests
         }
     }
 
+
+    [Theory]
+    [InlineData("omitted", "const a: any[] = [7, 2, 7, 3, 7];", "7", "omitted", 0)]
+    [InlineData("duplicate-after-start", "const a: any[] = [7, 2, 7, 3, 7];", "7", "1", 2)]
+    [InlineData("inclusive-positive", "const a: any[] = [7, 2, 7, 3, 7];", "7", "2", 2)]
+    [InlineData("negative-tail", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-1", 4)]
+    [InlineData("negative-length", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-5", 0)]
+    [InlineData("below-negative-length", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-100", 0)]
+    [InlineData("positive-fraction", "const a: any[] = [7, 2, 7, 3, 7];", "7", "1.9", 2)]
+    [InlineData("negative-fraction", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-1.9", 4)]
+    [InlineData("negative-zero", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-0", 0)]
+    [InlineData("nan", "const a: any[] = [7, 2, 7, 3, 7];", "7", "NaN", 0)]
+    [InlineData("undefined", "const a: any[] = [7, 2, 7, 3, 7];", "7", "undefined", 0)]
+    [InlineData("at-length", "const a: any[] = [7, 2, 7, 3, 7];", "7", "5", -1)]
+    [InlineData("positive-infinity", "const a: any[] = [7, 2, 7, 3, 7];", "7", "Infinity", -1)]
+    [InlineData("negative-infinity", "const a: any[] = [7, 2, 7, 3, 7];", "7", "-Infinity", 0)]
+    [InlineData("large-finite", "const a: any[] = [7, 2, 7, 3, 7];", "7", "1e100", -1)]
+    [InlineData("empty", "const a: any[] = [];", "7", "2", -1)]
+    [InlineData("hole-skipped-after-start", "const a: any[] = [undefined]; a[2] = undefined;", "undefined", "1", 2)]
+    [InlineData("hole-not-undefined", "const a: any[] = [undefined]; a[2] = 7;", "undefined", "1", -1)]
+    [InlineData("strict-equality", "const a: any[] = [7, '7'];", "7", "1", -1)]
+    public void ArrayIndexOf_FromIndex(string row, string prelude, string needle, string position, int expected)
+    {
+        bool omitted = position == "omitted";
+        string arguments = omitted ? needle : $"{needle}, {position}";
+        string source = $"function main(): number {{ {prelude} return a.indexOf({arguments}); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call && instruction.OperandObject is "Array::indexOf");
+        Assert.Equal(omitted ? 2 : 3, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsInt32Value>(
+            interpreter.Execute(BytecodeCompiler.Compile(ir), "main")).Value;
+        _output.WriteLine($"ArrayIndexOf row={row}; parser/binder=0/0; IR argc={call.Operand1}; actual={actual}; expected={expected}");
+        Assert.Equal(expected, actual);
+    }
+
     private static string ArraySearchReturnType(string method) => method == "includes" ? "bool" : "int32";
 
     [Theory]

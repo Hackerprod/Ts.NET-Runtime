@@ -359,7 +359,15 @@ public static class Builtins
             },
             ["Array::reverse"] = args => { Arr(args[0]).Reverse(); return args[0]; },
             ["Array::includes"] = args => Bool(IndexOf(Arr(args[0]), args[1], sameValueZero: true) >= 0),
-            ["Array::indexOf"] = args => TsValue.FromInt32(IndexOf(Arr(args[0]), args[1])),
+            ["Array::indexOf"] = args =>
+            {
+                var arr = Arr(args[0]);
+                int length = arr.Count;
+                if (length == 0) return TsValue.FromInt32(-1);
+
+                int start = args.Length > 2 ? FillIndex(args[2], length) : 0;
+                return TsValue.FromInt32(IndexOf(arr, args[1], start: start));
+            },
             ["Array::lastIndexOf"] = args =>
             {
                 var arr = Arr(args[0]);
@@ -802,9 +810,9 @@ public static class Builtins
         return Math.Clamp(index, 0, length);
     }
 
-    private static int IndexOf(TsArray arr, TsValue value, bool sameValueZero = false)
+    private static int IndexOf(TsArray arr, TsValue value, bool sameValueZero = false, int start = 0)
     {
-        for (int i = 0; i < arr.Count; i++)
+        for (int i = start; i < arr.Count; i++)
         {
             // includes reads holes as Void; indexOf searches only present slots.
             if (!sameValueZero && arr.IsHole(i)) continue;
