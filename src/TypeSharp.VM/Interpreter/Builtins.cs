@@ -563,6 +563,47 @@ public static class Builtins
             {
                 string s = S(args[0]);
                 string sep = S(args[1]);
+                if (args[1] is TsStringValue && args.Length > 2 &&
+                    args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
+                        TsFloat32Value or TsFloat64Value or TsDecimalValue)
+                {
+                    uint limit = StringSplitLimit(D(args[2]));
+                    if (limit == 0)
+                        return new TsArrayValue(new TsArray(0));
+
+                    long maxParts = sep.Length == 0 ? s.Length : (long)s.Length / sep.Length + 1;
+                    if (limit < maxParts)
+                    {
+                        if (sep.Length == 0)
+                        {
+                            // Below s.Length, so the limit fits in an int.
+                            int count = (int)limit;
+                            var units = new TsArray(count);
+                            for (int i = 0; i < count; i++)
+                                units.Add(TsValue.FromString(s[i].ToString()));
+                            return new TsArrayValue(units);
+                        }
+
+                        var limited = new TsArray((int)Math.Min(4u, limit));
+                        int start = 0;
+                        while (true)
+                        {
+                            int match = s.IndexOf(sep, start, StringComparison.Ordinal);
+                            if (match < 0)
+                            {
+                                limited.Add(TsValue.FromString(s.Substring(start)));
+                                break;
+                            }
+
+                            limited.Add(TsValue.FromString(s.Substring(start, match - start)));
+                            if ((long)limited.Count == limit)
+                                break;
+                            start = match + sep.Length;
+                        }
+                        return new TsArrayValue(limited);
+                    }
+                }
+
                 var parts = sep.Length == 0
                     ? s.Select(ch => ch.ToString()).ToArray()
                     : s.Split(sep);
@@ -572,6 +613,16 @@ public static class Builtins
             },
         };
         return t;
+    }
+
+    private static uint StringSplitLimit(double value)
+    {
+        if (!double.IsFinite(value))
+            return 0;
+
+        const double modulus = 4294967296d;
+        double remainder = Math.Truncate(value) % modulus;
+        return (uint)(remainder < 0 ? remainder + modulus : remainder);
     }
 
     private static double RoundJsNumber(double value)

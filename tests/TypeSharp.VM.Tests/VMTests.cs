@@ -146,6 +146,61 @@ public class InterpreterTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData("basic", "one,two,three", ",", "2", "[\"006f006e0065\",\"00740077006f\"]")]
+    [InlineData("no-remainder", "one,two,three", ",", "1", "[\"006f006e0065\"]")]
+    [InlineData("empty-fields", ",a,,", ",", "3", "[\"\",\"0061\",\"\"]")]
+    [InlineData("zero", "a,b", ",", "0", "[]")]
+    [InlineData("positive-fraction", "a,b,c", ",", "1.9", "[\"0061\"]")]
+    [InlineData("negative-fraction-to-zero", "a,b", ",", "-0.9", "[]")]
+    [InlineData("uint32-wrap", "a,b,c", ",", "4294967297", "[\"0061\"]")]
+    [InlineData("negative-uint32-wrap", "a,b,c", ",", "-4294967295", "[\"0061\"]")]
+    [InlineData("negative-one-large-limit", "a,b", ",", "-1", "[\"0061\",\"0062\"]")]
+    [InlineData("positive-infinity", "a,b", ",", "Infinity", "[]")]
+    [InlineData("negative-infinity", "a,b", ",", "-Infinity", "[]")]
+    [InlineData("nan", "a,b", ",", "NaN", "[]")]
+    [InlineData("explicit-undefined", "a,b,", ",", "undefined", "[\"0061\",\"0062\",\"\"]")]
+    [InlineData("omitted", "a,b,", ",", "omitted", "[\"0061\",\"0062\",\"\"]")]
+    [InlineData("multi-unit-separator", "a::b::c", "::", "2", "[\"0061\",\"0062\"]")]
+    [InlineData("empty-separator-utf16", "a\ud83d\ude00z", "", "2", "[\"0061\",\"d83d\"]")]
+    [InlineData("empty-input-nonempty-separator", "", ",", "1", "[\"\"]")]
+    [InlineData("empty-input-empty-separator", "", "", "1", "[]")]
+    [InlineData("no-match-nonzero", "abc", ",", "1", "[\"006100620063\"]")]
+    [InlineData("no-match-zero", "abc", ",", "0", "[]")]
+    public void StringSplit_RespectsResultLimit(string row, string text, string separator, string limit, string expected)
+    {
+        bool omitted = limit == "omitted";
+        var source = omitted
+            ? "function main(s: string, separator: string): string[] { return s.split(separator); }"
+            : "function main(s: string, separator: string, limit: number | undefined): string[] { return s.split(separator, limit); }";
+        TsValue[] args = omitted
+            ? [TsValue.FromString(text), TsValue.FromString(separator)]
+            : [TsValue.FromString(text), TsValue.FromString(separator),
+               limit == "undefined" ? TsValue.Void : TsValue.FromFloat64(double.Parse(limit, System.Globalization.CultureInfo.InvariantCulture))];
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions), instruction => instruction.Opcode == Opcode.Call);
+        Assert.Equal("String::split", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(omitted ? 2 : 3, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var result = Assert.IsType<TsArrayValue>(interpreter.Execute(BytecodeCompiler.Compile(ir), "main", args)).Value;
+        string Field(int index)
+        {
+            Assert.False(result.IsHole(index));
+            var value = Assert.IsType<TsStringValue>(result.Get(index)).Value;
+            return "\"" + string.Concat(value.Select(unit => ((int)unit).ToString("x4"))) + "\"";
+        }
+        var actual = "[" + string.Join(",", Enumerable.Range(0, result.Count).Select(Field)) + "]";
+        _output.WriteLine($"StringSplit row={row}; IR argc={call.Operand1}; actual={actual} expected={expected}");
+        Assert.Equal(expected, actual);
+    }
+
     private static TsValue? Run(string code, string entryPoint = "main", TsValue[]? args = null)
     {
         var lexer = new TypeSharp.Syntax.Lexer(code);
