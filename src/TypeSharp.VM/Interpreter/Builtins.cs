@@ -474,7 +474,7 @@ public static class Builtins
             {
                 string s = S(args[0]);
                 int start = Normalize(args.Length > 1 ? I(args[1]) : 0, s.Length);
-                int end = Normalize(args.Length > 2 ? I(args[2]) : s.Length, s.Length);
+                int end = Normalize(args.Length > 2 && args[2] is not TsVoid ? I(args[2]) : s.Length, s.Length);
                 return TsValue.FromString(start < end ? s[start..end] : "");
             },
             ["String::repeat"] = args => TsValue.FromString(string.Concat(Enumerable.Repeat(S(args[0]), Math.Max(I(args[1]), 0)))),

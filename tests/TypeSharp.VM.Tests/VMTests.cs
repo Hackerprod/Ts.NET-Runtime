@@ -19,6 +19,49 @@ public class InterpreterTests
     [Theory]
     [InlineData("omitted-end", "abcdef", "2", "", "cdef")]
     [InlineData("undefined-end", "abcdef", "2", "undefined", "cdef")]
+    [InlineData("undefined-end-negative-start", "abcdef", "-2", "undefined", "ef")]
+    [InlineData("undefined-end-zero-start", "abcdef", "0", "undefined", "abcdef")]
+    [InlineData("undefined-start-and-end", "abcdef", "undefined", "undefined", "abcdef")]
+    [InlineData("undefined-end-start-past-length", "abcdef", "8", "undefined", "")]
+    [InlineData("numeric-zero-end", "abcdef", "0", "0", "")]
+    [InlineData("nan-end", "abcdef", "0", "NaN", "")]
+    [InlineData("infinite-end", "abcdef", "2", "Infinity", "cdef")]
+    [InlineData("negative-infinite-end", "abcdef", "0", "-Infinity", "")]
+    [InlineData("huge-finite-end", "abcdef", "1", "1e100", "bcdef")]
+    [InlineData("fractional-relative-bounds", "abcdef", "-4.9", "-1.7", "cde")]
+    [InlineData("reverse-bounds", "abcdef", "4", "2", "")]
+    [InlineData("empty-receiver", "", "0", "undefined", "")]
+    [InlineData("utf16-bounds", "a😀z", "1", "3", "😀")]
+    [InlineData("utf16-undefined-end", "a😀z", "1", "undefined", "😀z")]
+    [InlineData("undefined-start", "abcdef", "undefined", "3", "abc")]
+    public void StringSlice_OptionalEnd(string row, string text, string start, string end, string expected)
+    {
+        string bounds = end.Length == 0 ? start : $"{start}, {end}";
+        string source = $"function main(s: string): string {{ return s.slice({bounds}); }}";
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        Assert.Equal("String::slice", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(end.Length == 0 ? 2 : 3, call.Operand1);
+
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        var actual = Assert.IsType<TsStringValue>(interpreter.Execute(
+            BytecodeCompiler.Compile(ir), "main", [TsValue.FromString(text)])).Value;
+        _output.WriteLine($"StringSlice row={row}; parser/binder=0/0; target={call.OperandObject}; argc={call.Operand1}; result=string; expected=[{expected}]; actual=[{actual}]");
+        Assert.True(string.Equals(expected, actual, StringComparison.Ordinal),
+            $"String.slice result mismatch: expected=[{expected}]; actual=[{actual}]");
+    }
+
+    [Theory]
+    [InlineData("omitted-end", "abcdef", "2", "", "cdef")]
+    [InlineData("undefined-end", "abcdef", "2", "undefined", "cdef")]
     [InlineData("undefined-end-start-past-length", "abcdef", "8", "undefined", "")]
     [InlineData("undefined-end-negative-start", "abcdef", "-1", "undefined", "abcdef")]
     [InlineData("infinite-start", "abcdef", "Infinity", "", "")]
