@@ -2117,8 +2117,9 @@ public sealed class Interpreter
         {
             case "Array::map":
             {
-                var mapped = new TsArray(arr.Count);
-                for (int i = 0; i < arr.Count; i++)
+                var initialLength = arr.Count;
+                var mapped = new TsArray(initialLength);
+                for (int i = 0; i < initialLength; i++)
                 {
                     if (arr.IsHole(i))
                     {

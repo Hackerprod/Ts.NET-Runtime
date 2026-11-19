@@ -3170,6 +3170,121 @@ public class InterpreterTests
         Assert.Equal(1, ((TsInt32Value)result!).Value);
     }
 
+    [Theory]
+    [InlineData("append-only-on-one", "12", "if (n === 1) { a.push(9); }", "129", "01", "12")]
+    [InlineData("pop-on-first", "123", "if (i === 0) { a.pop(); }", "12", "01", "12H")]
+    [InlineData("replace-future-slot", "123", "if (i === 0) { a[1] = 7; }", "173", "012", "173")]
+    [InlineData("fill-future-hole", "1H3", "if (i === 0) { a[1] = 7; }", "173", "012", "173")]
+    [InlineData("delete-future-slot", "123", "if (i === 0) { delete a[1]; }", "1H3", "02", "1H3")]
+    [InlineData("replace-current-slot", "12", "if (i === 0) { a[0] = 7; }", "72", "01", "12")]
+    [InlineData("holes-undefined-ref", "1HUOH", "", "1HUOH", "023", "1HUOH")]
+    [InlineData("all-holes", "HHH", "", "HHH", "", "HHH")]
+    [InlineData("empty", "", "", "", "", "")]
+    public void ArrayMap_UsesInitialLengthAndLiveSlots(string row, string initial, string mutation,
+        string expectedSource, string expectedVisits, string expectedMapped)
+    {
+        var source = $$"""
+            function main(a: any[], visits: int32[]): any[] {
+                return a.map((n: any, i: int32): any => {
+                    visits.push(i);
+                    {{mutation}}
+                    return n;
+                });
+            }
+            """;
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"ArrayMap row={row}; parser={parser.Diagnostics.Count()}; binder={binder.Diagnostics.All.Count()}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var mainCall = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        Assert.Equal("Array::map", Assert.IsType<string>(mainCall.OperandObject));
+        Assert.Equal(2, mainCall.Operand1);
+        var callback = Assert.Single(ir.Functions, function => function.Name != "main");
+        var callbackCalls = callback.Blocks.SelectMany(block => block.Instructions)
+            .Where(instruction => instruction.Opcode == Opcode.Call)
+            .Select(instruction => $"{instruction.OperandObject}/{instruction.Operand1}").ToArray();
+        _output.WriteLine($"ArrayMap row={row}; main=Array::map/2; callback={string.Join(",", callbackCalls)}");
+        Assert.Equal(row switch
+        {
+            "append-only-on-one" => new[] { "Array::push/2", "Array::push/2" },
+            "pop-on-first" => new[] { "Array::push/2", "Array::pop/1" },
+            _ => new[] { "Array::push/2" },
+        }, callbackCalls);
+
+        var token = TsValue.FromObject(new TsObject("MapToken"));
+        var array = new TsArray(initial.Length);
+        for (var i = 0; i < initial.Length; i++)
+        {
+            switch (initial[i])
+            {
+                case 'H': array.SetHole(i); break;
+                case 'U': array.Add(TsValue.Void); break;
+                case 'O': array.Add(token); break;
+                default: array.Add(TsValue.FromInt32(initial[i] - '0')); break;
+            }
+        }
+
+        void AssertSlots(string label, TsArray actual, string expected)
+        {
+            Assert.True(actual.Count == expected.Length,
+                $"ArrayMap matrix {row} {label}: expected Count={expected.Length}; actual Count={actual.Count}");
+            for (var i = 0; i < expected.Length; i++)
+            {
+                Assert.True(actual.IsHole(i) == (expected[i] == 'H'),
+                    $"ArrayMap matrix {row} {label}: unexpected presence at {i}");
+                var value = actual.Get(i);
+                switch (expected[i])
+                {
+                    case 'H':
+                    case 'U': Assert.Same(TsValue.Void, value); break;
+                    case 'O': Assert.Same(token, value); break;
+                    default: Assert.Equal(expected[i] - '0', Assert.IsType<TsInt32Value>(value).Value); break;
+                }
+            }
+        }
+
+        string DescribeSlots(TsArray actual)
+        {
+            var indices = Enumerable.Range(0, actual.Count);
+            var mask = string.Concat(indices.Select(i => actual.IsHole(i) ? '0' : '1'));
+            var values = string.Join(",", indices.Select(i =>
+            {
+                if (actual.IsHole(i)) return "H";
+                var value = actual.Get(i);
+                if (ReferenceEquals(value, TsValue.Void)) return "U";
+                if (ReferenceEquals(value, token)) return "O";
+                return value is TsInt32Value number ? number.Value.ToString() : value?.GetType().Name ?? "null";
+            }));
+            return $"count={actual.Count} mask={mask} values=[{values}]";
+        }
+
+        AssertSlots("initial", array, initial);
+        var visits = new TsArray();
+        var receiver = new TsArrayValue(array);
+        var visitsReceiver = new TsArrayValue(visits);
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue? result = null;
+        var error = Record.Exception(() => { result = interpreter.Execute(bytecode, "main", [receiver, visitsReceiver]); });
+        _output.WriteLine($"ArrayMap row={row}; exception={error?.GetType().Name ?? "none"}; result-type={result?.GetType().Name}");
+        Assert.Null(error);
+        var mapped = Assert.IsType<TsArrayValue>(result);
+        Assert.NotSame(receiver, mapped);
+        Assert.NotSame(array, mapped.Value);
+
+        _output.WriteLine($"ArrayMap row={row}; source {DescribeSlots(array)}; visits {DescribeSlots(visits)}; mapped {DescribeSlots(mapped.Value)}");
+        AssertSlots("source", array, expectedSource);
+        AssertSlots("visits", visits, expectedVisits);
+        AssertSlots("mapped", mapped.Value, expectedMapped);
+    }
+
     [Fact]
     public void Array_Map_PreservesHoles()
     {
