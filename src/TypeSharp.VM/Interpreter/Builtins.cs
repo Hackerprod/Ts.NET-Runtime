@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using TypeSharp.VM.Memory;
 
@@ -460,7 +461,37 @@ public static class Builtins
                 string s = S(args[0]);
                 string find = S(args[1]);
                 int idx = s.IndexOf(find, StringComparison.Ordinal);
-                return TsValue.FromString(idx < 0 ? s : s[..idx] + S(args[2]) + s[(idx + find.Length)..]);
+                if (idx < 0) return TsValue.FromString(s);
+
+                string template = S(args[2]);
+                int tail = idx + find.Length;
+                var prefix = s.AsSpan(0, idx);
+                var suffix = s.AsSpan(tail);
+                StringBuilder? result = null;
+                int literalStart = 0;
+                for (int i = 0; i < template.Length - 1; i++)
+                {
+                    if (template[i] != '$') continue;
+                    char token = template[i + 1];
+                    if (token is not ('$' or '&' or '`' or '\'')) continue;
+
+                    // Scan only the template; inserted source text is never rescanned.
+                    result ??= new StringBuilder().Append(prefix);
+                    result.Append(template.AsSpan(literalStart, i - literalStart));
+                    switch (token)
+                    {
+                        case '$': result.Append('$'); break;
+                        case '&': result.Append(s.AsSpan(idx, find.Length)); break;
+                        case '`': result.Append(prefix); break;
+                        case '\'': result.Append(suffix); break;
+                    }
+                    literalStart = i + 2;
+                    i++;
+                }
+
+                return TsValue.FromString(result is null
+                    ? string.Concat(prefix, template.AsSpan(), suffix)
+                    : result.Append(template.AsSpan(literalStart)).Append(suffix).ToString());
             },
             ["String::replaceAll"] = args => TsValue.FromString(S(args[0]).Replace(S(args[1]), S(args[2]))),
             ["String::padStart"] = args =>

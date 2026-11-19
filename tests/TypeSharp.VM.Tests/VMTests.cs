@@ -560,6 +560,73 @@ public class InterpreterTests
     }
 
     [Theory]
+    [InlineData("all-tokens-first", "ababa", "ba", "<$$|$&|$`|$'>", "a<$|ba|a|ba>ba")]
+    [InlineData("adjacent-single-pass", "aba", "b", "$$&|$$`|$$'|$$$&|$$$$", "a$&|$`|$'|$b|$$a")]
+    [InlineData("expansion-is-data", "P$`$&$'S", "$&", "<$'|$&|$`>", "P$`<$'S|$&|P$`>$'S")]
+    [InlineData("no-captures-mixed", "abc", "b", "[$0|$1|$01|$99|$<x$&>|$x|$]", "a[$0|$1|$01|$99|$<xb>|$x|$]c")]
+    [InlineData("empty-needle", "ab", "", "<$$|$&|$`|$'>", "<$|||ab>ab")]
+    [InlineData("empty-both", "", "", "[$`$&$']", "[]")]
+    [InlineData("unicode", "😀x😀x", "x", "<$`|$&|$'>", "😀<😀|x|😀x>😀x")]
+    [InlineData("utf16-split", "a😀z", "<surrogate-marker>", "<$&:$'>", "<surrogate-marker>")]
+    [InlineData("no-match-case", "aAa", "AA", "<$&$`$'>", "aAa")]
+    [InlineData("no-match-normalization", "café", "é", "$$", "café")]
+    [InlineData("literal-invalid", "abc", "b", "$0|$1|$01|$99|$<x>|$x|$", "a$0|$1|$01|$99|$<x>|$x|$c")]
+    [InlineData("ordinary-first", "aaaa", "aa", "X", "Xaa")]
+    [InlineData("delete", "ababa", "ba", "", "aba")]
+    [InlineData("literal-pattern", "x.a.a", ".", "!", "x!a.a")]
+    public void StringReplace_ReplacementTemplate(string row, string input, string find, string template, string expected)
+    {
+        if (row == "utf16-split")
+        {
+            // Keep isolated surrogates out of the theory's metadata and test display names.
+            find = "\uD83D";
+            expected = "a<\uD83D:\uDE00z>\uDE00z";
+        }
+
+        static string Quote(string value) => "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        static string Hex(string value) => string.Join(" ", value.Select(unit => ((int)unit).ToString("X4")));
+
+        var source = $"function main(s: string): string {{ return s.replace({Quote(find)}, {Quote(template)}); }}";
+        var tokens = new TypeSharp.Syntax.Lexer(source).Tokenize();
+        var literals = tokens.Where(token => token.Kind == TypeSharp.Syntax.TokenKind.StringLiteral).ToArray();
+        Assert.Equal(2, literals.Length);
+        Assert.Equal(find, literals[0].Text);
+        Assert.Equal(template, literals[1].Text);
+        var parser = new TypeSharp.Syntax.Parser.Parser(tokens);
+        var tree = parser.Parse();
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(tree);
+        _output.WriteLine($"StringReplace row={row}; parser={parser.Diagnostics.Count()}; binder={binder.Diagnostics.All.Count()}");
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+
+        var ir = new IRGenerator().Generate(bound);
+        var main = Assert.Single(ir.Functions, function => function.Name == "main");
+        var call = Assert.Single(main.Blocks.SelectMany(block => block.Instructions),
+            instruction => instruction.Opcode == Opcode.Call);
+        _output.WriteLine($"StringReplace row={row}; target={call.OperandObject}; argc={call.Operand1}");
+        Assert.Equal("String::replace", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(3, call.Operand1);
+
+        var bytecode = BytecodeCompiler.Compile(ir);
+        var compiledMain = bytecode.Functions[bytecode.FunctionIndex["main"]];
+        Assert.Contains(find, compiledMain.StringConstants);
+        Assert.Contains(template, compiledMain.StringConstants);
+        _output.WriteLine($"StringReplace row={row}; lexer-and-pool-find=[{Hex(find)}]; template=[{Hex(template)}]");
+        var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
+        TsValue? result = null;
+        var error = Record.Exception(() => { result = interpreter.Execute(bytecode, "main", [TsValue.FromString(input)]); });
+        _output.WriteLine($"StringReplace row={row}; exception={error?.GetType().Name ?? "none"}; result-type={result?.GetType().Name}");
+        Assert.Null(error);
+        var actual = Assert.IsType<TsStringValue>(result).Value;
+        var expectedHex = Hex(expected);
+        var actualHex = Hex(actual);
+        _output.WriteLine($"StringReplace row={row}; expected=[{expectedHex}]; actual=[{actualHex}]");
+        Assert.True(string.Equals(expected, actual, StringComparison.Ordinal),
+            $"Ordinal UTF-16 mismatch: expected=[{expectedHex}]; actual=[{actualHex}]");
+    }
+
+    [Theory]
     [InlineData("repeat-and-truncate", "7", 6, "ab", "ababa7")]
     [InlineData("empty-fill", "7", 6, "", "7")]
     [InlineData("empty-fill-huge-width", "7", int.MaxValue, "", "7")]
