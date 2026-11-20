@@ -29,7 +29,17 @@ public static class Builtins
             ["Math::trunc"] = args => Num(Math.Truncate(D(args[0]))),
             ["Math::sqrt"] = args => Num(Math.Sqrt(D(args[0]))),
             ["Math::cbrt"] = args => Num(Math.Cbrt(D(args[0]))),
-            ["Math::pow"] = args => Num(Math.Pow(D(args[0]), D(args[1]))),
+            ["Math::pow"] = args =>
+            {
+                var @base = D(args[0]);
+                var exponent = D(args[1]);
+                // ECMAScript differs from Math.Pow for these five input combinations.
+                if ((@base == 1.0 && double.IsNaN(exponent)) ||
+                    ((@base == 1.0 || @base == -1.0) && double.IsInfinity(exponent)))
+                    return Num(double.NaN);
+
+                return Num(Math.Pow(@base, exponent));
+            },
             ["Math::log"] = args => Num(Math.Log(D(args[0]))),
             ["Math::log2"] = args => Num(Math.Log2(D(args[0]))),
             ["Math::log10"] = args => Num(Math.Log10(D(args[0]))),
