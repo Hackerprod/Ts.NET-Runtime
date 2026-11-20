@@ -2224,7 +2224,8 @@ public sealed class Interpreter
             }
             case "Array::find":
             {
-                for (int i = 0; i < arr.Count; i++)
+                var initialLength = arr.Count;
+                for (int i = 0; i < initialLength; i++)
                 {
                     var element = arr.Get(i);
                     if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i))))
