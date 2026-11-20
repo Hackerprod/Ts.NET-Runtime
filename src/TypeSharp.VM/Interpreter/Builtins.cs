@@ -408,7 +408,7 @@ public static class Builtins
             ["Array::join"] = args =>
             {
                 var arr = Arr(args[0]);
-                string sep = args.Length > 1 ? S(args[1]) : ",";
+                string sep = args.Length > 1 && args[1] is not TsVoid ? S(args[1]) : ",";
                 return TsValue.FromString(string.Join(sep, Enumerable.Range(0, arr.Count).Select(i =>
                 {
                     var element = arr.Get(i);
