@@ -334,7 +334,7 @@ public static class Builtins
             ["Array::shift"] = args =>
             {
                 var arr = Arr(args[0]);
-                if (arr.Count == 0) return TsValue.Null;
+                if (arr.Count == 0) return TsValue.Void;
                 var first = arr.Get(0);
                 arr.RemoveAt(0);
                 return first;
