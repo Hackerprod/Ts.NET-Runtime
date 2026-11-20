@@ -666,7 +666,7 @@ public static class Builtins
             {
                 string text = S(args[0]);
                 int width = I(args[1]);
-                string fill = args.Length > 2 ? S(args[2]) : " ";
+                string fill = args.Length > 2 && args[2] is not TsVoid ? S(args[2]) : " ";
                 if (width < 0) return TsValue.FromString(text.PadRight(width));
                 if (width <= text.Length || fill.Length == 0) return TsValue.FromString(text);
                 if (fill.Length == 1) return TsValue.FromString(text.PadRight(width, fill[0]));
