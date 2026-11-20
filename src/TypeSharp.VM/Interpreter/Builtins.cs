@@ -460,7 +460,7 @@ public static class Builtins
             ["String::charAt"] = args =>
             {
                 string s = S(args[0]);
-                int i = I(args[1]);
+                int i = args.Length > 1 ? I(args[1]) : 0;
                 return TsValue.FromString(i >= 0 && i < s.Length ? s[i].ToString() : "");
             },
             ["String::charCodeAt"] = args =>
