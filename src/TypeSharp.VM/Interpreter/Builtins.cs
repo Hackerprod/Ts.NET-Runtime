@@ -1121,7 +1121,7 @@ public static class Builtins
                 .Select(v => ToJsonCompatible(v, ancestors, depth + 1))
                 .ToList()),
         TsObjectValue obj => ConvertComposite(obj.Value, ancestors, depth, () =>
-            obj.Value.Fields.ToDictionary(
+            obj.Value.Fields.Where(pair => pair.Value is not TsVoid).ToDictionary(
                 pair => pair.Key,
                 pair => ToJsonCompatible(pair.Value, ancestors, depth + 1),
                 StringComparer.Ordinal)),
