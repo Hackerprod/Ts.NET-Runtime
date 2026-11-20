@@ -2226,7 +2226,6 @@ public sealed class Interpreter
             {
                 for (int i = 0; i < arr.Count; i++)
                 {
-                    if (arr.IsHole(i)) continue;
                     var element = arr.Get(i);
                     if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i))))
                         return element;
