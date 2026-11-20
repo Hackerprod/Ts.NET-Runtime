@@ -590,28 +590,15 @@ public static class Builtins
                 string s = S(args[0]);
                 string find = S(args[1]);
                 string template = S(args[2]);
-                if (find.Length == 0 || args[0] is not TsStringValue ||
+                if (args[0] is not TsStringValue ||
                     args[1] is not TsStringValue || args[2] is not TsStringValue)
                     return TsValue.FromString(s.Replace(find, template));
 
                 static bool IsToken(char c) => c is '$' or '&' or '`' or '\'';
 
-                int firstToken = 0;
-                while (firstToken < template.Length - 1 &&
-                    (template[firstToken] != '$' || !IsToken(template[firstToken + 1])))
-                    firstToken++;
-                if (firstToken >= template.Length - 1)
-                    return TsValue.FromString(s.Replace(find, template));
-
-                int match = s.IndexOf(find, StringComparison.Ordinal);
-                if (match < 0) return TsValue.FromString(s);
-
-                var result = new StringBuilder();
-                int consumed = 0;
-                do
+                static void ExpandTemplate(string s, string template, int match, int length, int tail,
+                    int firstToken, StringBuilder result)
                 {
-                    result.Append(s.AsSpan(consumed, match - consumed));
-                    int tail = match + find.Length;
                     int literalStart = 0;
                     // Only scan the template. Both context tokens refer to the original source.
                     for (int i = firstToken; i < template.Length - 1; i++)
@@ -624,7 +611,7 @@ public static class Builtins
                         switch (token)
                         {
                             case '$': result.Append('$'); break;
-                            case '&': result.Append(s.AsSpan(match, find.Length)); break;
+                            case '&': result.Append(s.AsSpan(match, length)); break;
                             case '`': result.Append(s.AsSpan(0, match)); break;
                             case '\'': result.Append(s.AsSpan(tail)); break;
                         }
@@ -632,6 +619,45 @@ public static class Builtins
                         i++;
                     }
                     result.Append(template.AsSpan(literalStart));
+                }
+
+                int firstToken = 0;
+                while (firstToken < template.Length - 1 &&
+                    (template[firstToken] != '$' || !IsToken(template[firstToken + 1])))
+                    firstToken++;
+                bool hasToken = firstToken < template.Length - 1;
+                if (find.Length == 0)
+                {
+                    if (template.Length == 0) return TsValue.FromString(s);
+
+                    var inserted = new StringBuilder();
+                    // Insert at every UTF-16 code-unit boundary, including both ends.
+                    for (int boundary = 0; ; boundary++)
+                    {
+                        if (hasToken)
+                            ExpandTemplate(s, template, boundary, 0, boundary, firstToken, inserted);
+                        else
+                            inserted.Append(template);
+
+                        if (boundary == s.Length) break;
+                        inserted.Append(s[boundary]);
+                    }
+                    return TsValue.FromString(inserted.ToString());
+                }
+
+                if (!hasToken)
+                    return TsValue.FromString(s.Replace(find, template));
+
+                int match = s.IndexOf(find, StringComparison.Ordinal);
+                if (match < 0) return TsValue.FromString(s);
+
+                var result = new StringBuilder();
+                int consumed = 0;
+                do
+                {
+                    result.Append(s.AsSpan(consumed, match - consumed));
+                    int tail = match + find.Length;
+                    ExpandTemplate(s, template, match, find.Length, tail, firstToken, result);
                     consumed = tail;
                     match = s.IndexOf(find, consumed, StringComparison.Ordinal);
                 } while (match >= 0);
