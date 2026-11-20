@@ -125,7 +125,7 @@ public static class Builtins
             {
                 var bytes = Bytes(args[0]);
                 int start = args.Length > 1 ? Normalize(I(args[1]), bytes.Length) : 0;
-                int end = args.Length > 2 ? Normalize(I(args[2]), bytes.Length) : bytes.Length;
+                int end = args.Length > 2 && args[2] is not TsVoid ? Normalize(I(args[2]), bytes.Length) : bytes.Length;
                 return bytes.Slice(start, end);
             },
             ["Uint8Array::set"] = args =>
