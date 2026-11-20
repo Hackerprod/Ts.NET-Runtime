@@ -691,8 +691,11 @@ public static class Builtins
             ["String::padEnd"] = args =>
             {
                 string text = S(args[0]);
-                int width = I(args[1]);
+                double numericWidth = D(args[1]);
+                int width = (int)numericWidth;
                 string fill = args.Length > 2 && args[2] is not TsVoid ? S(args[2]) : " ";
+                if (args[1] is TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue
+                    && numericWidth < 0) return TsValue.FromString(text);
                 if (width < 0) return TsValue.FromString(text.PadRight(width));
                 if (width <= text.Length || fill.Length == 0) return TsValue.FromString(text);
                 if (fill.Length == 1) return TsValue.FromString(text.PadRight(width, fill[0]));
