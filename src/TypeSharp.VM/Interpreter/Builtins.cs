@@ -716,6 +716,19 @@ public static class Builtins
             ["String::split"] = args =>
             {
                 string s = S(args[0]);
+                if (args.Length == 1 || args[1] is TsVoid)
+                {
+                    if (args.Length > 2 &&
+                        (args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
+                            TsFloat32Value or TsFloat64Value or TsDecimalValue) &&
+                        StringSplitLimit(D(args[2])) == 0)
+                        return new TsArrayValue(new TsArray(0));
+
+                    var whole = new TsArray(1);
+                    whole.Add(TsValue.FromString(s));
+                    return new TsArrayValue(whole);
+                }
+
                 string sep = S(args[1]);
                 if (args[1] is TsStringValue && args.Length > 2 &&
                     args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
