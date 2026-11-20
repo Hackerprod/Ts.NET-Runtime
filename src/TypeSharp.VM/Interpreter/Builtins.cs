@@ -466,7 +466,7 @@ public static class Builtins
             ["String::charCodeAt"] = args =>
             {
                 string s = S(args[0]);
-                int i = I(args[1]);
+                int i = args.Length > 1 ? I(args[1]) : 0;
                 return i >= 0 && i < s.Length ? TsValue.FromInt32(s[i]) : TsValue.FromFloat64(double.NaN);
             },
             ["String::toUpperCase"] = args => TsValue.FromString(S(args[0]).ToUpperInvariant()),
