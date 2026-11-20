@@ -2231,7 +2231,7 @@ public sealed class Interpreter
                     if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i))))
                         return element;
                 }
-                return TsValue.Null;
+                return TsValue.Void;
             }
             case "Array::findIndex":
             {
