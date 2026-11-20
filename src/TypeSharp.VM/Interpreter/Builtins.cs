@@ -419,7 +419,7 @@ public static class Builtins
             {
                 var arr = Arr(args[0]);
                 int start = args.Length > 1 ? Normalize(I(args[1]), arr.Count) : 0;
-                int end = args.Length > 2 ? Normalize(I(args[2]), arr.Count) : arr.Count;
+                int end = args.Length > 2 && args[2] is not TsVoid ? Normalize(I(args[2]), arr.Count) : arr.Count;
                 var result = new TsArray(Math.Max(end - start, 0));
                 for (int i = start; i < end; i++)
                 {
