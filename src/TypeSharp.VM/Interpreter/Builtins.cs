@@ -1012,7 +1012,7 @@ public static class Builtins
             return true;
         }
 
-        if (value is not (TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value))
+        if (value is not (TsInt32Value or TsFloat32Value or TsFloat64Value))
             return false;
 
         double numeric = D(value);
