@@ -273,7 +273,8 @@ public static class Builtins
             // ── Global functions ──
             ["parseInt"] = args =>
             {
-                if (args.Length == 1 && args[0] is TsStringValue primitiveString)
+                if ((args.Length == 1 || (args.Length == 2 && args[1] is TsVoid)) &&
+                    args[0] is TsStringValue primitiveString)
                     return Num(ParseIntExplicitRadix(primitiveString.Value, 0));
 
                 string input = S(args[0]);
