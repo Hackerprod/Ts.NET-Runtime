@@ -2431,6 +2431,9 @@ public sealed class Interpreter
         try
         {
             var year = AsInt32(args[0]);
+            if (year is >= 0 and <= 99)
+                year += 1900;
+
             var monthZeroBased = AsInt32(args[1]);
             var day = args.Length > 2 ? AsInt32(args[2]) : 1;
             var hour = args.Length > 3 ? AsInt32(args[3]) : 0;
