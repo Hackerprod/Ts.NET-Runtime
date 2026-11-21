@@ -2484,6 +2484,14 @@ public sealed class Interpreter
         if (args.Length == 0 || args[0] is TsNull or TsVoid)
             return;
 
+        if (args[0] is TsStringValue stringValue)
+        {
+            var values = MaterializeIterableValues(stringValue);
+            for (int i = 0; i < values.Count; i++)
+                set.Add(values.Get(i));
+            return;
+        }
+
         if (args[0] is not TsArrayValue entries)
             throw new InvalidOperationException("Set constructor expects an array of values");
 
