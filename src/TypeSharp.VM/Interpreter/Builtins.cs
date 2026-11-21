@@ -129,11 +129,13 @@ public static class Builtins
                 {
                     for (int i = 0; i < sourceBytes.Length && offset + i < target.Length; i++)
                         target.Value[offset + i] = sourceBytes.Get(i);
+                    return TsValue.Void;
                 }
                 else if (args[1] is TsArrayValue sourceArray)
                 {
                     for (int i = 0; i < sourceArray.Value.Count && offset + i < target.Length; i++)
                         target.Value[offset + i] = ToByte(sourceArray.Value.Get(i));
+                    return TsValue.Void;
                 }
                 return TsValue.Null;
             },
