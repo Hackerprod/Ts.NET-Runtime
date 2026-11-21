@@ -2247,7 +2247,7 @@ public sealed class Interpreter
             {
                 var items = new TsValue[arr.Count];
                 for (int i = 0; i < arr.Count; i++) items[i] = arr.Get(i);
-                Comparison<TsValue> comparison = callback != null
+                Comparison<TsValue> comparison = callback != null && callback is not TsVoid
                     ? (a, b) =>
                     {
                         var result = AsFloat64(Invoke(callback, a, b));
