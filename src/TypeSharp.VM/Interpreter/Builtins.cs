@@ -384,7 +384,7 @@ public static class Builtins
                 if (length == 0) return TsValue.FromInt32(-1);
 
                 int start = args.Length > 2 ? FillIndex(args[2], length) : 0;
-                return TsValue.FromInt32(IndexOf(arr, args[1], start: start));
+                return TsValue.FromInt32(IndexOf(arr, args.Length > 1 ? args[1] : TsValue.Void, start: start));
             },
             ["Array::lastIndexOf"] = args =>
             {
