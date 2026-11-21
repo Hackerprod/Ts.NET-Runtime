@@ -861,9 +861,6 @@ public static class Builtins
 
     private static TsValue Min(TsValue[] args)
     {
-        if (args.Length == 0)
-            return Num(args.Select(D).Min());
-
         // Keep the legacy coercion path for the whole call unless every
         // argument is native numeric, even when an earlier argument is NaN.
         foreach (var arg in args)
@@ -891,9 +888,6 @@ public static class Builtins
 
     private static TsValue Max(TsValue[] args)
     {
-        if (args.Length == 0)
-            return Num(args.Select(D).Max());
-
         // Keep the legacy coercion path for the whole call unless every
         // argument is native numeric, even when an earlier argument is NaN.
         foreach (var arg in args)
