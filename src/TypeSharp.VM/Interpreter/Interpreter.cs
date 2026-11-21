@@ -2066,12 +2066,25 @@ public sealed class Interpreter
             // `{ length: n }` shapes.
             var source = args.Length > 0 ? args[0] : TsValue.Null;
             var mapFn = args.Length > 1 && args[1] is not TsVoid ? args[1] : null;
-            var values = MaterializeIterableValues(source);
             var result = new TsArray();
             void AddMapped(TsValue value, int index)
             {
                 result.Add(mapFn != null ? Invoke(mapFn, value, TsValue.FromInt32(index)) : value);
             }
+
+            // The array-like length is fixed, but the mapper can change later fields.
+            if (mapFn is TsFunctionValue function &&
+                !function.FunctionName.EndsWith("::.ctor", StringComparison.Ordinal) &&
+                source is TsObjectValue objectValue &&
+                objectValue.Value.GetField("length") is var lengthValue and not TsNull and not TsVoid)
+            {
+                int length = AsInt32(lengthValue);
+                for (int i = 0; i < length; i++)
+                    AddMapped(objectValue.Value.GetField(i.ToString(CultureInfo.InvariantCulture)), i);
+                return new TsArrayValue(result);
+            }
+
+            var values = MaterializeIterableValues(source);
             for (int i = 0; i < values.Count; i++)
                 AddMapped(values.Get(i), i);
             return new TsArrayValue(result);
