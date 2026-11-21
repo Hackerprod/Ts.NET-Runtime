@@ -463,6 +463,45 @@ public static class Builtins
                 }
                 return new TsArrayValue(result);
             },
+            ["Array::flat"] = args =>
+            {
+                var array = Arr(args[0]);
+                double depth = args.Length == 1 ? 1 : args[1] switch
+                {
+                    TsVoid => 1,
+                    TsInt32Value i => i.Value,
+                    TsInt64Value l => l.Value,
+                    TsUInt64Value u => u.Value,
+                    TsFloat32Value f when float.IsFinite(f.Value) => Math.Truncate(f.Value),
+                    TsFloat64Value d when double.IsFinite(d.Value) => Math.Truncate(d.Value),
+                    TsDecimalValue m => (double)decimal.Truncate(m.Value),
+                    _ => throw new InvalidOperationException("Array.flat depth must be a finite number or undefined")
+                };
+                depth = Math.Max(0, depth);
+
+                var result = new TsArray();
+                var frames = new Stack<(TsArray Array, int Length, int NextIndex, long Level)>();
+                frames.Push((array, array.Count, 0, 0));
+                while (frames.TryPop(out var frame))
+                {
+                    while (frame.NextIndex < frame.Length)
+                    {
+                        int index = frame.NextIndex++;
+                        if (frame.Array.IsHole(index)) continue;
+                        var value = frame.Array.Get(index);
+                        if (frame.Level < depth && value is TsArrayValue nested)
+                        {
+                            // Save the parent at its next index, then visit the child in order.
+                            frames.Push(frame);
+                            var child = nested.Value;
+                            frame = (child, child.Count, 0, frame.Level + 1);
+                        }
+                        else
+                            result.Add(value);
+                    }
+                }
+                return new TsArrayValue(result);
+            },
             ["Array::concat"] = args =>
             {
                 var result = new TsArray();
