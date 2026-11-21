@@ -179,7 +179,7 @@ public static class Builtins
             ["Map::clear"] = args =>
             {
                 Map(args[0]).Clear();
-                return TsValue.Null;
+                return TsValue.Void;
             },
             ["Map::values"] = args =>
             {
