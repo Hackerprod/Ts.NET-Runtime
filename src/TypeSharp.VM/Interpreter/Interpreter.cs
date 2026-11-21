@@ -2065,7 +2065,7 @@ public sealed class Interpreter
             // Array.from(arrayLike [, mapFn]) — supports arrays, strings and
             // `{ length: n }` shapes.
             var source = args.Length > 0 ? args[0] : TsValue.Null;
-            var mapFn = args.Length > 1 ? args[1] : null;
+            var mapFn = args.Length > 1 && args[1] is not TsVoid ? args[1] : null;
             var values = MaterializeIterableValues(source);
             var result = new TsArray();
             void AddMapped(TsValue value, int index)
