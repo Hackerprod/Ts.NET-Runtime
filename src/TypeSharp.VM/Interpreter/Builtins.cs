@@ -555,7 +555,7 @@ public static class Builtins
                 var maxStart = text.Length - needle.Length;
                 if (maxStart < 0) return TsValue.FromInt32(-1);
 
-                var position = args.Length > 2 ? D(args[2]) : double.NaN;
+                var position = args.Length < 3 ? double.NaN : args[2] is TsNull ? 0.0 : D(args[2]);
                 var start = double.IsNaN(position) || position >= maxStart
                     ? maxStart
                     : position <= 0 ? 0 : (int)Math.Truncate(position);
