@@ -303,6 +303,7 @@ public static class Builtins
                 TsNull => false,
                 TsStringValue s => s.Value.Length > 0,
                 TsArrayValue => true,
+                TsObjectValue => true,
                 _ => D(args[0]) != 0 && !double.IsNaN(D(args[0]))
             }),
             ["BigInt"] = args => args.Length > 0 ? ToBigInt(args[0]) : TsValue.FromBigInt(System.Numerics.BigInteger.Zero),
