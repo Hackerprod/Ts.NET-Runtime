@@ -100,7 +100,7 @@ public static class Builtins
                 {
                     int size = I(args[0]);
                     var sized = new TsArray(Math.Max(size, 4));
-                    for (int i = 0; i < size; i++) sized.Add(TsValue.Null);
+                    for (int i = 0; i < size; i++) sized.SetHole(i);
                     return new TsArrayValue(sized);
                 }
                 var fromElements = new TsArray(args.Length);
