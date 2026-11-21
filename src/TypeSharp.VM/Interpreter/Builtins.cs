@@ -968,9 +968,9 @@ public static class Builtins
         foreach (var arg in args)
         {
             // Preserve the original coercion path for the entire call if any
-            // argument is outside the native numeric domain.
+            // argument is neither a native numeric value nor undefined.
             if (arg is not (TsInt32Value or TsInt64Value or TsUInt64Value or
-                TsFloat32Value or TsFloat64Value or TsDecimalValue))
+                TsFloat32Value or TsFloat64Value or TsDecimalValue or TsVoid))
                 return Num(Math.Sqrt(args.Select(D).Sum(v => v * v)));
 
             double magnitude = Math.Abs(D(arg));
