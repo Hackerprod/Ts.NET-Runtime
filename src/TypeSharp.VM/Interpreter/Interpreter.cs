@@ -2253,14 +2253,23 @@ public sealed class Interpreter
                         var result = AsFloat64(Invoke(callback, a, b));
                         return double.IsNaN(result) ? 0 : Math.Sign(result);
                     }
-                    : Array.TrueForAll(items, static item => item is TsInt32Value)
-                        ? static (a, b) => string.CompareOrdinal(
-                            ((TsInt32Value)a).Value.ToString(CultureInfo.InvariantCulture),
-                            ((TsInt32Value)b).Value.ToString(CultureInfo.InvariantCulture))
+                    : Array.TrueForAll(items, IsDefaultIntegerSortKey)
+                        ? static (a, b) => string.CompareOrdinal(DefaultIntegerSortKey(a), DefaultIntegerSortKey(b))
                         : DefaultSortComparison;
                 Array.Sort(items, comparison);
                 for (int i = 0; i < items.Length; i++) arr.Set(i, items[i]);
                 return receiver;
+
+                static bool IsDefaultIntegerSortKey(TsValue item) =>
+                    item is TsInt32Value ||
+                    (item is TsFloat64Value { Value: var value } &&
+                     double.IsFinite(value) && value >= int.MinValue && value <= int.MaxValue &&
+                     value == Math.Truncate(value));
+
+                // Called only after all items pass the guard. Format keys without replacing the elements.
+                static string DefaultIntegerSortKey(TsValue item) =>
+                    (item is TsInt32Value integer ? integer.Value : checked((int)((TsFloat64Value)item).Value))
+                    .ToString(CultureInfo.InvariantCulture);
             }
             default:
                 throw new InvalidOperationException($"Unknown intrinsic '{name}'");
