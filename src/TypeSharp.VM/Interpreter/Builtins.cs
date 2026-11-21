@@ -505,7 +505,8 @@ public static class Builtins
                 return i >= 0 && i < s.Length ? TsValue.FromInt32(s[i]) : TsValue.FromFloat64(double.NaN);
             },
             ["String::toUpperCase"] = args => TsValue.FromString(StringUppercaseExpansions.Uppercase(S(args[0]))),
-            ["String::toLowerCase"] = args => TsValue.FromString(S(args[0]).ToLowerInvariant()),
+            ["String::toLowerCase"] = args => TsValue.FromString(
+                S(args[0]).Replace("\u0130", "\u0069\u0307", StringComparison.Ordinal).ToLowerInvariant()),
             ["String::trim"] = args => TsValue.FromString(TrimEcmaWhitespace(S(args[0]))),
             ["String::substring"] = args =>
             {
