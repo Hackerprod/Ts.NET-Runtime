@@ -420,9 +420,40 @@ public static class Builtins
                 return TsValue.FromString(string.Join(sep, Enumerable.Range(0, arr.Count).Select(i =>
                 {
                     var element = arr.Get(i);
+                    if (element is TsArrayValue nested && TryFormatFlatInner(nested.Value, out string inner))
+                        return inner;
                     return element is TsNull or TsVoid ? string.Empty
                         : element is TsBoolValue ? S(element) : element.ToString();
                 })));
+
+                static bool TryFormatFlatInner(TsArray array, out string result)
+                {
+                    int count = array.Count;
+                    for (int i = 0; i < count; i++)
+                    {
+                        if (array.Get(i) is not (TsInt32Value or TsStringValue or TsBoolValue or TsNull or TsVoid))
+                        {
+                            result = string.Empty;
+                            return false;
+                        }
+                    }
+
+                    var fields = new string[count];
+                    for (int i = 0; i < count; i++)
+                    {
+                        fields[i] = array.Get(i) switch
+                        {
+                            TsInt32Value n => n.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                            TsStringValue text => text.Value,
+                            TsBoolValue flag => flag.Value ? "true" : "false",
+                            TsNull or TsVoid => string.Empty,
+                            _ => throw new InvalidOperationException("Ineligible flat array field")
+                        };
+                    }
+
+                    result = string.Join(",", fields);
+                    return true;
+                }
             },
             ["Array::slice"] = args =>
             {
