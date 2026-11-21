@@ -474,7 +474,7 @@ public static class Builtins
                 int i = args.Length > 1 ? I(args[1]) : 0;
                 return i >= 0 && i < s.Length ? TsValue.FromInt32(s[i]) : TsValue.FromFloat64(double.NaN);
             },
-            ["String::toUpperCase"] = args => TsValue.FromString(S(args[0]).ToUpperInvariant()),
+            ["String::toUpperCase"] = args => TsValue.FromString(StringUppercaseExpansions.Uppercase(S(args[0]))),
             ["String::toLowerCase"] = args => TsValue.FromString(S(args[0]).ToLowerInvariant()),
             ["String::trim"] = args => TsValue.FromString(TrimEcmaWhitespace(S(args[0]))),
             ["String::substring"] = args =>
