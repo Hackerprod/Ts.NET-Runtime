@@ -492,7 +492,18 @@ public static class Builtins
                 int end = Normalize(args.Length > 2 && args[2] is not TsVoid ? I(args[2]) : s.Length, s.Length);
                 return TsValue.FromString(start < end ? s[start..end] : "");
             },
-            ["String::repeat"] = args => TsValue.FromString(string.Concat(Enumerable.Repeat(S(args[0]), Math.Max(args.Length > 1 ? I(args[1]) : 0, 0)))),
+            ["String::repeat"] = args =>
+            {
+                var text = S(args[0]);
+                if (args.Length > 1 && IsBoundedNegativeRepeatCount(args[1]))
+                {
+                    var error = new TsObject("RangeError");
+                    error.SetField("name", TsValue.FromString("RangeError"));
+                    error.SetField("message", TsValue.FromString("String.repeat count must not be negative"));
+                    throw new TsThrownException(TsValue.FromObject(error));
+                }
+                return TsValue.FromString(string.Concat(Enumerable.Repeat(text, Math.Max(args.Length > 1 ? I(args[1]) : 0, 0))));
+            },
             ["String::concat"] = args => TsValue.FromString(string.Concat(args.Select(a => a is TsStringValue sv ? sv.Value : a is TsBoolValue or TsVoid ? S(a) : a.ToString()))),
             ["String::includes"] = args =>
             {
@@ -942,6 +953,18 @@ public static class Builtins
             out var parsed) => parsed,
         _ => double.NaN
     };
+
+    private static bool IsBoundedNegativeRepeatCount(TsValue count) => count switch
+    {
+        TsInt32Value i => i.Value < 0,
+        TsFloat32Value f => IsBoundedNegativeRepeatCount(Math.Truncate(f.Value)),
+        TsFloat64Value f => IsBoundedNegativeRepeatCount(Math.Truncate(f.Value)),
+        TsDecimalValue d => decimal.Truncate(d.Value) is >= int.MinValue and <= -1m,
+        _ => false
+    };
+
+    private static bool IsBoundedNegativeRepeatCount(double truncated) =>
+        double.IsFinite(truncated) && truncated is >= int.MinValue and <= -1d;
 
     private static int I(TsValue v) => (int)D(v);
 
