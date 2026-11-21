@@ -88,14 +88,6 @@ public static class Builtins
             ["Array::ctor"] = args =>
             {
                 // new Array(n) → n empty slots; new Array(a, b, …) → elements.
-                if (args.Length == 1 && args[0] is TsArrayValue source)
-                {
-                    var cloned = new TsArray(source.Value.Count);
-                    for (int i = 0; i < source.Value.Count; i++)
-                        cloned.Add(source.Value.Get(i));
-                    return new TsArrayValue(cloned);
-                }
-
                 if (args.Length == 1 && args[0] is TsInt32Value or TsInt64Value or TsFloat64Value)
                 {
                     int size = I(args[0]);
