@@ -248,7 +248,7 @@ public static class Builtins
             ["Set::clear"] = args =>
             {
                 Set(args[0]).Clear();
-                return TsValue.Null;
+                return TsValue.Void;
             },
             ["Set::values"] = args =>
             {
