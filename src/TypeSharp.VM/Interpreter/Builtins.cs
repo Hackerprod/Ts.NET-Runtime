@@ -668,6 +668,7 @@ public static class Builtins
             ["String::padStart"] = args =>
             {
                 string text = S(args[0]);
+                if (args.Length == 1) return TsValue.FromString(text);
                 double numericWidth = D(args[1]);
                 if (args[1] is TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue
                     && numericWidth < 0) return TsValue.FromString(text);
