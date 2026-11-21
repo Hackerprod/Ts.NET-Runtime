@@ -2230,7 +2230,7 @@ public sealed class Interpreter
                 for (int i = 0; i < initialLength; i++)
                 {
                     var element = arr.Get(i);
-                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i))))
+                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i), args[0])))
                         return element;
                 }
                 return TsValue.Void;
