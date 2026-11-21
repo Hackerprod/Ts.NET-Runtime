@@ -2384,6 +2384,13 @@ public sealed class Interpreter
 
         if (args.Length == 1)
         {
+            if (args[0] is TsObjectValue date &&
+                date.Value.TypeName == "Date" &&
+                date.Value.GetField("__timestampMs") is TsFloat64Value dateTimestamp)
+            {
+                return dateTimestamp.Value;
+            }
+
             if (args[0] is TsStringValue text)
             {
                 return DateTimeOffset.TryParse(
