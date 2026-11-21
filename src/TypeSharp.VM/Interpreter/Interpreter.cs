@@ -2127,7 +2127,7 @@ public sealed class Interpreter
                     }
                     else
                     {
-                        mapped.Set(i, Invoke(callback!, arr.Get(i), TsValue.FromInt32(i)));
+                        mapped.Set(i, Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0]));
                     }
                 }
                 return new TsArrayValue(mapped);
