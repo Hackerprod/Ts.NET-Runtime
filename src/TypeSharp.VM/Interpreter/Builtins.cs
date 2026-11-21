@@ -412,7 +412,8 @@ public static class Builtins
                 return TsValue.FromString(string.Join(sep, Enumerable.Range(0, arr.Count).Select(i =>
                 {
                     var element = arr.Get(i);
-                    return element is TsNull or TsVoid ? string.Empty : element.ToString();
+                    return element is TsNull or TsVoid ? string.Empty
+                        : element is TsBoolValue ? S(element) : element.ToString();
                 })));
             },
             ["Array::slice"] = args =>
