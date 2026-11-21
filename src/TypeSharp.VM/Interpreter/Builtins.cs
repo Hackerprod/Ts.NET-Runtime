@@ -487,7 +487,7 @@ public static class Builtins
                 int end = Normalize(args.Length > 2 && args[2] is not TsVoid ? I(args[2]) : s.Length, s.Length);
                 return TsValue.FromString(start < end ? s[start..end] : "");
             },
-            ["String::repeat"] = args => TsValue.FromString(string.Concat(Enumerable.Repeat(S(args[0]), Math.Max(I(args[1]), 0)))),
+            ["String::repeat"] = args => TsValue.FromString(string.Concat(Enumerable.Repeat(S(args[0]), Math.Max(args.Length > 1 ? I(args[1]) : 0, 0)))),
             ["String::concat"] = args => TsValue.FromString(string.Concat(args.Select(a => a is TsStringValue sv ? sv.Value : a.ToString()))),
             ["String::includes"] = args =>
             {
