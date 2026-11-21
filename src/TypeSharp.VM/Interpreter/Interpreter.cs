@@ -2198,7 +2198,7 @@ public sealed class Interpreter
                 for (int i = start; i < initialCount; i++)
                 {
                     if (arr.IsHole(i)) continue;
-                    accumulator = Invoke(callback!, accumulator, arr.Get(i), TsValue.FromInt32(i));
+                    accumulator = Invoke(callback!, accumulator, arr.Get(i), TsValue.FromInt32(i), args[0]);
                 }
                 return accumulator;
             }
