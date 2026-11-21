@@ -78,9 +78,9 @@ public static class Builtins
             ["console::error"] = args => { Console.Error.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Null; },
             ["console::warn"] = args => { Console.Error.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Null; },
 
-            ["JSON::stringify"] = args => TsValue.FromString(args.Length == 0
-                ? "undefined"
-                : JsonSerializer.Serialize(
+            ["JSON::stringify"] = args => args.Length == 0 || args[0] is TsVoid
+                ? TsValue.Void
+                : TsValue.FromString(JsonSerializer.Serialize(
                     ToJsonCompatible(args[0], new HashSet<object>(ReferenceEqualityComparer.Instance), 0),
                     new JsonSerializerOptions { MaxDepth = 1001 })),
 
