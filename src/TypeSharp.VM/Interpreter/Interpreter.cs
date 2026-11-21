@@ -2219,7 +2219,7 @@ public sealed class Interpreter
                 for (int i = 0; i < initialCount; i++)
                 {
                     if (arr.IsHole(i)) continue;
-                    if (!AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i))))
+                    if (!AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0])))
                         return new TsBoolValue(false);
                 }
                 return new TsBoolValue(true);
