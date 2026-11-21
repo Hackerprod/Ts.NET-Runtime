@@ -2134,8 +2134,9 @@ public sealed class Interpreter
             }
             case "Array::flatMap":
             {
-                var flat = new TsArray(arr.Count);
-                for (int i = 0; i < arr.Count; i++)
+                var initialLength = arr.Count;
+                var flat = new TsArray(initialLength);
+                for (int i = 0; i < initialLength; i++)
                 {
                     if (arr.IsHole(i)) continue;
                     var produced = Invoke(callback!, arr.Get(i), TsValue.FromInt32(i));
