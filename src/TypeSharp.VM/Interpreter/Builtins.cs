@@ -489,7 +489,7 @@ public static class Builtins
                 return TsValue.FromString(start < end ? s[start..end] : "");
             },
             ["String::repeat"] = args => TsValue.FromString(string.Concat(Enumerable.Repeat(S(args[0]), Math.Max(args.Length > 1 ? I(args[1]) : 0, 0)))),
-            ["String::concat"] = args => TsValue.FromString(string.Concat(args.Select(a => a is TsStringValue sv ? sv.Value : a.ToString()))),
+            ["String::concat"] = args => TsValue.FromString(string.Concat(args.Select(a => a is TsStringValue sv ? sv.Value : a is TsBoolValue or TsVoid ? S(a) : a.ToString()))),
             ["String::includes"] = args =>
             {
                 var text = S(args[0]);
