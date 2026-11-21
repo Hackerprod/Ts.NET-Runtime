@@ -2174,7 +2174,7 @@ public sealed class Interpreter
                     if (arr.IsHole(i)) continue;
                     Invoke(callback!, arr.Get(i), TsValue.FromInt32(i));
                 }
-                return TsValue.Null;
+                return TsValue.Void;
             }
             case "Array::reduce":
             {
