@@ -2161,7 +2161,7 @@ public sealed class Interpreter
                 {
                     if (arr.IsHole(i)) continue;
                     var element = arr.Get(i);
-                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i))))
+                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i), args[0])))
                         filtered.Add(element);
                 }
                 return new TsArrayValue(filtered);
