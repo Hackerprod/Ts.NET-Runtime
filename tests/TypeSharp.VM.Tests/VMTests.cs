@@ -1464,7 +1464,7 @@ public class InterpreterTests
     [InlineData("default-space", "7", 3, null, "  7")]
     [InlineData("single-unit", "7", 3, "0", "007")]
     [InlineData("fractional-width", "7", 3, "0", "007")]
-    [InlineData("negative-width-unchanged", "7", -1, null, null)]
+    [InlineData("negative-width-unchanged", "7", -1, null, "7")]
     public void StringPadStart_FillPattern(string row, string text, int width, string? fill, string? expected)
     {
         static string Hex(string value) => string.Join(" ", value.Select(unit => ((int)unit).ToString("X4")));
@@ -1498,13 +1498,6 @@ public class InterpreterTests
         var interpreter = new TypeSharp.VM.Interpreter.Interpreter();
         TsValue? result = null;
         var error = Record.Exception(() => { result = interpreter.Execute(bytecode, "main", args); });
-        if (row == "negative-width-unchanged")
-        {
-            _output.WriteLine($"StringPadStart row={row}; expected=ArgumentOutOfRangeException(totalWidth); exception={error?.GetType().Name}; param={(error as ArgumentException)?.ParamName}");
-            Assert.Equal("totalWidth", Assert.IsType<ArgumentOutOfRangeException>(error).ParamName);
-            return;
-        }
-
         if (error is not null)
             _output.WriteLine($"StringPadStart row={row}; expected={Hex(expected!)}; Execute exception={error.GetType().Name}; stack={error.StackTrace}");
         Assert.Null(error);
