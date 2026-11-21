@@ -2088,7 +2088,7 @@ public sealed class Interpreter
                 var entry = mapReceiver.Value.GetEntryAt(i);
                 Invoke(callbackValue, entry.Value, entry.Key, args[0]);
             }
-            return TsValue.Null;
+            return TsValue.Void;
         }
 
         if (name == "Set::forEach")
