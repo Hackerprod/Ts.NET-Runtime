@@ -402,7 +402,7 @@ public static class Builtins
                 }
 
                 for (int i = start; i >= 0; i--)
-                    if (!arr.IsHole(i) && Interpreter.StrictEquals(arr.Get(i), args[1])) return TsValue.FromInt32(i);
+                    if (!arr.IsHole(i) && Interpreter.StrictEquals(arr.Get(i), args.Length > 1 ? args[1] : TsValue.Void)) return TsValue.FromInt32(i);
                 return TsValue.FromInt32(-1);
             },
             ["Array::join"] = args =>
