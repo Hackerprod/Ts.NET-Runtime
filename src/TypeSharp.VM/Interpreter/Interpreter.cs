@@ -2172,7 +2172,7 @@ public sealed class Interpreter
                 for (int i = 0; i < initialLength; i++)
                 {
                     if (arr.IsHole(i)) continue;
-                    Invoke(callback!, arr.Get(i), TsValue.FromInt32(i));
+                    Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0]);
                 }
                 return TsValue.Void;
             }
