@@ -615,7 +615,7 @@ internal sealed class TsValueMapKeyComparer : IEqualityComparer<TsValue>
         if (x == null || y == null)
             return false;
         if (x is TsNull or TsVoid || y is TsNull or TsVoid)
-            return x is TsNull or TsVoid && y is TsNull or TsVoid;
+            return (x is TsNull && y is TsNull) || (x is TsVoid && y is TsVoid);
         if (x is TsStringValue xs && y is TsStringValue ys)
             return xs.Value == ys.Value;
         if (x is TsBoolValue xb && y is TsBoolValue yb)
