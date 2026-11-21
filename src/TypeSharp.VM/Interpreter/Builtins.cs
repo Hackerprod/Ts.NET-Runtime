@@ -275,7 +275,11 @@ public static class Builtins
             // ── Global functions ──
             ["parseInt"] = args =>
             {
-                string text = S(args[0]).Trim();
+                string input = S(args[0]);
+                if (args.Length > 1 && TryGetExplicitParseIntRadix(args[1], out int explicitRadix))
+                    return Num(ParseIntExplicitRadix(input, explicitRadix));
+
+                string text = input.Trim();
                 int radix = args.Length > 1 ? I(args[1]) : 10;
                 try
                 {
@@ -970,6 +974,73 @@ public static class Builtins
         while (end > start && IsEcmaTrimWhitespace(text[end - 1]))
             end--;
         return start == 0 && end == text.Length ? text : text[start..end];
+    }
+
+    private static bool TryGetExplicitParseIntRadix(TsValue value, out int radix)
+    {
+        radix = 0;
+        // Check decimal integrality before conversion could round a fraction to an integer.
+        if (value is TsDecimalValue decimalValue)
+        {
+            decimal number = decimalValue.Value;
+            if (number is < int.MinValue or > int.MaxValue or 0 || decimal.Truncate(number) != number)
+                return false;
+            radix = (int)number;
+            return true;
+        }
+
+        if (value is not (TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value))
+            return false;
+
+        double numeric = D(value);
+        if (!double.IsFinite(numeric) || numeric is < int.MinValue or > int.MaxValue or 0 ||
+            Math.Truncate(numeric) != numeric)
+            return false;
+        radix = (int)numeric;
+        return true;
+    }
+
+    private static double ParseIntExplicitRadix(ReadOnlySpan<char> text, int radix)
+    {
+        if (radix is < 2 or > 36)
+            return double.NaN;
+
+        int index = 0;
+        while (index < text.Length && IsEcmaTrimWhitespace(text[index]))
+            index++;
+        bool negative = index < text.Length && text[index] == '-';
+        if (index < text.Length && text[index] is '+' or '-')
+            index++;
+        if (radix == 16 && text.Length - index >= 2 &&
+            text[index] == '0' && text[index + 1] is 'x' or 'X')
+            index += 2;
+
+        int start = index;
+        System.Numerics.BigInteger magnitude = System.Numerics.BigInteger.Zero;
+        for (; index < text.Length; index++)
+        {
+            char ch = text[index];
+            int digit = ch switch
+            {
+                >= '0' and <= '9' => ch - '0',
+                >= 'A' and <= 'Z' => ch - 'A' + 10,
+                >= 'a' and <= 'z' => ch - 'a' + 10,
+                _ => radix
+            };
+            if (digit >= radix)
+                break;
+            magnitude = magnitude * radix + digit;
+            // At 2^1024 or above, every extension of the valid prefix also overflows.
+            if (magnitude.GetBitLength() > 1024)
+                return negative ? double.NegativeInfinity : double.PositiveInfinity;
+        }
+
+        if (index == start)
+            return double.NaN;
+        // Parse the exact magnitude to get binary64 nearest-even rounding.
+        double rounded = double.Parse(magnitude.ToString(CultureInfo.InvariantCulture),
+            NumberStyles.None, CultureInfo.InvariantCulture);
+        return negative ? -rounded : rounded;
     }
 
     private static double ParseFloatPrefix(ReadOnlySpan<char> text)
