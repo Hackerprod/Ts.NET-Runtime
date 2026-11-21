@@ -526,7 +526,7 @@ public static class Builtins
             ["String::indexOf"] = args =>
             {
                 var text = S(args[0]);
-                var needle = S(args[1]);
+                var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
                 var position = args.Length > 2 ? D(args[2]) : 0.0;
                 var start = double.IsNaN(position) || position <= 0
                     ? 0
