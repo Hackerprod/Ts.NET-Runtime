@@ -71,7 +71,11 @@ public static class Builtins
             ["Number::parseFloat"] = args => Num(double.TryParse(S(args[0]),
                 System.Globalization.CultureInfo.InvariantCulture, out var pf) ? pf : double.NaN),
             ["Number::parseInt"] = args => Num(long.TryParse(S(args[0]), out var pi) ? pi : double.NaN),
-            ["Number"] = args => Num(args.Length == 0 ? 0 : D(args[0])),
+            ["Number"] = args => Num(
+                args.Length == 0 || args[0] is TsNull ||
+                (args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0)
+                    ? 0d
+                    : D(args[0])),
 
             // ── console ──
             ["console::log"] = args => { Console.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Null; },
