@@ -275,6 +275,9 @@ public static class Builtins
             // ── Global functions ──
             ["parseInt"] = args =>
             {
+                if (args.Length == 1 && args[0] is TsStringValue primitiveString)
+                    return Num(ParseIntExplicitRadix(primitiveString.Value, 0));
+
                 string input = S(args[0]);
                 if (args.Length > 1 && TryGetExplicitParseIntRadix(args[1], out int explicitRadix))
                     return Num(ParseIntExplicitRadix(input, explicitRadix));
@@ -1025,7 +1028,7 @@ public static class Builtins
 
     private static double ParseIntExplicitRadix(ReadOnlySpan<char> text, int radix)
     {
-        if (radix is < 2 or > 36)
+        if (radix != 0 && (radix is < 2 or > 36))
             return double.NaN;
 
         int index = 0;
@@ -1034,9 +1037,14 @@ public static class Builtins
         bool negative = index < text.Length && text[index] == '-';
         if (index < text.Length && text[index] is '+' or '-')
             index++;
-        if (radix == 16 && text.Length - index >= 2 &&
+        if ((radix is 0 or 16) && text.Length - index >= 2 &&
             text[index] == '0' && text[index + 1] is 'x' or 'X')
+        {
+            radix = 16;
             index += 2;
+        }
+        if (radix == 0)
+            radix = 10;
 
         int start = index;
         System.Numerics.BigInteger magnitude = System.Numerics.BigInteger.Zero;
