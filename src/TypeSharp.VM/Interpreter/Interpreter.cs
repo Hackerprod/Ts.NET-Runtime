@@ -2239,7 +2239,7 @@ public sealed class Interpreter
             {
                 var initialLength = arr.Count;
                 for (int i = 0; i < initialLength; i++)
-                    if (AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i))))
+                    if (AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0])))
                         return TsValue.FromInt32(i);
                 return TsValue.FromInt32(-1);
             }
