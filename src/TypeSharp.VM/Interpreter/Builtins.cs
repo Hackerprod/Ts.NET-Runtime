@@ -536,7 +536,7 @@ public static class Builtins
             ["String::lastIndexOf"] = args =>
             {
                 var text = S(args[0]);
-                var needle = S(args[1]);
+                var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
                 var maxStart = text.Length - needle.Length;
                 if (maxStart < 0) return TsValue.FromInt32(-1);
 
