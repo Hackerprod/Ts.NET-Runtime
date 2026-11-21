@@ -2248,7 +2248,11 @@ public sealed class Interpreter
                 var items = new TsValue[arr.Count];
                 for (int i = 0; i < arr.Count; i++) items[i] = arr.Get(i);
                 Comparison<TsValue> comparison = callback != null
-                    ? (a, b) => Math.Sign(AsFloat64(Invoke(callback, a, b)))
+                    ? (a, b) =>
+                    {
+                        var result = AsFloat64(Invoke(callback, a, b));
+                        return double.IsNaN(result) ? 0 : Math.Sign(result);
+                    }
                     : DefaultSortComparison;
                 Array.Sort(items, comparison);
                 for (int i = 0; i < items.Length; i++) arr.Set(i, items[i]);
