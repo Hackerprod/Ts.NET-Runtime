@@ -2167,7 +2167,8 @@ public sealed class Interpreter
             }
             case "Array::forEach":
             {
-                for (int i = 0; i < arr.Count; i++)
+                var initialLength = arr.Count;
+                for (int i = 0; i < initialLength; i++)
                 {
                     if (arr.IsHole(i)) continue;
                     Invoke(callback!, arr.Get(i), TsValue.FromInt32(i));
