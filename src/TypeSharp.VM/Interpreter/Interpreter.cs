@@ -2102,7 +2102,7 @@ public sealed class Interpreter
                 var value = setReceiver.Value.GetAt(i);
                 Invoke(callbackValue, value, value, args[0]);
             }
-            return TsValue.Null;
+            return TsValue.Void;
         }
 
         if (args.Length == 0 || args[0] is not TsArrayValue receiver)
