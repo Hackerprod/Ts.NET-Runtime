@@ -677,7 +677,7 @@ public static class Builtins
                 string find = S(args[1]);
                 string template = S(args[2]);
                 if (args[0] is not TsStringValue ||
-                    args[1] is not TsStringValue || args[2] is not TsStringValue)
+                    args[1] is not (TsStringValue or TsBoolValue) || args[2] is not TsStringValue)
                     return TsValue.FromString(s.Replace(find, template));
 
                 static bool IsToken(char c) => c is '$' or '&' or '`' or '\'';
