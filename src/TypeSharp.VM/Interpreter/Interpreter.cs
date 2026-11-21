@@ -2805,7 +2805,19 @@ public sealed class Interpreter
                 return result;
             case TsStringValue stringValue:
                 for (int i = 0; i < stringValue.Value.Length; i++)
-                    result.Add(TsValue.FromString(stringValue.Value[i].ToString()));
+                {
+                    char unit = stringValue.Value[i];
+                    if (char.IsHighSurrogate(unit) && i + 1 < stringValue.Value.Length &&
+                        char.IsLowSurrogate(stringValue.Value[i + 1]))
+                    {
+                        result.Add(TsValue.FromString(stringValue.Value.Substring(i, 2)));
+                        i++;
+                    }
+                    else
+                    {
+                        result.Add(TsValue.FromString(unit.ToString()));
+                    }
+                }
                 return result;
             case TsUint8ArrayValue bytesValue:
                 for (int i = 0; i < bytesValue.Length; i++)
