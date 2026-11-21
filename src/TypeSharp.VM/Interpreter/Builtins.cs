@@ -375,7 +375,7 @@ public static class Builtins
                 if (length == 0) return Bool(false);
 
                 int start = args.Length > 2 ? FillIndex(args[2], length) : 0;
-                return Bool(IndexOf(arr, args[1], sameValueZero: true, start: start) >= 0);
+                return Bool(IndexOf(arr, args.Length > 1 ? args[1] : TsValue.Void, sameValueZero: true, start: start) >= 0);
             },
             ["Array::indexOf"] = args =>
             {
