@@ -1285,8 +1285,8 @@ public static class Builtins
         TsInt64Value number => number.Value,
         TsUInt64Value number => number.Value,
         TsBigIntValue number => number.Value.ToString(CultureInfo.InvariantCulture),
-        TsFloat32Value number => float.IsFinite(number.Value) ? (object)number.Value : null,
-        TsFloat64Value number => double.IsFinite(number.Value) ? (object)number.Value : null,
+        TsFloat32Value number => float.IsFinite(number.Value) ? (object)(number.Value == 0f ? 0f : number.Value) : null,
+        TsFloat64Value number => double.IsFinite(number.Value) ? (object)(number.Value == 0d ? 0d : number.Value) : null,
         TsDecimalValue number => number.Value,
         TsStringValue text => text.Value,
         TsArrayValue array => ConvertComposite(array.Value, ancestors, depth, () =>
