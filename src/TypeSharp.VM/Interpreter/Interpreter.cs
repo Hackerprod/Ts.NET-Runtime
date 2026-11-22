@@ -2258,6 +2258,39 @@ public sealed class Interpreter
             }
             case "Array::sort":
             {
+                if (callback is null or TsVoid)
+                {
+                    var hasHole = false;
+                    var eligible = true;
+                    for (int i = 0; i < arr.Count; i++)
+                    {
+                        if (arr.IsHole(i))
+                            hasHole = true;
+                        else if (arr.Get(i) is not (TsStringValue or TsVoid))
+                        {
+                            eligible = false;
+                            break;
+                        }
+                    }
+
+                    if (hasHole && eligible)
+                    {
+                        // Sort only present entries; explicit undefined sorts after strings, not as a hole.
+                        var present = new List<TsValue>();
+                        for (int i = 0; i < arr.Count; i++)
+                            if (!arr.IsHole(i))
+                                present.Add(arr.Get(i));
+
+                        var ordered = present
+                            .OrderBy(static value => value is TsVoid)
+                            .ThenBy(static value => (value as TsStringValue)?.Value, StringComparer.Ordinal)
+                            .ToArray();
+                        for (int i = 0; i < ordered.Length; i++) arr.Set(i, ordered[i]);
+                        for (int i = ordered.Length; i < arr.Count; i++) arr.SetHole(i);
+                        return receiver;
+                    }
+                }
+
                 var items = new TsValue[arr.Count];
                 for (int i = 0; i < arr.Count; i++) items[i] = arr.Get(i);
                 Comparison<TsValue> comparison = callback != null && callback is not TsVoid
