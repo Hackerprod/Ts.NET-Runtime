@@ -1396,7 +1396,15 @@ public sealed class IRGenerator
                 break;
             case BoundTypeofExpression typeofExpr:
                 GenerateExpression(typeofExpr.Operand);
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.TypeOf));
+                if (typeofExpr.KnownTag is { } knownTag)
+                {
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
+                    _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_String, 0, 0, knownTag));
+                }
+                else
+                {
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.TypeOf));
+                }
                 break;
             case BoundVoidExpression voidExpr:
                 GenerateExpression(voidExpr.Operand);

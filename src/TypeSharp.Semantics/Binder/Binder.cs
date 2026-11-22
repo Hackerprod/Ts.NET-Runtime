@@ -4761,20 +4761,22 @@ public sealed class Binder
     {
         var operand = BindExpression(typeofExpr.Operand);
 
-        // Statically-known operand types fold to their JS typeof string.
+        // Preserve the existing callable shortcut.
+        if (operand.Type is TsFunctionType)
+            return new BoundLiteralExpression("function", TsType.String);
+
+        // Known primitive tags still require evaluation of the operand.
         string? known = operand.Type switch
         {
             TsPrimitiveType { Name: "bigint" } => "bigint",
             TsPrimitiveType { IsNumericType: true } => "number",
             TsPrimitiveType { Name: "string" } => "string",
             TsPrimitiveType { Name: "bool" } => "boolean",
-            TsFunctionType => "function",
             _ => null
         };
-        if (known != null)
-            return new BoundLiteralExpression(known, TsType.String);
-
-        return new BoundTypeofExpression(operand);
+        return known is null
+            ? new BoundTypeofExpression(operand)
+            : new BoundTypeofExpression(operand, known);
     }
 
     private BoundNode BindVoid(VoidExpressionSyntax voidExpr)

@@ -216,11 +216,18 @@ public sealed class BoundClassExpression : BoundNode
 public sealed class BoundTypeofExpression : BoundNode
 {
     public BoundNode Operand { get; }
+    public string? KnownTag { get; }
 
     public BoundTypeofExpression(BoundNode operand)
+        : this(operand, null)
+    {
+    }
+
+    public BoundTypeofExpression(BoundNode operand, string? knownTag)
         : base(BoundNodeKind.TypeofExpression, TsType.String)
     {
         Operand = operand;
+        KnownTag = knownTag;
     }
 }
 
