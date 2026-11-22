@@ -379,6 +379,15 @@ public static class Builtins
                 return new TsArrayValue(removed);
             },
             ["Array::reverse"] = args => { Arr(args[0]).Reverse(); return args[0]; },
+            ["Array::toReversed"] = args =>
+            {
+                var source = Arr(args[0]);
+                int count = source.Count;
+                var copy = new TsArray(count);
+                for (int i = count - 1; i >= 0; i--)
+                    copy.Add(source.Get(i));
+                return new TsArrayValue(copy);
+            },
             ["Array::includes"] = args =>
             {
                 var arr = Arr(args[0]);

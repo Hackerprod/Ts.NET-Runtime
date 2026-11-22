@@ -4095,6 +4095,8 @@ public sealed class Binder
                 if (arrayType.IsReadonly)
                     return null;
                 return BuiltinMethod(name, arrayType, "Array", range);
+            case "toReversed":
+                return BuiltinMethod(name, new TsArrayType(arrayType.ElementType), "Array", range);
             case "slice":
             case "concat":
                 return BuiltinMethod(name, arrayType, "Array", range);
