@@ -1348,9 +1348,7 @@ public static class Builtins
             Enumerable.Range(0, array.Value.Count)
                 .Select(index => ToJsonCompatible(array.Value.Get(index), ancestors, depth + 1))
                 .ToList()),
-        TsUint8ArrayValue bytes => Enumerable.Range(0, bytes.Length)
-            .Select(index => bytes.Get(index))
-            .ToList(),
+        TsUint8ArrayValue bytes => ConvertJsonUint8Array(bytes),
         TsMapValue map => ConvertComposite(map.Value, ancestors, depth, () =>
             map.Value.Entries.ToDictionary(
                 entry => S(entry.Key),
@@ -1372,6 +1370,14 @@ public static class Builtins
         }),
         _ => value.ToString()
     };
+
+    private static OrderedDictionary ConvertJsonUint8Array(TsUint8ArrayValue bytes)
+    {
+        var members = new OrderedDictionary(bytes.Length, StringComparer.Ordinal);
+        for (var index = 0; index < bytes.Length; index++)
+            members.Add(index.ToString(CultureInfo.InvariantCulture), bytes.Get(index));
+        return members;
+    }
 
     private static object OrderJsonObjectMembers(Dictionary<string, object?> members)
     {
