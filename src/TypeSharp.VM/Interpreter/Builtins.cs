@@ -598,6 +598,7 @@ public static class Builtins
                 S(args[0]).Replace("\u0130", "\u0069\u0307", StringComparison.Ordinal).ToLowerInvariant()),
             ["String::trim"] = args => TsValue.FromString(TrimEcmaWhitespace(S(args[0]))),
             ["String::trimStart"] = args => TsValue.FromString(TrimStartEcmaWhitespace(S(args[0]))),
+            ["String::trimEnd"] = args => TsValue.FromString(TrimEndEcmaWhitespace(S(args[0]))),
             ["String::substring"] = args =>
             {
                 string s = S(args[0]);
@@ -1120,6 +1121,14 @@ public static class Builtins
         while (start < text.Length && IsEcmaTrimWhitespace(text[start]))
             start++;
         return start == 0 ? text : text[start..];
+    }
+
+    private static string TrimEndEcmaWhitespace(string text)
+    {
+        int end = text.Length;
+        while (end > 0 && IsEcmaTrimWhitespace(text[end - 1]))
+            end--;
+        return end == text.Length ? text : text[..end];
     }
 
     private static bool TryGetExplicitParseIntRadix(TsValue value, out int radix)
