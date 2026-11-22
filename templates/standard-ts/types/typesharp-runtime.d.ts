@@ -99,6 +99,7 @@ interface Math {
     log10(x: number): number;
     exp(x: number): number;
     sign(x: number): number;
+    sin(x: number): number;
     random(): number;
     min(...values: number[]): number;
     max(...values: number[]): number;

@@ -50,6 +50,11 @@ public static class Builtins
                 var n = D(args[0]);
                 return Num(double.IsNaN(n) || n == 0.0 ? n : n < 0.0 ? -1.0 : 1.0);
             },
+            ["Math::sin"] = args =>
+            {
+                var n = D(args[0]);
+                return Num(n == 0.0 ? n : System.Math.Sin(n));
+            },
             ["Math::random"] = _ => Num(Random.Shared.NextDouble()),
             ["Math::min"] = Min,
             ["Math::max"] = Max,
