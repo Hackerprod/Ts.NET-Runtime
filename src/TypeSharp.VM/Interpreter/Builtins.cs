@@ -220,6 +220,18 @@ public static class Builtins
                     .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture));
             },
 
+            ["Date::getUTCFullYear"] = args =>
+            {
+                var timestamp = D(DateTimestamp(args[0]));
+                if (!double.IsFinite(timestamp) ||
+                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
+                    return TsValue.FromFloat64(double.NaN);
+
+                return TsValue.FromFloat64(DateTimeOffset
+                    .FromUnixTimeMilliseconds((long)timestamp)
+                    .UtcDateTime.Year);
+            },
+
             // Set instance members (receiver = args[0]).
             ["Set::add"] = args =>
             {

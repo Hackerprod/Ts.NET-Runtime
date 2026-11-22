@@ -227,6 +227,7 @@ public sealed class Binder
         dateGlobal.Methods["getTime"] = new TsMethod("getTime", TsType.Number, new List<TsParameter>());
         dateGlobal.Methods["valueOf"] = new TsMethod("valueOf", TsType.Number, new List<TsParameter>());
         dateGlobal.Methods["toISOString"] = new TsMethod("toISOString", TsType.String, new List<TsParameter>());
+        dateGlobal.Methods["getUTCFullYear"] = new TsMethod("getUTCFullYear", TsType.Number, new List<TsParameter>());
         _classTypes["Date"] = dateGlobal;
         _symbolTable.Define(new ClassSymbol("Date", dateGlobal, default));
 
