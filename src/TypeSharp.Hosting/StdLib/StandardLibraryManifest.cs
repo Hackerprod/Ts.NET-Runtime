@@ -44,11 +44,11 @@ public static class StandardLibraryManifest
             ["Set_SupportsTypedMembershipMutationAndSize", "Set_PreservesInsertionOrderAndUsesSameValueZero", "Set_ForEach_UsesLiveOrderedCollection"]),
         new(
             "Date",
-            "Date: constructor(), constructor(timestamp|string|utc components), getTime, valueOf, toISOString, getUTCFullYear",
+            "Date: constructor(), constructor(timestamp|string|utc components), getTime, valueOf, toISOString, getUTCFullYear, getUTCMonth()",
             StandardCapabilityStatus.Supported,
-            "Timestamps are UTC milliseconds. Component constructors are interpreted as UTC, not host-local time. Invalid constructors store NaN; getTime/valueOf return NaN and toISOString throws Invalid Date. getUTCFullYear returns the UTC year or NaN if the date is invalid or outside the supported calendar.",
+            "Timestamps are UTC milliseconds. Component constructors are interpreted as UTC, not host-local time. Invalid constructors store NaN; getTime/valueOf return NaN and toISOString throws Invalid Date. getUTCFullYear returns the UTC year or NaN if the date is invalid or outside the supported calendar. getUTCMonth returns the zero-based UTC month (January 0 through December 11), or NaN if invalid or unavailable in the supported calendar.",
             "Locale-sensitive formatting and host-local timezone conversion are intentionally unsupported.",
-            ["Date_GetTime_ReturnsUnixMilliseconds", "Date_SupportsUtcTimestampIsoAndInvalidSemantics", "GetUtcFullYear_ReturnsNativeUtcYearAndInvalidNaN"]),
+            ["Date_GetTime_ReturnsUnixMilliseconds", "Date_SupportsUtcTimestampIsoAndInvalidSemantics", "GetUtcFullYear_ReturnsNativeUtcYearAndInvalidNaN", "GetUtcMonth_ReturnsZeroBasedUtcMonth"]),
         new(
             "ArrayStringMathNumberUint8ArrayRegExp",
             "Existing declared methods only",

@@ -233,6 +233,18 @@ public static class Builtins
                     .UtcDateTime.Year);
             },
 
+            ["Date::getUTCMonth"] = args =>
+            {
+                var timestamp = D(DateTimestamp(args[0]));
+                if (!double.IsFinite(timestamp) ||
+                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
+                    return TsValue.FromFloat64(double.NaN);
+
+                return TsValue.FromFloat64(DateTimeOffset
+                    .FromUnixTimeMilliseconds((long)timestamp)
+                    .UtcDateTime.Month - 1);
+            },
+
             // Set instance members (receiver = args[0]).
             ["Set::add"] = args =>
             {

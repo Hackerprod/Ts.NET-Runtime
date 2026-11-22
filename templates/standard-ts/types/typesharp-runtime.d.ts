@@ -173,6 +173,7 @@ interface Date {
     valueOf(): number;
     toISOString(): string;
     getUTCFullYear(): number;
+    getUTCMonth(): number;
 }
 interface DateConstructor {
     new (): Date;
