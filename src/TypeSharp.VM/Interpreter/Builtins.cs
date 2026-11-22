@@ -426,7 +426,10 @@ public static class Builtins
                     if (element is TsArrayValue nested && TryFormatFlatInner(nested.Value, out string inner))
                         return inner;
                     return element is TsNull or TsVoid ? string.Empty
-                        : element is TsBoolValue ? S(element) : element.ToString();
+                        : element is TsBoolValue ? S(element)
+                        : (element is TsFloat32Value f32 && f32.Value == 0f)
+                            || (element is TsFloat64Value f64 && f64.Value == 0d) ? "0"
+                        : element.ToString();
                 })));
 
                 static bool TryFormatFlatInner(TsArray array, out string result)
