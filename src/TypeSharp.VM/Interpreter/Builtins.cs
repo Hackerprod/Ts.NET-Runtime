@@ -751,7 +751,7 @@ public static class Builtins
             ["String::endsWith"] = args =>
             {
                 var text = S(args[0]);
-                var needle = S(args[1]);
+                var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
                 int end = text.Length;
                 if (args.Length > 2 && args[2] is not TsVoid)
                 {
