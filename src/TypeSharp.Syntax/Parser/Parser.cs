@@ -2442,8 +2442,9 @@ public sealed class Parser
             {
                 args.Add(ParseExpression());
             }
-            if (Check(TokenKind.Comma)) Advance();
-            else break;
+            if (!Check(TokenKind.Comma)) break;
+            Advance();
+            if (Check(TokenKind.CloseParen)) break;
         }
         return args;
     }
