@@ -2306,16 +2306,21 @@ public sealed class Interpreter
 
                 var items = new TsValue[arr.Count];
                 for (int i = 0; i < arr.Count; i++) items[i] = arr.Get(i);
-                Comparison<TsValue> comparison = callback != null && callback is not TsVoid
-                    ? (a, b) =>
+                if (callback != null && callback is not TsVoid)
+                {
+                    Array.Sort(items, (a, b) =>
                     {
                         var result = AsFloat64(Invoke(callback, a, b));
                         return double.IsNaN(result) ? 0 : Math.Sign(result);
-                    }
-                    : Array.TrueForAll(items, IsDefaultIntegerSortKey)
-                        ? static (a, b) => string.CompareOrdinal(DefaultIntegerSortKey(a), DefaultIntegerSortKey(b))
-                        : DefaultSortComparison;
-                Array.Sort(items, comparison);
+                    });
+                }
+                else if (Array.TrueForAll(items, IsDefaultIntegerSortKey))
+                    Array.Sort(items, static (a, b) =>
+                        string.CompareOrdinal(DefaultIntegerSortKey(a), DefaultIntegerSortKey(b)));
+                else if (BuildDefaultFractionalSortKeys(arr, items) is { } keys)
+                    Array.Sort(keys, items, StringComparer.Ordinal);
+                else
+                    Array.Sort(items, DefaultSortComparison);
                 for (int i = 0; i < items.Length; i++) arr.Set(i, items[i]);
                 return receiver;
 
@@ -2329,6 +2334,37 @@ public sealed class Interpreter
                 static string DefaultIntegerSortKey(TsValue item) =>
                     (item is TsInt32Value integer ? integer.Value : checked((int)((TsFloat64Value)item).Value))
                     .ToString(CultureInfo.InvariantCulture);
+
+                // Only use ordinal keys when the entire dense numeric array has fixed-decimal
+                // spellings in this domain. Keep the original wrappers and the legacy fallback.
+                static string[]? BuildDefaultFractionalSortKeys(TsArray array, TsValue[] items)
+                {
+                    var keys = new string[items.Length];
+                    var hasFraction = false;
+                    for (int i = 0; i < items.Length; i++)
+                    {
+                        if (array.IsHole(i))
+                            return null;
+                        var item = items[i];
+                        if (IsDefaultIntegerSortKey(item))
+                        {
+                            keys[i] = DefaultIntegerSortKey(item);
+                            continue;
+                        }
+
+                        if (item is not TsFloat64Value { Value: var value } ||
+                            !double.IsFinite(value) || value < int.MinValue || value > int.MaxValue ||
+                            value == Math.Truncate(value) || Math.Abs(value) < 1e-4)
+                            return null;
+
+                        var key = value.ToString("R", CultureInfo.InvariantCulture);
+                        if (!key.Contains('.') || key.Contains('e') || key.Contains('E'))
+                            return null;
+                        keys[i] = key;
+                        hasFraction = true;
+                    }
+                    return hasFraction ? keys : null;
+                }
             }
             default:
                 throw new InvalidOperationException($"Unknown intrinsic '{name}'");
