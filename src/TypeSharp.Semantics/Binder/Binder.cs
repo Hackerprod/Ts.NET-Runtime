@@ -170,7 +170,7 @@ public sealed class Binder
         foreach (var name in new[]
         {
             "abs", "floor", "ceil", "round", "trunc", "sqrt", "cbrt", "pow",
-            "min", "max", "log", "log2", "log10", "exp", "sign", "sin", "cos", "random", "hypot"
+            "min", "max", "log", "log2", "log10", "exp", "sign", "sin", "cos", "tan", "random", "hypot"
         })
         {
             math.Methods[name] = new TsMethod(name, TsType.Number, new List<TsParameter>());

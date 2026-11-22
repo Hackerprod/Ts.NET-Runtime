@@ -104,6 +104,7 @@ interface Math {
     sign(x: number): number;
     sin(x: number): number;
     cos(x: number): number;
+    tan(x: number): number;
     random(): number;
     min(...values: number[]): number;
     max(...values: number[]): number;
