@@ -719,7 +719,7 @@ public static class Builtins
             ["String::repeat"] = args =>
             {
                 var text = S(args[0]);
-                if (args.Length > 1 && IsBoundedNegativeRepeatCount(args[1]))
+                if (args.Length > 1 && IsNegativeRepeatCount(args[1]))
                 {
                     var error = new TsObject("RangeError");
                     error.SetField("name", TsValue.FromString("RangeError"));
@@ -1172,17 +1172,14 @@ public static class Builtins
         _ => double.NaN
     };
 
-    private static bool IsBoundedNegativeRepeatCount(TsValue count) => count switch
+    private static bool IsNegativeRepeatCount(TsValue count) => count switch
     {
         TsInt32Value i => i.Value < 0,
-        TsFloat32Value f => IsBoundedNegativeRepeatCount(Math.Truncate(f.Value)),
-        TsFloat64Value f => IsBoundedNegativeRepeatCount(Math.Truncate(f.Value)),
+        TsFloat32Value f => f.Value <= -1f,
+        TsFloat64Value f => f.Value <= -1d,
         TsDecimalValue d => decimal.Truncate(d.Value) is >= int.MinValue and <= -1m,
         _ => false
     };
-
-    private static bool IsBoundedNegativeRepeatCount(double truncated) =>
-        double.IsFinite(truncated) && truncated is >= int.MinValue and <= -1d;
 
     private static int I(TsValue v) => (int)D(v);
 
