@@ -1851,7 +1851,8 @@ public sealed class Parser
                 expr = new IndexExpressionSyntax(expr, index,
                     new SourceRange(expr.Range.Start, Peek(-1).Location));
             }
-            else if (Check(TokenKind.PlusPlus) || Check(TokenKind.MinusMinus))
+            else if ((Check(TokenKind.PlusPlus) || Check(TokenKind.MinusMinus))
+                && Previous().Location.Line == Peek().Location.Line)
             {
                 var op = Advance();
                 expr = new UnaryExpressionSyntax(op, expr, false,
