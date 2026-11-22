@@ -521,6 +521,11 @@ public sealed class TsMap
 
     public void Set(TsValue key, TsValue value)
     {
+        if (key is TsFloat64Value float64 && BitConverter.DoubleToInt64Bits(float64.Value) == long.MinValue)
+            key = TsValue.FromFloat64(0d);
+        else if (key is TsFloat32Value float32 && BitConverter.SingleToInt32Bits(float32.Value) == int.MinValue)
+            key = TsValue.FromFloat32(0f);
+
         var index = IndexOfKey(key);
         if (index >= 0)
         {
