@@ -154,45 +154,45 @@ public sealed class Lexer
 
     private Token ReadNumber(SourceLocation start)
     {
-        var sb = new System.Text.StringBuilder();
+        int numberStart = _position;
+        bool startsWithZero = Peek() == '0';
+        int firstSeparator = -1;
+        ReadDecimalDigitRun(!startsWithZero, ref firstSeparator);
+        bool firstSeparatorInWholePart = firstSeparator >= 0;
+        // A single zero is an ordinary whole part; keep other leading-zero spellings ungrouped.
+        bool allowSeparators = !startsWithZero || _position == numberStart + 1;
         bool isFloat = false;
-
-        while (_position < _source.Length && char.IsDigit(Peek()))
-        {
-            sb.Append(Peek());
-            _position++;
-        }
 
         if (Peek() == '.' && char.IsDigit(Peek(1)))
         {
             isFloat = true;
-            sb.Append(Peek());
             _position++;
-            while (_position < _source.Length && char.IsDigit(Peek()))
-            {
-                sb.Append(Peek());
-                _position++;
-            }
+            ReadDecimalDigitRun(allowSeparators, ref firstSeparator);
         }
 
         if (Peek() == 'e' || Peek() == 'E')
         {
             isFloat = true;
-            sb.Append(Peek());
             _position++;
             if (Peek() == '+' || Peek() == '-')
-            {
-                sb.Append(Peek());
                 _position++;
-            }
-            while (_position < _source.Length && char.IsDigit(Peek()))
-            {
-                sb.Append(Peek());
-                _position++;
-            }
+            ReadDecimalDigitRun(allowSeparators, ref firstSeparator);
         }
 
-        string text = sb.ToString();
+        // Grouping is for ordinary Number literals only. Retain the old split if
+        // scanning farther would reach an existing suffix branch.
+        if (firstSeparator >= 0 &&
+            ((!isFloat && Peek() == 'n') ||
+             (Peek() == 'u' && Peek(1) == '6' && Peek(2) == '4') ||
+             (Peek() == 'i' && Peek(1) == '6' && Peek(2) == '4') ||
+             Peek() == 'm'))
+        {
+            _position = firstSeparator;
+            isFloat = !firstSeparatorInWholePart;
+            firstSeparator = -1;
+        }
+
+        string text = _source[numberStart.._position];
 
         if (!isFloat && Peek() == 'n')
         {
@@ -232,19 +232,43 @@ public sealed class Lexer
 
         _column += text.Length;
 
+        string numericText = firstSeparator < 0 ? text : text.Replace("_", "");
         object value;
         if (isFloat)
         {
-            value = double.Parse(text, System.Globalization.CultureInfo.InvariantCulture);
+            value = double.Parse(numericText, System.Globalization.CultureInfo.InvariantCulture);
         }
         else
         {
-            long parsed = long.Parse(text);
+            long parsed = long.Parse(numericText);
             value = parsed;
         }
 
         var tok = new Token(isFloat ? TokenKind.FloatLiteral : TokenKind.IntegerLiteral, text, start, value);
         return tok;
+    }
+
+    private void ReadDecimalDigitRun(bool allowSeparators, ref int firstSeparator)
+    {
+        int runStart = _position;
+        while (_position < _source.Length)
+        {
+            if (char.IsDigit(Peek()))
+            {
+                _position++;
+            }
+            else if (allowSeparators && Peek() == '_' && _position > runStart &&
+                     char.IsAsciiDigit(_source[_position - 1]) && char.IsAsciiDigit(Peek(1)))
+            {
+                if (firstSeparator < 0)
+                    firstSeparator = _position;
+                _position++;
+            }
+            else
+            {
+                break;
+            }
+        }
     }
 
     private Token ReadPrefixedInteger(SourceLocation start)
