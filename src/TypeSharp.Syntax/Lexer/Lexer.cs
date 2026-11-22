@@ -384,14 +384,14 @@ public sealed class Lexer
         return new Token(TokenKind.StringLiteral, sb.ToString(), start, sb.ToString());
     }
 
-    // Backtick template: the raw inner text (escapes resolved, `${expr}`
-    // placeholders preserved verbatim) travels in one token; the parser
-    // splits and sub-parses the interpolations.
+    // Backtick template: cooked text and escaped-dollar offsets travel in
+    // one token so the parser can find only genuine interpolations.
     private Token ReadTemplateLiteral(SourceLocation start)
     {
         _position++;
         _column++;
         var sb = new System.Text.StringBuilder();
+        List<int>? escapedDollarOffsets = null;
 
         while (_position < _source.Length && Peek() != '`')
         {
@@ -399,6 +399,9 @@ public sealed class Lexer
             {
                 _position++;
                 _column++;
+                if (Peek() == '$')
+                    (escapedDollarOffsets ??= new List<int>()).Add(sb.Length);
+
                 sb.Append(Peek() switch
                 {
                     'n' => '\n',
@@ -433,7 +436,8 @@ public sealed class Lexer
             _column++;
         }
 
-        return new Token(TokenKind.TemplateLiteral, sb.ToString(), start, sb.ToString());
+        var cooked = sb.ToString();
+        return new Token(TokenKind.TemplateLiteral, cooked, start, cooked, escapedDollarOffsets?.ToArray());
     }
 
     private Token ReadIdentifier(SourceLocation start)

@@ -2291,7 +2291,15 @@ public sealed class Parser
         int position = 0;
         while (position < raw.Length)
         {
-            int placeholder = raw.IndexOf("${", position, StringComparison.Ordinal);
+            int search = position;
+            int placeholder = raw.IndexOf("${", search, StringComparison.Ordinal);
+            while (placeholder >= 0 && template.IsEscapedTemplateDollar(placeholder))
+            {
+                // Advance only the search, not the start of the cooked text segment.
+                search = placeholder + 1;
+                placeholder = raw.IndexOf("${", search, StringComparison.Ordinal);
+            }
+
             if (placeholder < 0)
             {
                 Append(TextPart(raw[position..]));

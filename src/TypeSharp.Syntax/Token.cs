@@ -148,7 +148,7 @@ public enum TokenKind
     PipePipeEquals,
     QuestionQuestionEquals,
 
-    // `template ${…} literal` — Value holds the raw inner text.
+    // `template ${…} literal` — Value holds the cooked inner text.
     TemplateLiteral,
 
     // Special
@@ -167,13 +167,26 @@ public sealed class Token
     public SourceLocation Location { get; }
     public object? Value { get; }
 
+    // Sorted UTF-16 offsets in the cooked text, present only for lexer-escaped dollars.
+    private readonly int[]? _escapedTemplateDollarOffsets;
+
     public Token(TokenKind kind, string text, SourceLocation location, object? value = null)
+        : this(kind, text, location, value, null)
+    {
+    }
+
+    internal Token(TokenKind kind, string text, SourceLocation location, object? value,
+        int[]? escapedTemplateDollarOffsets)
     {
         Kind = kind;
         Text = text;
         Location = location;
         Value = value;
+        _escapedTemplateDollarOffsets = escapedTemplateDollarOffsets;
     }
+
+    internal bool IsEscapedTemplateDollar(int offset) =>
+        _escapedTemplateDollarOffsets is { } offsets && Array.BinarySearch(offsets, offset) >= 0;
 
     public override string ToString() => $"{Kind}: {Text}";
 }
