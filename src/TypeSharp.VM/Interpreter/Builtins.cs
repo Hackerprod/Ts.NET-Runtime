@@ -606,6 +606,18 @@ public static class Builtins
                 int i = args.Length > 1 ? I(args[1]) : 0;
                 return i >= 0 && i < s.Length ? TsValue.FromInt32(s[i]) : TsValue.FromFloat64(double.NaN);
             },
+            ["String::codePointAt"] = args =>
+            {
+                string s = S(args[0]);
+                int i = args.Length > 1 ? I(args[1]) : 0;
+                if (i < 0 || i >= s.Length)
+                    return TsValue.Void;
+
+                char unit = s[i];
+                if (char.IsHighSurrogate(unit) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+                    return TsValue.FromInt32(char.ConvertToUtf32(unit, s[i + 1]));
+                return TsValue.FromInt32(unit);
+            },
             ["String::toUpperCase"] = args => TsValue.FromString(StringUppercaseExpansions.Uppercase(S(args[0]))),
             ["String::toLowerCase"] = args => TsValue.FromString(
                 S(args[0]).Replace("\u0130", "\u0069\u0307", StringComparison.Ordinal).ToLowerInvariant()),

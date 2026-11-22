@@ -73,6 +73,7 @@ declare const Array: ArrayConstructor;
 interface String {
     readonly length: number;
     charAt(index: number): string;
+    codePointAt(position: number): number | undefined;
     includes(searchString: string, position?: number): boolean;
     startsWith(searchString: string, position?: number): boolean;
     endsWith(searchString: string, endPosition?: number): boolean;
