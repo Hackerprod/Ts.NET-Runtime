@@ -55,6 +55,7 @@ public static class Builtins
                 var n = D(args[0]);
                 return Num(n == 0.0 ? n : System.Math.Sin(n));
             },
+            ["Math::cos"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Cos(D(args[0]))),
             ["Math::random"] = _ => Num(Random.Shared.NextDouble()),
             ["Math::min"] = Min,
             ["Math::max"] = Max,
