@@ -213,6 +213,7 @@ public sealed class Binder
 
         var uint8ArrayGlobal = new TsClassType("Uint8Array");
         uint8ArrayGlobal.Fields["length"] = new TsField("length", TsType.Number) { IsReadonly = true };
+        uint8ArrayGlobal.Fields["byteLength"] = new TsField("byteLength", TsType.Number) { IsReadonly = true };
         uint8ArrayGlobal.Methods["slice"] = new TsMethod("slice", uint8ArrayGlobal, new List<TsParameter>());
         uint8ArrayGlobal.Methods["subarray"] = new TsMethod("subarray", uint8ArrayGlobal, new List<TsParameter>());
         uint8ArrayGlobal.Methods["set"] = new TsMethod("set", TsType.Void, new List<TsParameter>());

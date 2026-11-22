@@ -127,6 +127,7 @@ declare const console: Console;
 
 interface Uint8Array extends ArrayLike<number> {
     readonly length: number;
+    readonly byteLength: number;
     slice(start?: number, end?: number): Uint8Array;
     subarray(start?: number, end?: number): Uint8Array;
     set(source: Uint8Array | number[], offset?: number): void;

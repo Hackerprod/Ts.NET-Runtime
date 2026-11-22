@@ -2366,7 +2366,7 @@ public sealed class Interpreter
         TsArrayValue arrVal when fieldName == "length" => TsValue.FromInt32(arrVal.Value.Count),
         TsMapValue mapVal when fieldName == "size" => TsValue.FromFloat64(mapVal.Value.Count),
         TsSetValue setVal when fieldName == "size" => TsValue.FromFloat64(setVal.Value.Count),
-        TsUint8ArrayValue bytesVal when fieldName == "length" => TsValue.FromFloat64(bytesVal.Length),
+        TsUint8ArrayValue bytesVal when fieldName is "length" or "byteLength" => TsValue.FromFloat64(bytesVal.Length),
         TsStringValue strVal when fieldName == "length" => TsValue.FromInt32(strVal.Value.Length),
         _ => TsValue.Null,
     };
