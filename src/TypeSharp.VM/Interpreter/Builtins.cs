@@ -742,7 +742,7 @@ public static class Builtins
             ["String::startsWith"] = args =>
             {
                 var text = S(args[0]);
-                var needle = S(args[1]);
+                var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
                 double position = args.Length > 2 ? D(args[2]) : 0.0;
                 int start = double.IsNaN(position) || position <= 0 ? 0
                     : position >= text.Length ? text.Length : (int)Math.Truncate(position);
