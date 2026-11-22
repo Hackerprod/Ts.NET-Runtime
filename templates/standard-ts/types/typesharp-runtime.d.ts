@@ -136,6 +136,7 @@ interface Uint8Array extends ArrayLike<number> {
     subarray(start?: number, end?: number): Uint8Array;
     set(source: Uint8Array | number[], offset?: number): void;
     reverse(): Uint8Array;
+    toReversed(): Uint8Array;
 }
 interface Uint8ArrayConstructor {
     new (length: number): Uint8Array;

@@ -142,6 +142,12 @@ public static class Builtins
                 System.Array.Reverse(Bytes(args[0]).Value);
                 return args[0];
             },
+            ["Uint8Array::toReversed"] = args =>
+            {
+                var clone = (byte[])Bytes(args[0]).Value.Clone();
+                System.Array.Reverse(clone);
+                return new TsUint8ArrayValue(clone);
+            },
             ["Uint8Array::set"] = args =>
             {
                 var target = Bytes(args[0]);
