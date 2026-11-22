@@ -186,6 +186,7 @@ interface Date {
     getUTCMonth(): number;
     getUTCDate(): number;
     getUTCDay(): number;
+    getUTCHours(): number;
 }
 interface DateConstructor {
     new (): Date;
