@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -1334,12 +1335,55 @@ public static class Builtins
                 .Select(v => ToJsonCompatible(v, ancestors, depth + 1))
                 .ToList()),
         TsObjectValue obj => ConvertComposite(obj.Value, ancestors, depth, () =>
-            obj.Value.Fields.Where(pair => pair.Value is not TsVoid).ToDictionary(
+        {
+            var members = obj.Value.Fields.Where(pair => pair.Value is not TsVoid).ToDictionary(
                 pair => pair.Key,
                 pair => ToJsonCompatible(pair.Value, ancestors, depth + 1),
-                StringComparer.Ordinal)),
+                StringComparer.Ordinal);
+            return string.Equals(obj.Value.TypeName, "Object", StringComparison.Ordinal)
+                ? OrderJsonObjectMembers(members)
+                : members;
+        }),
         _ => value.ToString()
     };
+
+    private static object OrderJsonObjectMembers(Dictionary<string, object?> members)
+    {
+        if (members.Count < 2)
+            return members;
+
+        var indices = new List<(uint Index, KeyValuePair<string, object?> Member)>();
+        var names = new List<KeyValuePair<string, object?>>();
+        var needsReordering = false;
+        uint previousIndex = 0;
+        foreach (var member in members)
+        {
+            if (uint.TryParse(member.Key, NumberStyles.None, CultureInfo.InvariantCulture, out var index)
+                && index != uint.MaxValue
+                && string.Equals(member.Key, index.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+            {
+                needsReordering |= names.Count != 0 || index < previousIndex;
+                indices.Add((index, member));
+                previousIndex = index;
+            }
+            else
+            {
+                names.Add(member);
+            }
+        }
+
+        if (!needsReordering)
+            return members;
+
+        // Preserve converted values and use explicit insertion order for serialization.
+        indices.Sort(static (left, right) => left.Index.CompareTo(right.Index));
+        var ordered = new OrderedDictionary(members.Count, StringComparer.Ordinal);
+        foreach (var entry in indices)
+            ordered.Add(entry.Member.Key, entry.Member.Value);
+        foreach (var member in names)
+            ordered.Add(member.Key, member.Value);
+        return ordered;
+    }
 
     // Guarda compartida de las cuatro ramas compuestas de ToJsonCompatible:
     // primero ciclo (el contenedor ya está entre los ancestros), luego
