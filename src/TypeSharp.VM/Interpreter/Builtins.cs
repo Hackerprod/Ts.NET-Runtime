@@ -137,6 +137,11 @@ public static class Builtins
                 int end = args.Length > 2 && args[2] is not TsVoid ? Normalize(I(args[2]), bytes.Length) : bytes.Length;
                 return bytes.Slice(start, end);
             },
+            ["Uint8Array::reverse"] = args =>
+            {
+                System.Array.Reverse(Bytes(args[0]).Value);
+                return args[0];
+            },
             ["Uint8Array::set"] = args =>
             {
                 var target = Bytes(args[0]);

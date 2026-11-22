@@ -217,6 +217,7 @@ public sealed class Binder
         uint8ArrayGlobal.Methods["slice"] = new TsMethod("slice", uint8ArrayGlobal, new List<TsParameter>());
         uint8ArrayGlobal.Methods["subarray"] = new TsMethod("subarray", uint8ArrayGlobal, new List<TsParameter>());
         uint8ArrayGlobal.Methods["set"] = new TsMethod("set", TsType.Void, new List<TsParameter>());
+        uint8ArrayGlobal.Methods["reverse"] = new TsMethod("reverse", uint8ArrayGlobal, new List<TsParameter>());
         _classTypes["Uint8Array"] = uint8ArrayGlobal;
         _symbolTable.Define(new ClassSymbol("Uint8Array", uint8ArrayGlobal, default));
 
