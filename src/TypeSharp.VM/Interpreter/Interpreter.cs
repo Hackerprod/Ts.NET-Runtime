@@ -2048,7 +2048,7 @@ public sealed class Interpreter
     private static readonly HashSet<string> HigherOrderIntrinsics = new(StringComparer.Ordinal)
     {
         "Array::map", "Array::filter", "Array::forEach", "Array::reduce",
-        "Array::some", "Array::every", "Array::find", "Array::findIndex",
+        "Array::some", "Array::every", "Array::find", "Array::findIndex", "Array::findLast",
         "Array::sort", "Array::flatMap", "Array::from", "Map::forEach", "Set::forEach"
     };
 
@@ -2241,6 +2241,17 @@ public sealed class Interpreter
             {
                 var initialLength = arr.Count;
                 for (int i = 0; i < initialLength; i++)
+                {
+                    var element = arr.Get(i);
+                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i), args[0])))
+                        return element;
+                }
+                return TsValue.Void;
+            }
+            case "Array::findLast":
+            {
+                var initialLength = arr.Count;
+                for (int i = initialLength - 1; i >= 0; i--)
                 {
                     var element = arr.Get(i);
                     if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i), args[0])))

@@ -4125,6 +4125,7 @@ public sealed class Binder
             case "every":
                 return BuiltinMethod(name, TsType.Bool, "Array", range);
             case "find":
+            case "findLast":
                 return BuiltinMethod(name, new TsNullableType(arrayType.ElementType), "Array", range);
             case "findIndex":
                 return BuiltinMethod(name, TsType.Int32, "Array", range);
