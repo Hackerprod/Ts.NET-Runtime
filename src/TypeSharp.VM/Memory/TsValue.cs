@@ -576,6 +576,10 @@ public sealed class TsSet
     {
         if (Contains(value))
             return false;
+        if (value is TsFloat64Value f64 && BitConverter.DoubleToInt64Bits(f64.Value) == long.MinValue)
+            value = TsValue.FromFloat64(0d);
+        else if (value is TsFloat32Value f32 && BitConverter.SingleToInt32Bits(f32.Value) == int.MinValue)
+            value = TsValue.FromFloat32(0f);
         _entries.Add(value);
         return true;
     }
