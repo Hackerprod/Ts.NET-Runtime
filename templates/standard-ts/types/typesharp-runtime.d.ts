@@ -81,6 +81,7 @@ interface String {
     toLowerCase(): string;
     toUpperCase(): string;
     trim(): string;
+    trimStart(): string;
     split(separator: string): string[];
     replace(searchValue: string, replaceValue: string): string;
 }

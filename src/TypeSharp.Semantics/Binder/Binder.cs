@@ -4149,6 +4149,7 @@ public sealed class Binder
             case "substring":
             case "slice":
             case "trim":
+            case "trimStart":
             case "repeat":
             case "concat":
             case "replace":
