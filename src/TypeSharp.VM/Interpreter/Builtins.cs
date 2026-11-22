@@ -293,7 +293,9 @@ public static class Builtins
                 }
             },
             ["parseFloat"] = args => Num(ParseFloatPrefix(S(args[0]))),
-            ["isNaN"] = args => Bool(double.IsNaN(D(args[0]))),
+            ["isNaN"] = args => Bool(args[0] is not TsNull
+                && !(args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0)
+                && double.IsNaN(D(args[0]))),
             ["isFinite"] = args => Bool((args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0) || double.IsFinite(D(args[0]))),
             ["String"] = args => TsValue.FromString(args.Length > 0 ? S(args[0]) : ""),
             ["Boolean"] = args => Bool(args.Length > 0 && args[0] switch
