@@ -666,6 +666,23 @@ public static class Builtins
                     return TsValue.FromInt32(char.ConvertToUtf32(unit, s[i + 1]));
                 return TsValue.FromInt32(unit);
             },
+            ["String::at"] = args =>
+            {
+                string s = S(args[0]);
+                double index = args.Length > 1 ? D(args[1]) : 0;
+                if (double.IsNaN(index))
+                    index = 0;
+                if (!double.IsFinite(index))
+                    return TsValue.Void;
+
+                index = Math.Truncate(index);
+                if (index < 0)
+                    index += s.Length;
+
+                return index >= 0 && index < s.Length
+                    ? TsValue.FromString(s[(int)index].ToString())
+                    : TsValue.Void;
+            },
             ["String::toUpperCase"] = args => TsValue.FromString(StringUppercaseExpansions.Uppercase(S(args[0]))),
             ["String::toLowerCase"] = args => TsValue.FromString(
                 S(args[0]).Replace("\u0130", "\u0069\u0307", StringComparison.Ordinal).ToLowerInvariant()),

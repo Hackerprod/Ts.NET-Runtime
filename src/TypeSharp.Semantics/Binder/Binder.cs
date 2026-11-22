@@ -4169,6 +4169,8 @@ public sealed class Binder
                 return BuiltinMethod(name, TsType.Number, "String", range);
             case "codePointAt":
                 return BuiltinMethod(name, new TsUnionType([TsType.Number, TsType.Undefined]), "String", range);
+            case "at":
+                return BuiltinMethod(name, new TsUnionType([TsType.String, TsType.Undefined]), "String", range);
             case "indexOf":
             case "lastIndexOf":
                 return BuiltinMethod(name, TsType.Int32, "String", range);

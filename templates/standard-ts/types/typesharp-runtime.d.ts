@@ -74,6 +74,7 @@ interface String {
     readonly length: number;
     charAt(index: number): string;
     codePointAt(position: number): number | undefined;
+    at(index: number): string | undefined;
     includes(searchString: string, position?: number): boolean;
     startsWith(searchString: string, position?: number): boolean;
     endsWith(searchString: string, endPosition?: number): boolean;
