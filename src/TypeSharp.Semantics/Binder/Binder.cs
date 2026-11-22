@@ -4129,6 +4129,7 @@ public sealed class Binder
             case "findLast":
                 return BuiltinMethod(name, new TsNullableType(arrayType.ElementType), "Array", range);
             case "findIndex":
+            case "findLastIndex":
                 return BuiltinMethod(name, TsType.Int32, "Array", range);
             case "flat":
                 return BuiltinMethod(name, new TsArrayType(TsType.Any), "Array", range);
