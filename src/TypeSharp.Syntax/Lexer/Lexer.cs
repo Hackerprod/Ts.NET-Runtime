@@ -378,6 +378,14 @@ public sealed class Lexer
             {
                 _position++;
                 _column++;
+                if (Peek() == '\n' || (Peek() == '\r' && Peek(1) == '\n'))
+                {
+                    _position += Peek() == '\r' ? 2 : 1;
+                    _line++;
+                    _column = 1;
+                    continue;
+                }
+
                 sb.Append(Peek() switch
                 {
                     'n' => '\n',
