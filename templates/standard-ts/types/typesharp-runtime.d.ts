@@ -105,6 +105,7 @@ interface Math {
     sign(x: number): number;
     sin(x: number): number;
     cos(x: number): number;
+    fround(x: number): number;
     acos(x: number): number;
     acosh(x: number): number;
     asin(x: number): number;
