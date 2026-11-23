@@ -861,7 +861,7 @@ public static class Builtins
                 int idx = s.IndexOf(find, StringComparison.Ordinal);
                 if (idx < 0) return TsValue.FromString(s);
 
-                string template = S(args[2]);
+                string template = S(args.Length > 2 ? args[2] : TsValue.Void);
                 int tail = idx + find.Length;
                 var prefix = s.AsSpan(0, idx);
                 var suffix = s.AsSpan(tail);
