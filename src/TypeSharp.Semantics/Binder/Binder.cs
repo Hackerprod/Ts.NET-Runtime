@@ -13,6 +13,8 @@ public sealed class Binder
 
     private readonly SymbolTable _symbolTable;
     private readonly DiagnosticBag _diagnostics;
+    private ClassSymbol? _builtinNumberNamespace;
+    private FunctionSymbol? _builtinNumberConversion;
     private readonly Dictionary<string, TsClassType> _classTypes = new();
     // Classes for which a circular-inheritance diagnostic was already reported,
     // by object IDENTITY (TsType.Equals is by name: a default-comparer HashSet
@@ -195,7 +197,9 @@ public sealed class Binder
             number.Fields[constant] = new TsField(constant, TsType.Number);
         }
         _classTypes["Number"] = number;
-        _symbolTable.Define(new ClassSymbol("Number", number, default));
+        var numberNamespace = new ClassSymbol("Number", number, default);
+        _symbolTable.Define(numberNamespace);
+        _builtinNumberNamespace = numberNamespace;
 
         var consoleGlobal = new TsClassType("console");
         consoleGlobal.Methods["log"] = new TsMethod("log", TsType.Void, new List<TsParameter>());
@@ -251,17 +255,19 @@ public sealed class Binder
         DefineGlobalFunction("isNaN", TsType.Bool);
         DefineGlobalFunction("isFinite", TsType.Bool);
         DefineGlobalFunction("String", TsType.String);
-        DefineGlobalFunction("Number", TsType.Number);
+        _builtinNumberConversion = DefineGlobalFunction("Number", TsType.Number);
         DefineGlobalFunction("Boolean", TsType.Bool);
         DefineGlobalFunction("BigInt", TsType.BigInt);
     }
 
-    private void DefineGlobalFunction(string name, TsType returnType)
+    private FunctionSymbol DefineGlobalFunction(string name, TsType returnType)
     {
-        _symbolTable.Define(new FunctionSymbol(name, returnType, default)
+        var function = new FunctionSymbol(name, returnType, default)
         {
             HasDynamicSignature = true
-        });
+        };
+        _symbolTable.Define(function);
+        return function;
     }
 
     public BoundSourceFile Bind(SourceFileSyntax sourceFile)
@@ -3464,7 +3470,11 @@ public sealed class Binder
 
     private BoundNode BindCall(CallExpressionSyntax call)
     {
-        var callee = BindExpression(call.Callee);
+        var callee = !call.IsNullConditional && call.TypeArguments.Count == 0
+            && call.Arguments.Count == 1 && call.Arguments[0] is not SpreadExpressionSyntax
+            && call.Callee is MemberAccessExpressionSyntax { IsNullConditional: false, MemberName: "parseFloat" } member
+            ? BindMemberAccess(member, allowBuiltinNumberParseFloatCall: true)
+            : BindExpression(call.Callee);
 
         TsType returnType = TsType.Void;
         List<CallParameter>? expectedParams = null;
@@ -3882,9 +3892,18 @@ public sealed class Binder
         return TsType.IsCompatibleWith(argumentType, parameter.Type);
     }
 
-    private BoundNode BindMemberAccess(MemberAccessExpressionSyntax member)
+    private BoundNode BindMemberAccess(MemberAccessExpressionSyntax member, bool allowBuiltinNumberParseFloatCall = false)
     {
         var obj = BindExpression(member.Object);
+
+        // The default conversion is the visible Number symbol. Reuse the original
+        // namespace only for this direct call, and never for a shadowing symbol.
+        if (allowBuiltinNumberParseFloatCall && _builtinNumberNamespace is { } numberNamespace
+            && _builtinNumberConversion is { } numberConversion
+            && obj is BoundVariableExpression receiver && ReferenceEquals(receiver.Symbol, numberConversion))
+        {
+            obj = new BoundVariableExpression(numberNamespace);
+        }
 
         // Known static numeric constants (Math.PI, Number.MAX_SAFE_INTEGER, …)
         // fold to literals so no runtime lookup is needed.

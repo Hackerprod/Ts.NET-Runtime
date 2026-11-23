@@ -127,8 +127,7 @@ public static class Builtins
             ["Number::isNaN"] = args => Bool(
                 (args[0] is TsFloat64Value fd && double.IsNaN(fd.Value)) ||
                 (args[0] is TsFloat32Value ff && float.IsNaN(ff.Value))),
-            ["Number::parseFloat"] = args => Num(double.TryParse(S(args[0]),
-                System.Globalization.CultureInfo.InvariantCulture, out var pf) ? pf : double.NaN),
+            ["Number::parseFloat"] = args => Num(ParseFloatPrefix(S(args[0]))),
             ["Number::parseInt"] = args => Num(long.TryParse(S(args[0]), out var pi) ? pi : double.NaN),
             ["Number"] = args => Num(
                 args.Length == 0 || args[0] is TsNull ||
