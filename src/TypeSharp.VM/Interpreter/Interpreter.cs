@@ -2200,11 +2200,14 @@ public sealed class Interpreter
                 }
                 else
                 {
-                    if (initialCount == 0)
-                        throw new InvalidOperationException("Reduce of empty array with no initial value");
                     while (start < initialCount && arr.IsHole(start)) start++;
                     if (start >= initialCount)
-                        throw new InvalidOperationException("Reduce of empty array with no initial value");
+                    {
+                        var error = new TsObject("TypeError");
+                        error.SetField("name", TsValue.FromString("TypeError"));
+                        error.SetField("message", TsValue.FromString("Reduce of empty array with no initial value"));
+                        throw new TsThrownException(TsValue.FromObject(error));
+                    }
                     accumulator = arr.Get(start);
                     start++;
                 }
