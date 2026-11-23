@@ -2192,6 +2192,13 @@ public sealed class Interpreter
             case "Array::reduce":
             {
                 int initialCount = arr.Count;
+                if (callback is not TsFunctionValue reducer)
+                {
+                    var error = new TsObject("TypeError");
+                    error.SetField("name", TsValue.FromString("TypeError"));
+                    error.SetField("message", TsValue.FromString("Array.reduce callback is not callable"));
+                    throw new TsThrownException(TsValue.FromObject(error));
+                }
                 int start = 0;
                 TsValue accumulator;
                 if (args.Length > 2)
@@ -2214,7 +2221,7 @@ public sealed class Interpreter
                 for (int i = start; i < initialCount; i++)
                 {
                     if (arr.IsHole(i)) continue;
-                    accumulator = Invoke(callback!, accumulator, arr.Get(i), TsValue.FromInt32(i), args[0]);
+                    accumulator = Invoke(reducer, accumulator, arr.Get(i), TsValue.FromInt32(i), args[0]);
                 }
                 return accumulator;
             }
