@@ -57,6 +57,7 @@ public static class Builtins
             },
             ["Math::cos"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Cos(D(args[0]))),
             ["Math::acos"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Acos(D(args[0]))),
+            ["Math::acosh"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Acosh(D(args[0]))),
             ["Math::asin"] = args =>
             {
                 if (args.Length == 0) return Num(double.NaN);
