@@ -3472,7 +3472,7 @@ public sealed class Binder
     {
         var callee = !call.IsNullConditional && call.TypeArguments.Count == 0
             && call.Arguments.Count == 1 && call.Arguments[0] is not SpreadExpressionSyntax
-            && call.Callee is MemberAccessExpressionSyntax { IsNullConditional: false, MemberName: "parseFloat" } member
+            && call.Callee is MemberAccessExpressionSyntax { IsNullConditional: false, MemberName: "parseFloat" or "isFinite" } member
             ? BindMemberAccess(member, allowBuiltinNumberParseFloatCall: true)
             : BindExpression(call.Callee);
 
