@@ -143,7 +143,8 @@ public static class Marshaller
 
         if (targetType == typeof(int) || targetType == typeof(int?))
             return value is TsInt32Value iv ? iv.Value :
-                   value is TsFloat64Value dv ? (int)dv.Value : 0;
+                   value is TsFloat64Value dv ? (int)dv.Value :
+                   value is TsFloat32Value single && (double)single.Value >= int.MinValue && (double)single.Value <= int.MaxValue ? (int)single.Value : 0;
 
         if (targetType == typeof(long) || targetType == typeof(long?))
             return value is TsInt64Value lv ? lv.Value :
