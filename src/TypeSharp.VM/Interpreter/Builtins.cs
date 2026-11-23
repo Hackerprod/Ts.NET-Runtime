@@ -1037,7 +1037,8 @@ public static class Builtins
                 }
 
                 string sep = S(args[1]);
-                if (args[1] is TsStringValue && args.Length > 2 &&
+                if ((args[1] is TsStringValue or TsInt32Value or TsInt64Value or TsUInt64Value or
+                        TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) && args.Length > 2 &&
                     args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
                         TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue)
                 {
