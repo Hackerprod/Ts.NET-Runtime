@@ -219,6 +219,11 @@ public static class Marshaller
 
         if (targetType == typeof(DateTime) || targetType == typeof(DateTime?))
         {
+            if (value is TsStringValue utc && utc.Value.Length == 28 && utc.Value[^1] == 'Z' &&
+                DateTime.TryParseExact(utc.Value, "O", System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var roundTripUtc))
+                return roundTripUtc;
+
             if (value is TsStringValue sv && DateTime.TryParse(sv.Value, out var dt))
                 return dt;
             return DateTime.MinValue;
