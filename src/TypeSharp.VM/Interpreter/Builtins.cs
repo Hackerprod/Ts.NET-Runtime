@@ -895,6 +895,9 @@ public static class Builtins
             {
                 string s = S(args[0]);
                 string find = S(args[1]);
+                if (args.Length == 2 && args[0] is TsStringValue &&
+                    args[1] is TsStringValue && find.Length != 0)
+                    return TsValue.FromString(s.Replace(find, S(TsValue.Void)));
                 string template = S(args[2]);
                 if (args[0] is not TsStringValue ||
                     args[1] is not (TsStringValue or TsBoolValue) || args[2] is not TsStringValue)
