@@ -122,7 +122,7 @@ public static class Builtins
                 TsFloat64Value d => double.IsFinite(d.Value) && d.Value == Math.Truncate(d.Value),
                 _ => false
             }),
-            ["Number::isFinite"] = args => Bool(args[0] is TsInt32Value ||
+            ["Number::isFinite"] = args => Bool(args[0] is TsInt32Value or TsDecimalValue ||
                 (args[0] is TsFloat64Value fd && double.IsFinite(fd.Value)) ||
                 (args[0] is TsFloat32Value ff && float.IsFinite(ff.Value))),
             ["Number::isNaN"] = args => Bool(
