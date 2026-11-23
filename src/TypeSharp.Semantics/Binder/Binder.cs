@@ -4950,10 +4950,11 @@ public sealed class Binder
             _breakableDepth--;
         }
         var loopBody = new BoundBlockStatement(new List<BoundNode> { elementDecl, body });
-        var loop = new BoundForStatement(idxDecl, condition, increment, loopBody);
+        var initializer = new BoundBlockStatement(new List<BoundNode> { arrDecl, idxDecl });
+        var loop = new BoundForStatement(initializer, condition, increment, loopBody);
 
         _symbolTable.PopScope();
-        return new BoundBlockStatement(new List<BoundNode> { arrDecl, loop });
+        return loop;
     }
 
     private BoundRegexLiteralExpression BindRegexLiteral(RegexLiteralExpressionSyntax regex)
@@ -5009,12 +5010,9 @@ public sealed class Binder
         finally { _loopDepth--; _breakableDepth--; }
 
         _symbolTable.PopScope();
-        return new BoundBlockStatement(new List<BoundNode>
-        {
-            keysDecl,
-            new BoundForStatement(idxDecl, condition, increment,
-                new BoundBlockStatement(new List<BoundNode> { keyDecl, body }))
-        });
+        var initializer = new BoundBlockStatement(new List<BoundNode> { keysDecl, idxDecl });
+        return new BoundForStatement(initializer, condition, increment,
+            new BoundBlockStatement(new List<BoundNode> { keyDecl, body }));
     }
 
     private BoundNode BindExpressionForConstInference(ExpressionSyntax expression) =>
