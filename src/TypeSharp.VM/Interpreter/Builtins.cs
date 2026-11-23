@@ -335,6 +335,18 @@ public static class Builtins
                     .UtcDateTime.Second);
             },
 
+            ["Date::getUTCMilliseconds"] = args =>
+            {
+                var timestamp = D(DateTimestamp(args[0]));
+                if (!double.IsFinite(timestamp) ||
+                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
+                    return TsValue.FromFloat64(double.NaN);
+
+                return TsValue.FromFloat64(DateTimeOffset
+                    .FromUnixTimeMilliseconds((long)timestamp)
+                    .UtcDateTime.Millisecond);
+            },
+
             // Set instance members (receiver = args[0]).
             ["Set::add"] = args =>
             {
