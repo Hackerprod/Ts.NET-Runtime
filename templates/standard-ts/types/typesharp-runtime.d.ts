@@ -108,6 +108,7 @@ interface Math {
     acos(x: number): number;
     acosh(x: number): number;
     asin(x: number): number;
+    asinh(x: number): number;
     tan(x: number): number;
     atan(x: number): number;
     atanh(x: number): number;
