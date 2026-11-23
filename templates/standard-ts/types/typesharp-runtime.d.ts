@@ -110,6 +110,7 @@ interface Math {
     asin(x: number): number;
     tan(x: number): number;
     atan(x: number): number;
+    atanh(x: number): number;
     random(): number;
     min(...values: number[]): number;
     max(...values: number[]): number;

@@ -76,6 +76,12 @@ public static class Builtins
                 var n = D(args[0]);
                 return Num(n == 0.0 ? n : System.Math.Atan(n));
             },
+            ["Math::atanh"] = args =>
+            {
+                if (args.Length == 0) return Num(double.NaN);
+                var n = D(args[0]);
+                return Num(n == 0.0 ? n : System.Math.Atanh(n));
+            },
             ["Math::random"] = _ => Num(Random.Shared.NextDouble()),
             ["Math::min"] = Min,
             ["Math::max"] = Max,
