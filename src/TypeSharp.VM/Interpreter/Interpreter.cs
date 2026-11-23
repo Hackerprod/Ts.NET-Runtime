@@ -444,6 +444,29 @@ public sealed class Interpreter
                     var keys = ctx.Heap.AllocateArray();
                     switch (source)
                     {
+                        case TsObjectValue ordinaryObject when ordinaryObject.Value.TypeName == "Object":
+                        {
+                            var indexes = new List<(uint Index, string Key)>();
+                            var names = new List<string>();
+                            foreach (var key in ordinaryObject.Value.Fields.Keys)
+                            {
+                                if (IsPrivateRuntimeField(key))
+                                    continue;
+                                if (uint.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out var index)
+                                    && index != uint.MaxValue
+                                    && string.Equals(key, index.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+                                    indexes.Add((index, key));
+                                else
+                                    names.Add(key);
+                            }
+
+                            indexes.Sort(static (left, right) => left.Index.CompareTo(right.Index));
+                            foreach (var entry in indexes)
+                                keys.Add(TsValue.FromString(entry.Key));
+                            foreach (var name in names)
+                                keys.Add(TsValue.FromString(name));
+                            break;
+                        }
                         case TsObjectValue objectValue:
                             foreach (var key in objectValue.Value.Fields.Keys)
                                 if (!IsPrivateRuntimeField(key))
