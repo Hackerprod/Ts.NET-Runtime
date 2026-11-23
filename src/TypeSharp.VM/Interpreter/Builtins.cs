@@ -82,6 +82,25 @@ public static class Builtins
                 var n = D(args[0]);
                 return Num(n == 0.0 ? n : System.Math.Atan(n));
             },
+            ["Math::atan2"] = args =>
+            {
+                if (args.Length < 2) return Num(double.NaN);
+                double y = D(args[0]), x = D(args[1]);
+                if (double.IsNaN(y) || double.IsNaN(x)) return Num(double.NaN);
+                if (double.IsInfinity(y))
+                {
+                    double angle = double.IsPositiveInfinity(x) ? System.Math.PI / 4.0
+                        : double.IsNegativeInfinity(x) ? 3.0 * System.Math.PI / 4.0
+                        : System.Math.PI / 2.0;
+                    return Num(System.Math.CopySign(angle, y));
+                }
+                if (y == 0.0)
+                    return Num(BitConverter.DoubleToInt64Bits(x) < 0 ? System.Math.CopySign(System.Math.PI, y) : y);
+                if (double.IsPositiveInfinity(x)) return Num(System.Math.CopySign(0.0, y));
+                if (double.IsNegativeInfinity(x)) return Num(System.Math.CopySign(System.Math.PI, y));
+                if (x == 0.0) return Num(System.Math.CopySign(System.Math.PI / 2.0, y));
+                return Num(System.Math.Atan2(y, x));
+            },
             ["Math::atanh"] = args =>
             {
                 if (args.Length == 0) return Num(double.NaN);

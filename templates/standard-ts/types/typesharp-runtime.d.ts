@@ -111,6 +111,7 @@ interface Math {
     asinh(x: number): number;
     tan(x: number): number;
     atan(x: number): number;
+    atan2(y: number, x: number): number;
     atanh(x: number): number;
     random(): number;
     min(...values: number[]): number;
