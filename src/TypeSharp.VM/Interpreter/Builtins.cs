@@ -657,6 +657,8 @@ public static class Builtins
                     TsInt32Value i => i.Value,
                     TsInt64Value l => l.Value,
                     TsUInt64Value u => u.Value,
+                    var n when (n is TsFloat32Value f32 && float.IsNaN(f32.Value)) ||
+                               (n is TsFloat64Value f64 && double.IsNaN(f64.Value)) => 0,
                     TsFloat32Value f when float.IsFinite(f.Value) => Math.Truncate(f.Value),
                     TsFloat64Value d when double.IsFinite(d.Value) => Math.Truncate(d.Value),
                     TsDecimalValue m => (double)decimal.Truncate(m.Value),
