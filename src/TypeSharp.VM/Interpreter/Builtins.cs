@@ -711,7 +711,8 @@ public static class Builtins
                 int length = arr.Count;
                 int start = args.Length > 2 ? FillIndex(args[2], length) : 0;
                 int end = args.Length > 3 && args[3] is not TsVoid ? FillIndex(args[3], length) : length;
-                for (int i = start; i < end; i++) arr.Set(i, args[1]);
+                var value = args.Length > 1 ? args[1] : TsValue.Void;
+                for (int i = start; i < end; i++) arr.Set(i, value);
                 return args[0];
             },
 
