@@ -1242,6 +1242,7 @@ public static class Builtins
         TsFloat32Value f => f.Value <= -1f,
         TsFloat64Value f => f.Value <= -1d,
         TsDecimalValue d => decimal.Truncate(d.Value) is >= int.MinValue and <= -1m,
+        TsStringValue s => Math.Truncate(D(s)) is >= int.MinValue and <= -1d,
         _ => false
     };
 
