@@ -52,6 +52,7 @@ public static class Builtins
             },
             ["Math::sin"] = args =>
             {
+                if (args.Length == 0) return Num(double.NaN);
                 var n = D(args[0]);
                 return Num(n == 0.0 ? n : System.Math.Sin(n));
             },
