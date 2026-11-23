@@ -190,6 +190,7 @@ interface Date {
     getUTCDay(): number;
     getUTCHours(): number;
     getUTCMinutes(): number;
+    getUTCSeconds(): number;
 }
 interface DateConstructor {
     new (): Date;
