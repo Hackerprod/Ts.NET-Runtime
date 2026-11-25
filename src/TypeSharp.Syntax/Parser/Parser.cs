@@ -6,20 +6,21 @@ namespace TypeSharp.Syntax.Parser;
 public sealed class Parser
 {
     private readonly List<Token> _tokens;
-    private readonly bool _diagnoseArraySeparators;
+    private readonly bool _diagnoseLiteralSeparators;
     private HashSet<Diagnostic>? _arraySeparatorDiagnostics;
+    private Dictionary<Diagnostic, int>? _objectSeparatorOwners;
     private int _position;
 
     public List<Diagnostic> Diagnostics { get; } = new();
 
-    public Parser(List<Token> tokens) : this(tokens, diagnoseArraySeparators: true)
+    public Parser(List<Token> tokens) : this(tokens, diagnoseLiteralSeparators: true)
     {
     }
 
-    private Parser(List<Token> tokens, bool diagnoseArraySeparators)
+    private Parser(List<Token> tokens, bool diagnoseLiteralSeparators)
     {
         _tokens = tokens;
-        _diagnoseArraySeparators = diagnoseArraySeparators;
+        _diagnoseLiteralSeparators = diagnoseLiteralSeparators;
     }
 
     public SourceFileSyntax Parse(string fileName = "<input>")
@@ -1478,7 +1479,7 @@ public sealed class Parser
         bool isArray = Check(TokenKind.OpenBracket);
         int patternDiagnostics = Diagnostics.Count;
         var pattern = isArray ? ParseArrayLiteral() : ParseObjectLiteral();
-        DiscardArraySeparatorDiagnostics(patternDiagnostics);
+        DiscardBindingSeparatorDiagnostics(patternDiagnostics, pattern);
         ValidateBindingPattern(pattern);
         ExpressionSyntax? initializer = null;
         if (Check(TokenKind.Equals))
@@ -1587,7 +1588,7 @@ public sealed class Parser
             var op = Advance();
             // The same literal parse also represents destructuring targets.
             if (op.Kind == TokenKind.Equals && left is ArrayLiteralExpressionSyntax or ObjectLiteralExpressionSyntax)
-                DiscardArraySeparatorDiagnostics(leftDiagnostics);
+                DiscardBindingSeparatorDiagnostics(leftDiagnostics, left);
             var right = ParseAssignment();
             return new AssignmentExpressionSyntax(left, op, right, new SourceRange(left.Range.Start, right.Range.End));
         }
@@ -2127,7 +2128,7 @@ public sealed class Parser
                 elements.Add(ParseExpression());
             }
 
-            bool cleanElement = _diagnoseArraySeparators && _position > loopStart &&
+            bool cleanElement = _diagnoseLiteralSeparators && _position > loopStart &&
                 !HasNonSeparatorDiagnostics(elementDiagnostics);
             if (previousNeedsSeparator && cleanElement)
             {
@@ -2371,7 +2372,7 @@ public sealed class Parser
             string inner = raw[(placeholder + 2)..scan];
             var innerTokens = new Lexer(inner, template.Location.Source).Tokenize();
             // The interpolation substring lexer does not retain original source offsets.
-            var innerParser = new Parser(innerTokens, diagnoseArraySeparators: false);
+            var innerParser = new Parser(innerTokens, diagnoseLiteralSeparators: false);
             var innerExpr = innerParser.ParseExpression();
             Diagnostics.AddRange(innerParser.Diagnostics);
             Append(new TemplatePartSyntax(innerExpr, range));
@@ -2421,6 +2422,7 @@ public sealed class Parser
     {
         var openBrace = Advance();
         var properties = new List<ObjectPropertySyntax>();
+        bool previousNeedsSeparator = false;
 
         while (!Check(TokenKind.CloseBrace) && !IsAtEnd())
         {
@@ -2430,6 +2432,7 @@ public sealed class Parser
                 var spread = Advance();
                 var spreadValue = ParseExpression();
                 properties.Add(new ObjectSpreadPropertySyntax(spreadValue, new SourceRange(spread.Location, Peek(-1).Location)));
+                previousNeedsSeparator = false;
                 if (Check(TokenKind.Comma)) Advance();
                 if (_position == loopStart) Advance();
                 continue;
@@ -2444,15 +2447,19 @@ public sealed class Parser
                 var computedValue = ParseExpression();
                 properties.Add(new ComputedObjectPropertySyntax(keyExpression, computedValue,
                     new SourceRange(computedKeyStart, computedValue.Range.End)));
+                previousNeedsSeparator = false;
                 if (Check(TokenKind.Comma)) Advance();
                 if (_position == loopStart) Advance();
                 continue;
             }
 
-            var keyStart = Peek().Location;
+            var keyToken = Peek();
+            var keyStart = keyToken.Location;
+            int propertyDiagnostics = Diagnostics.Count;
             var key = ExpectObjectPropertyName();
             ExpressionSyntax value;
-            if (Check(TokenKind.Colon))
+            bool hasColon = Check(TokenKind.Colon);
+            if (hasColon)
             {
                 Advance();
                 value = ParseExpression();
@@ -2463,7 +2470,21 @@ public sealed class Parser
             }
             var propRange = new SourceRange(Peek(-1).Location, Peek().Location);
             properties.Add(new ObjectPropertySyntax(key, value, propRange));
-            if (Check(TokenKind.Comma)) Advance();
+
+            bool cleanProperty = _diagnoseLiteralSeparators && keyToken.Kind == TokenKind.Identifier &&
+                hasColon && _position > loopStart && !HasNonSeparatorDiagnostics(propertyDiagnostics);
+            if (previousNeedsSeparator && cleanProperty)
+            {
+                var diagnostic = new Diagnostic(DiagnosticSeverity.Error,
+                    $"Expected Comma, got {keyToken.Kind} '{keyToken.Text}'", keyStart);
+                Diagnostics.Add(diagnostic);
+                (_objectSeparatorOwners ??= new Dictionary<Diagnostic, int>(ReferenceEqualityComparer.Instance))
+                    .Add(diagnostic, openBrace.Location.Offset);
+            }
+
+            bool hasComma = Check(TokenKind.Comma);
+            previousNeedsSeparator = cleanProperty && !hasComma;
+            if (hasComma) Advance();
             if (_position == loopStart) Advance();
         }
 
@@ -2518,10 +2539,13 @@ public sealed class Parser
         _position = position;
         if (Diagnostics.Count > diagnosticCount)
         {
-            if (_arraySeparatorDiagnostics is { Count: > 0 } marked)
+            if (_arraySeparatorDiagnostics is { Count: > 0 } || _objectSeparatorOwners is { Count: > 0 })
             {
                 for (int i = diagnosticCount; i < Diagnostics.Count; i++)
-                    marked.Remove(Diagnostics[i]);
+                {
+                    _arraySeparatorDiagnostics?.Remove(Diagnostics[i]);
+                    _objectSeparatorOwners?.Remove(Diagnostics[i]);
+                }
             }
             Diagnostics.RemoveRange(diagnosticCount, Diagnostics.Count - diagnosticCount);
         }
@@ -2531,31 +2555,73 @@ public sealed class Parser
     {
         for (int i = start; i < Diagnostics.Count; i++)
         {
-            if (_arraySeparatorDiagnostics?.Contains(Diagnostics[i]) != true)
+            var diagnostic = Diagnostics[i];
+            if (_arraySeparatorDiagnostics?.Contains(diagnostic) != true &&
+                _objectSeparatorOwners?.ContainsKey(diagnostic) != true)
                 return true;
         }
         return false;
     }
 
-    private void DiscardArraySeparatorDiagnostics(int start)
+    private void DiscardBindingSeparatorDiagnostics(int start, ExpressionSyntax pattern)
     {
-        if (_arraySeparatorDiagnostics is not { Count: > 0 } marked)
+        var arrayMarkers = _arraySeparatorDiagnostics;
+        var objectOwners = _objectSeparatorOwners;
+        if (arrayMarkers is not { Count: > 0 } && objectOwners is not { Count: > 0 })
             return;
 
-        // Compact only this confirmed target's suffix, preserving all other diagnostics.
+        HashSet<int>? targetObjects = null;
+        bool collectedTargets = false;
+        // Preserve the old array rule across the entire suffix. Object markers
+        // belong to a specific literal; computed keys and default values stay ordinary.
         int write = start;
         for (int read = start; read < Diagnostics.Count; read++)
         {
             var diagnostic = Diagnostics[read];
-            if (!marked.Remove(diagnostic))
+            if (arrayMarkers?.Remove(diagnostic) == true)
+                continue;
+            if (objectOwners != null && objectOwners.TryGetValue(diagnostic, out int owner))
             {
-                if (write != read)
-                    Diagnostics[write] = diagnostic;
-                write++;
+                if (!collectedTargets)
+                {
+                    CollectBindingObjectOffsets(pattern, ref targetObjects);
+                    collectedTargets = true;
+                }
+                if (targetObjects?.Contains(owner) == true)
+                {
+                    objectOwners.Remove(diagnostic);
+                    continue;
+                }
             }
+
+            if (write != read)
+                Diagnostics[write] = diagnostic;
+            write++;
         }
         if (write < Diagnostics.Count)
             Diagnostics.RemoveRange(write, Diagnostics.Count - write);
+    }
+
+    private static void CollectBindingObjectOffsets(ExpressionSyntax target, ref HashSet<int>? offsets)
+    {
+        switch (target)
+        {
+            case ObjectLiteralExpressionSyntax obj:
+                (offsets ??= new HashSet<int>()).Add(obj.Range.Start.Offset);
+                foreach (var property in obj.Properties)
+                    CollectBindingObjectOffsets(property.Value, ref offsets);
+                break;
+            case ArrayLiteralExpressionSyntax array:
+                foreach (var element in array.Elements)
+                    CollectBindingObjectOffsets(element, ref offsets);
+                break;
+            case SpreadExpressionSyntax spread:
+                CollectBindingObjectOffsets(spread.Expression, ref offsets);
+                break;
+            case AssignmentExpressionSyntax assignment when assignment.OperatorToken.Kind == TokenKind.Equals:
+                CollectBindingObjectOffsets(assignment.Target, ref offsets);
+                break;
+        }
     }
 
     private bool IsAtEnd() => _position >= _tokens.Count || Peek().Kind == TokenKind.EOF;
