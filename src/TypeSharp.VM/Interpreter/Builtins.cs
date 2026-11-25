@@ -656,6 +656,7 @@ public static class Builtins
                 {
                     TsVoid => 1,
                     TsNull => 0,
+                    TsBoolValue b => b.Value ? 1d : 0d,
                     TsInt32Value i => i.Value,
                     TsInt64Value l => l.Value,
                     TsUInt64Value u => u.Value,
