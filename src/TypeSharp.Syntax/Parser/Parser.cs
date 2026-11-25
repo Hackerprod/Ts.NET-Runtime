@@ -1751,6 +1751,7 @@ public sealed class Parser
     private ExpressionSyntax ParseExponent()
     {
         var startsWithMinus = Check(TokenKind.Minus);
+        var startsWithPlus = Check(TokenKind.Plus);
         var left = ParseUnary();
         if (Check(TokenKind.StarStar))
         {
@@ -1758,6 +1759,9 @@ public sealed class Parser
             if (startsWithMinus)
                 Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
                     "Parentheses are required around a unary minus expression used as the base of exponentiation", op.Location));
+            else if (startsWithPlus)
+                Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                    "Parentheses are required around a unary plus expression used as the base of exponentiation", op.Location));
             var right = ParseExponent(); // right-associative
             return new BinaryExpressionSyntax(left, op, right, new SourceRange(left.Range.Start, right.Range.End));
         }
