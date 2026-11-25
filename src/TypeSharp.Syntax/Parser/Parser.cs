@@ -6,13 +6,20 @@ namespace TypeSharp.Syntax.Parser;
 public sealed class Parser
 {
     private readonly List<Token> _tokens;
+    private readonly bool _diagnoseArraySeparators;
+    private HashSet<Diagnostic>? _arraySeparatorDiagnostics;
     private int _position;
 
     public List<Diagnostic> Diagnostics { get; } = new();
 
-    public Parser(List<Token> tokens)
+    public Parser(List<Token> tokens) : this(tokens, diagnoseArraySeparators: true)
+    {
+    }
+
+    private Parser(List<Token> tokens, bool diagnoseArraySeparators)
     {
         _tokens = tokens;
+        _diagnoseArraySeparators = diagnoseArraySeparators;
     }
 
     public SourceFileSyntax Parse(string fileName = "<input>")
@@ -1459,7 +1466,9 @@ public sealed class Parser
     private SyntaxNode ParseDestructuringVariableStatement(bool isConst, Token keyword)
     {
         bool isArray = Check(TokenKind.OpenBracket);
+        int patternDiagnostics = Diagnostics.Count;
         var pattern = isArray ? ParseArrayLiteral() : ParseObjectLiteral();
+        DiscardArraySeparatorDiagnostics(patternDiagnostics);
         ValidateBindingPattern(pattern);
         ExpressionSyntax? initializer = null;
         if (Check(TokenKind.Equals))
@@ -1553,6 +1562,7 @@ public sealed class Parser
 
     private ExpressionSyntax ParseAssignment()
     {
+        int leftDiagnostics = Diagnostics.Count;
         var left = ParseTernary();
 
         if (Check(TokenKind.Equals) || Check(TokenKind.PlusEquals) ||
@@ -1565,6 +1575,9 @@ public sealed class Parser
             Check(TokenKind.QuestionQuestionEquals))
         {
             var op = Advance();
+            // The same literal parse also represents destructuring targets.
+            if (op.Kind == TokenKind.Equals && left is ArrayLiteralExpressionSyntax or ObjectLiteralExpressionSyntax)
+                DiscardArraySeparatorDiagnostics(leftDiagnostics);
             var right = ParseAssignment();
             return new AssignmentExpressionSyntax(left, op, right, new SourceRange(left.Range.Start, right.Range.End));
         }
@@ -2077,10 +2090,13 @@ public sealed class Parser
     {
         var openBracket = Advance();
         var elements = new List<ExpressionSyntax>();
+        bool previousNeedsSeparator = false;
 
         while (!Check(TokenKind.CloseBracket) && !IsAtEnd())
         {
             int loopStart = _position;
+            var firstToken = Peek();
+            int elementDiagnostics = Diagnostics.Count;
             if (Check(TokenKind.DotDotDot))
             {
                 var spread = Advance();
@@ -2092,7 +2108,20 @@ public sealed class Parser
             {
                 elements.Add(ParseExpression());
             }
-            if (Check(TokenKind.Comma)) Advance();
+
+            bool cleanElement = _diagnoseArraySeparators && _position > loopStart &&
+                !HasNonSeparatorDiagnostics(elementDiagnostics);
+            if (previousNeedsSeparator && cleanElement)
+            {
+                var diagnostic = new Diagnostic(DiagnosticSeverity.Error,
+                    $"Expected Comma, got {firstToken.Kind} '{firstToken.Text}'", firstToken.Location);
+                Diagnostics.Add(diagnostic);
+                (_arraySeparatorDiagnostics ??= new HashSet<Diagnostic>(ReferenceEqualityComparer.Instance)).Add(diagnostic);
+            }
+
+            bool hasSeparator = Check(TokenKind.Comma);
+            if (hasSeparator) Advance();
+            previousNeedsSeparator = cleanElement && !hasSeparator;
             if (_position == loopStart) Advance();
         }
 
@@ -2231,9 +2260,7 @@ public sealed class Parser
             }
         }
 
-        _position = savedPosition;
-        if (Diagnostics.Count > savedDiagnostics)
-            Diagnostics.RemoveRange(savedDiagnostics, Diagnostics.Count - savedDiagnostics);
+        RestoreTentativeParse(savedPosition, savedDiagnostics);
         return null;
     }
 
@@ -2272,9 +2299,7 @@ public sealed class Parser
                 return genericArrow;
         }
 
-        _position = savedPosition;
-        if (Diagnostics.Count > savedDiagnostics)
-            Diagnostics.RemoveRange(savedDiagnostics, Diagnostics.Count - savedDiagnostics);
+        RestoreTentativeParse(savedPosition, savedDiagnostics);
         return null;
     }
 
@@ -2327,7 +2352,8 @@ public sealed class Parser
 
             string inner = raw[(placeholder + 2)..scan];
             var innerTokens = new Lexer(inner, template.Location.Source).Tokenize();
-            var innerParser = new Parser(innerTokens);
+            // The interpolation substring lexer does not retain original source offsets.
+            var innerParser = new Parser(innerTokens, diagnoseArraySeparators: false);
             var innerExpr = innerParser.ParseExpression();
             Diagnostics.AddRange(innerParser.Diagnostics);
             Append(new TemplatePartSyntax(innerExpr, range));
@@ -2361,9 +2387,7 @@ public sealed class Parser
             }
         }
 
-        _position = savedPosition;
-        if (Diagnostics.Count > savedDiagnostics)
-            Diagnostics.RemoveRange(savedDiagnostics, Diagnostics.Count - savedDiagnostics);
+        RestoreTentativeParse(savedPosition, savedDiagnostics);
         return null;
     }
 
@@ -2475,7 +2499,45 @@ public sealed class Parser
     {
         _position = position;
         if (Diagnostics.Count > diagnosticCount)
+        {
+            if (_arraySeparatorDiagnostics is { Count: > 0 } marked)
+            {
+                for (int i = diagnosticCount; i < Diagnostics.Count; i++)
+                    marked.Remove(Diagnostics[i]);
+            }
             Diagnostics.RemoveRange(diagnosticCount, Diagnostics.Count - diagnosticCount);
+        }
+    }
+
+    private bool HasNonSeparatorDiagnostics(int start)
+    {
+        for (int i = start; i < Diagnostics.Count; i++)
+        {
+            if (_arraySeparatorDiagnostics?.Contains(Diagnostics[i]) != true)
+                return true;
+        }
+        return false;
+    }
+
+    private void DiscardArraySeparatorDiagnostics(int start)
+    {
+        if (_arraySeparatorDiagnostics is not { Count: > 0 } marked)
+            return;
+
+        // Compact only this confirmed target's suffix, preserving all other diagnostics.
+        int write = start;
+        for (int read = start; read < Diagnostics.Count; read++)
+        {
+            var diagnostic = Diagnostics[read];
+            if (!marked.Remove(diagnostic))
+            {
+                if (write != read)
+                    Diagnostics[write] = diagnostic;
+                write++;
+            }
+        }
+        if (write < Diagnostics.Count)
+            Diagnostics.RemoveRange(write, Diagnostics.Count - write);
     }
 
     private bool IsAtEnd() => _position >= _tokens.Count || Peek().Kind == TokenKind.EOF;
