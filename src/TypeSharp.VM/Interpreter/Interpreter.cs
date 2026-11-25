@@ -2357,11 +2357,23 @@ public sealed class Interpreter
                 }
 
                 var items = new TsValue[arr.Count];
-                for (int i = 0; i < arr.Count; i++) items[i] = arr.Get(i);
+                var skipUndefinedComparison = callback is TsFunctionValue;
+                for (int i = 0; i < arr.Count; i++)
+                {
+                    items[i] = arr.Get(i);
+                    // Holes read as void too; preserve the existing sparse comparator path.
+                    if (skipUndefinedComparison && arr.IsHole(i))
+                        skipUndefinedComparison = false;
+                }
                 if (callback != null && callback is not TsVoid)
                 {
                     Array.Sort(items, (a, b) =>
                     {
+                        if (skipUndefinedComparison)
+                        {
+                            if (a is TsVoid) return b is TsVoid ? 0 : 1;
+                            if (b is TsVoid) return -1;
+                        }
                         var result = AsFloat64(Invoke(callback, a, b));
                         return double.IsNaN(result) ? 0 : Math.Sign(result);
                     });
