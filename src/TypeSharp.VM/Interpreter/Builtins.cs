@@ -612,7 +612,7 @@ public static class Builtins
                 if (args.Length > 2)
                 {
                     double position = args[2] is TsStringValue text
-                        && TryGetArrayLastIndexOfHexPosition(text.Value, length, out int hexPosition)
+                        && TryGetBoundedHexPosition(text.Value, length, out int hexPosition)
                         ? hexPosition
                         : D(args[2]);
                     double index = double.IsNaN(position) ? 0 : Math.Truncate(position);
@@ -850,7 +850,11 @@ public static class Builtins
             {
                 var text = S(args[0]);
                 var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
-                double position = args.Length > 2 ? D(args[2]) : 0.0;
+                double position = args.Length <= 2 ? 0.0
+                    : args[2] is TsStringValue positionText
+                        && TryGetBoundedHexPosition(positionText.Value, text.Length, out int hexPosition)
+                        ? hexPosition
+                        : D(args[2]);
                 int start = double.IsNaN(position) || position <= 0 ? 0
                     : position >= text.Length ? text.Length : (int)Math.Truncate(position);
                 return Bool(text.AsSpan(start).StartsWith(needle.AsSpan(), StringComparison.Ordinal));
@@ -1372,7 +1376,7 @@ public static class Builtins
         ch is '\t' or '\v' or '\f' or '\uFEFF' or '\r' or '\n' or '\u2028' or '\u2029' ||
         char.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator;
 
-    private static bool TryGetArrayLastIndexOfHexPosition(string text, int length, out int position)
+    private static bool TryGetBoundedHexPosition(string text, int length, out int position)
     {
         text = TrimEcmaWhitespace(text);
         position = 0;
