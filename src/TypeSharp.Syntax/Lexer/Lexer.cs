@@ -143,6 +143,9 @@ public sealed class Lexer
         if (c == '0' && IsIntegerBasePrefix(Peek(1)))
             return ReadPrefixedInteger(start);
 
+        if (c == '.' && char.IsDigit(Peek(1)))
+            return ReadLeadingDotNumber(start);
+
         if (char.IsDigit(c))
             return ReadNumber(start);
 
@@ -150,6 +153,54 @@ public sealed class Lexer
             return ReadIdentifier(start);
 
         return ReadOperator(start);
+    }
+
+    private Token ReadLeadingDotNumber(SourceLocation start)
+    {
+        int length = 1;
+        bool valid = ReadLeadingDotDigitRun(ref length);
+
+        if (valid && Peek(length) is 'e' or 'E')
+        {
+            length++;
+            if (Peek(length) is '+' or '-')
+                length++;
+            valid = ReadLeadingDotDigitRun(ref length);
+        }
+
+        // Do not reinterpret malformed ordinary Numbers as custom suffixed literals
+        // or return a valid prefix. Leave punctuation for the next token.
+        while (char.IsLetterOrDigit(Peek(length)) || Peek(length) == '_')
+        {
+            valid = false;
+            length++;
+        }
+
+        string text = _source.Substring(_position, length);
+        _position += length;
+        _column += length;
+
+        if (valid && double.TryParse(text.Replace("_", ""),
+                NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent, CultureInfo.InvariantCulture,
+                out double value))
+            return new Token(TokenKind.FloatLiteral, text, start, value);
+
+        return new Token(TokenKind.Error, text, start);
+    }
+
+    private bool ReadLeadingDotDigitRun(ref int offset)
+    {
+        if (!char.IsAsciiDigit(Peek(offset)))
+            return false;
+
+        do
+        {
+            offset++;
+            if (Peek(offset) == '_' && char.IsAsciiDigit(Peek(offset + 1)))
+                offset++;
+        } while (char.IsAsciiDigit(Peek(offset)));
+
+        return true;
     }
 
     private Token ReadNumber(SourceLocation start)
