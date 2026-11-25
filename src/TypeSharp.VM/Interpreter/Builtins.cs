@@ -884,7 +884,7 @@ public static class Builtins
             {
                 var text = S(args[0]);
                 var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
-                var position = args.Length > 2 ? D(args[2]) : 0.0;
+                double position = args.Length <= 2 ? 0.0 : args[2] is TsStringValue positionText && TryGetBoundedHexPosition(positionText.Value, text.Length, out int hexPosition) ? hexPosition : D(args[2]);
                 var start = double.IsNaN(position) || position <= 0
                     ? 0
                     : position >= text.Length ? text.Length : (int)Math.Truncate(position);
