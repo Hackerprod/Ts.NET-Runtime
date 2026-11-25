@@ -1064,8 +1064,10 @@ public static class Builtins
                 string sep = S(args[1]);
                 if ((args[1] is TsStringValue or TsInt32Value or TsInt64Value or TsUInt64Value or
                         TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) && args.Length > 2 &&
-                    args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
-                        TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue)
+                    ((args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
+                        TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) ||
+                        (args[1] is TsStringValue && args[2] is TsStringValue textLimit &&
+                            IsStringSplitDecimalTextLimit(textLimit.Value))))
                 {
                     uint limit = StringSplitLimit(D(args[2]));
                     if (limit == 0)
@@ -1113,6 +1115,29 @@ public static class Builtins
             },
         };
         return t;
+    }
+
+    // Accept only whole fixed-point ASCII decimal text for this split limit.
+    private static bool IsStringSplitDecimalTextLimit(string text)
+    {
+        int index = 0;
+        if (index < text.Length && text[index] is '+' or '-')
+            index++;
+
+        int start = index;
+        while (index < text.Length && text[index] is >= '0' and <= '9')
+            index++;
+        if (index == start)
+            return false;
+        if (index == text.Length)
+            return true;
+        if (text[index++] != '.')
+            return false;
+
+        start = index;
+        while (index < text.Length && text[index] is >= '0' and <= '9')
+            index++;
+        return index > start && index == text.Length;
     }
 
     private static uint StringSplitLimit(double value)
