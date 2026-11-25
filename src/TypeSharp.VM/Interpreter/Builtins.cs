@@ -802,7 +802,14 @@ public static class Builtins
                 }
                 return TsValue.FromString(string.Concat(Enumerable.Repeat(text, Math.Max(args.Length > 1 ? I(args[1]) : 0, 0))));
             },
-            ["String::concat"] = args => TsValue.FromString(string.Concat(args.Select(a => a is TsStringValue sv ? sv.Value : a is TsBoolValue or TsVoid ? S(a) : a.ToString()))),
+            ["String::concat"] = args => TsValue.FromString(string.Concat(args.Select(a => a switch
+            {
+                TsStringValue sv => sv.Value,
+                TsBoolValue or TsVoid => S(a),
+                TsFloat32Value f32 when f32.Value == 0f => "0",
+                TsFloat64Value f64 when f64.Value == 0d => "0",
+                _ => a.ToString()
+            }))),
             ["String::includes"] = args =>
             {
                 var text = S(args[0]);
