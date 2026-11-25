@@ -506,12 +506,46 @@ public sealed class TsMap
 {
     private readonly List<KeyValuePair<TsValue, TsValue>> _entries = new();
     private readonly TsValueMapKeyComparer _comparer = TsValueMapKeyComparer.Instance;
+    private ForEachCursor? _activeForEach;
+
+    internal sealed class ForEachCursor(ForEachCursor? previous)
+    {
+        internal ForEachCursor? Previous { get; } = previous;
+        internal int NextIndex { get; set; }
+    }
 
     public int Count => _entries.Count;
 
     public IReadOnlyList<KeyValuePair<TsValue, TsValue>> Entries => _entries;
 
     public KeyValuePair<TsValue, TsValue> GetEntryAt(int index) => _entries[index];
+
+    internal ForEachCursor BeginForEach()
+    {
+        var cursor = new ForEachCursor(_activeForEach);
+        _activeForEach = cursor;
+        return cursor;
+    }
+
+    internal bool TryReadForEachEntry(ForEachCursor cursor, out KeyValuePair<TsValue, TsValue> entry)
+    {
+        if (cursor.NextIndex >= _entries.Count)
+        {
+            entry = default;
+            return false;
+        }
+
+        // Commit the unread boundary before invoking a callback that can mutate this map.
+        entry = _entries[cursor.NextIndex++];
+        return true;
+    }
+
+    internal void EndForEach(ForEachCursor cursor)
+    {
+        // Synchronous reentrant traversals unwind in LIFO order.
+        System.Diagnostics.Debug.Assert(ReferenceEquals(_activeForEach, cursor));
+        _activeForEach = cursor.Previous;
+    }
 
     public TsValue Get(TsValue key)
     {
@@ -544,10 +578,20 @@ public sealed class TsMap
         if (index < 0)
             return false;
         _entries.RemoveAt(index);
+        for (var cursor = _activeForEach; cursor is not null; cursor = cursor.Previous)
+        {
+            if (index < cursor.NextIndex)
+                cursor.NextIndex--;
+        }
         return true;
     }
 
-    public void Clear() => _entries.Clear();
+    public void Clear()
+    {
+        _entries.Clear();
+        for (var cursor = _activeForEach; cursor is not null; cursor = cursor.Previous)
+            cursor.NextIndex = 0;
+    }
 
     private int IndexOfKey(TsValue key)
     {

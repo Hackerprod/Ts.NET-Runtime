@@ -2119,10 +2119,16 @@ public sealed class Interpreter
                 throw new InvalidOperationException("'Map::forEach' requires a map receiver and callback");
 
             var callbackValue = args[1];
-            for (int i = 0; i < mapReceiver.Value.Count; i++)
+            var map = mapReceiver.Value;
+            var cursor = map.BeginForEach();
+            try
             {
-                var entry = mapReceiver.Value.GetEntryAt(i);
-                Invoke(callbackValue, entry.Value, entry.Key, args[0]);
+                while (map.TryReadForEachEntry(cursor, out var entry))
+                    Invoke(callbackValue, entry.Value, entry.Key, args[0]);
+            }
+            finally
+            {
+                map.EndForEach(cursor);
             }
             return TsValue.Void;
         }
