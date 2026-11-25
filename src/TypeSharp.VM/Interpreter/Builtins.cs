@@ -29,7 +29,7 @@ public static class Builtins
             ["Math::round"] = args => Num(RoundJsNumber(D(args[0]))),
             ["Math::trunc"] = args => args[0] is TsNull ? Num(0d) : Num(Math.Truncate(D(args[0]))),
             ["Math::sqrt"] = args => Num(Math.Sqrt(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::cbrt"] = args => Num(Math.Cbrt(D(args[0]))),
+            ["Math::cbrt"] = args => Num(Math.Cbrt(args[0] is TsNull ? 0d : D(args[0]))),
             ["Math::pow"] = args =>
             {
                 var @base = D(args[0]);
