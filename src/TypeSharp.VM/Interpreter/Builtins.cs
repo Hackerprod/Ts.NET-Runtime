@@ -835,7 +835,7 @@ public static class Builtins
                 int end = text.Length;
                 if (args.Length > 2 && args[2] is not TsVoid)
                 {
-                    var position = D(args[2]);
+                    var position = StringEndsWithPosition(args[2]);
                     end = double.IsNaN(position) || position <= 0
                         ? 0
                         : position >= text.Length ? text.Length : (int)Math.Truncate(position);
@@ -1311,6 +1311,19 @@ public static class Builtins
         TsBoolValue b => TsValue.FromBigInt(b.Value ? System.Numerics.BigInteger.One : System.Numerics.BigInteger.Zero),
         _ => throw new InvalidOperationException("Cannot convert value to BigInt")
     };
+
+    private static double StringEndsWithPosition(TsValue value)
+    {
+        if (value is TsStringValue text && text.Value.Contains('\u0085'))
+        {
+            var trimmed = TrimEcmaWhitespace(text.Value);
+            // The shared conversion uses .NET Trim, which would discard boundary NEL.
+            if (trimmed.Length > 0 && (trimmed[0] == '\u0085' || trimmed[^1] == '\u0085'))
+                return double.NaN;
+        }
+
+        return D(value);
+    }
 
     // ECMAScript WhiteSpace and LineTerminator; NEL is not included.
     private static bool IsEcmaTrimWhitespace(char ch) =>
