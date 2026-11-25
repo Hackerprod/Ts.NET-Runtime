@@ -1417,6 +1417,7 @@ public sealed class Parser
 
         while (true)
         {
+            var nameToken = Peek();
             var name = ExpectMemberName();
             TypeSyntax? typeAnn = null;
             if (Check(TokenKind.Colon))
@@ -1429,6 +1430,11 @@ public sealed class Parser
             {
                 Advance();
                 initializer = ParseExpression();
+            }
+            else if (isConst && IsMemberNameToken(nameToken.Kind))
+            {
+                Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                    "'const' declarations must be initialized", nameToken.Location));
             }
 
             declarations.Add(new VariableDeclarationSyntax(name, typeAnn, initializer, isConst,
