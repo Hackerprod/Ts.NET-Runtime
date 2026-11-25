@@ -107,6 +107,7 @@ interface Math {
     cos(x: number): number;
     fround(x: number): number;
     clz32(x: number): number;
+    imul(x: number, y: number): number;
     acos(x: number): number;
     acosh(x: number): number;
     asin(x: number): number;

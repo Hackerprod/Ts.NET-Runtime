@@ -62,6 +62,7 @@ public static class Builtins
             ["Math::cos"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Cos(D(args[0]))),
             ["Math::fround"] = args => Num(args.Length == 0 ? double.NaN : (double)(float)D(args[0])),
             ["Math::clz32"] = args => Num(CountLeadingZeroBits32(D(args[0]))),
+            ["Math::imul"] = args => Num(unchecked((int)(ToUInt32(D(args[0])) * ToUInt32(D(args[1]))))),
             ["Math::acos"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Acos(D(args[0]))),
             ["Math::acosh"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Acosh(D(args[0]))),
             ["Math::asin"] = args =>
@@ -1147,16 +1148,19 @@ public static class Builtins
         return (uint)(remainder < 0 ? remainder + modulus : remainder);
     }
 
-    private static int CountLeadingZeroBits32(double value)
+    private static int CountLeadingZeroBits32(double value) =>
+        System.Numerics.BitOperations.LeadingZeroCount(ToUInt32(value));
+
+    private static uint ToUInt32(double value)
     {
         if (!double.IsFinite(value) || value == 0d)
-            return 32;
+            return 0u;
 
         const double modulus = 4294967296d;
         double remainder = Math.Truncate(value) % modulus;
         if (remainder < 0d)
             remainder += modulus;
-        return System.Numerics.BitOperations.LeadingZeroCount((uint)remainder);
+        return (uint)remainder;
     }
 
     private static double RoundJsNumber(double value)
