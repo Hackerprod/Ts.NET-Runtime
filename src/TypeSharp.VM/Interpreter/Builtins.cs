@@ -50,7 +50,7 @@ public static class Builtins
             ["Math::exp"] = args => Num(Math.Exp(D(args[0]))),
             ["Math::sign"] = args =>
             {
-                var n = D(args[0]);
+                var n = args[0] is TsNull ? 0d : D(args[0]);
                 return Num(double.IsNaN(n) || n == 0.0 ? n : n < 0.0 ? -1.0 : 1.0);
             },
             ["Math::sin"] = args =>
