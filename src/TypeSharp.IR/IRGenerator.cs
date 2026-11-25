@@ -1446,10 +1446,38 @@ public sealed class IRGenerator
                 break;
             }
             case BoundDeleteIndexExpression deleteIndex:
+            {
                 GenerateExpression(deleteIndex.Object);
+                if (!deleteIndex.IsNullConditional)
+                {
+                    GenerateExpression(deleteIndex.Index);
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.DeleteIndex));
+                    break;
+                }
+
+                var func = _currentFunction!;
+                var nullBlock = func.CreateBlock();
+                var doDeleteBlock = func.CreateBlock();
+                var endBlock = func.CreateBlock();
+
+                // NullCheck peeks at the receiver; BranchTrue consumes only the condition.
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.NullCheck));
+                EmitBranchTrue(nullBlock.Id);
+                EmitBranch(doDeleteBlock.Id);
+
+                _currentBlock = nullBlock;
+                _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+                _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Bool, 1));
+                EmitBranch(endBlock.Id);
+
+                _currentBlock = doDeleteBlock;
                 GenerateExpression(deleteIndex.Index);
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.DeleteIndex));
+                EmitBranch(endBlock.Id);
+
+                _currentBlock = endBlock;
                 break;
+            }
             case BoundDeleteNonReferenceExpression deleteNonRef:
                 GenerateExpression(deleteNonRef.Operand);
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));

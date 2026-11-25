@@ -259,17 +259,19 @@ public sealed class BoundDeleteFieldExpression : BoundNode
     }
 }
 
-// `delete obj[expr]` — removes an indexed element, returns bool.
+// `delete obj[expr]` or `delete obj?.[expr]` — removes an indexed element, returns bool.
 public sealed class BoundDeleteIndexExpression : BoundNode
 {
     public BoundNode Object { get; }
     public BoundNode Index { get; }
+    public bool IsNullConditional { get; }
 
-    public BoundDeleteIndexExpression(BoundNode obj, BoundNode index)
+    public BoundDeleteIndexExpression(BoundNode obj, BoundNode index, bool isNullConditional = false)
         : base(BoundNodeKind.DeleteIndexExpression, TsType.Bool)
     {
         Object = obj;
         Index = index;
+        IsNullConditional = isNullConditional;
     }
 }
 

@@ -4838,7 +4838,7 @@ public sealed class Binder
             {
                 var obj = BindExpression(indexExpr.Object);
                 var index = BindExpression(indexExpr.Index);
-                return new BoundDeleteIndexExpression(obj, index);
+                return new BoundDeleteIndexExpression(obj, index, indexExpr.IsNullConditional);
             }
             default:
             {
