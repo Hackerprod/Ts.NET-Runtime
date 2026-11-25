@@ -41,7 +41,10 @@ public static class Builtins
 
                 return Num(Math.Pow(@base, exponent));
             },
-            ["Math::log"] = args => Num(Math.Log(D(args[0]))),
+            ["Math::log"] = args => Num(Math.Log(
+                args.Length == 1 && args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0
+                    ? 0.0
+                    : D(args[0]))),
             ["Math::log2"] = args => Num(Math.Log2(D(args[0]))),
             ["Math::log10"] = args => Num(Math.Log10(D(args[0]))),
             ["Math::exp"] = args => Num(Math.Exp(D(args[0]))),
