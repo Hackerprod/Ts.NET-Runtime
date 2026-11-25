@@ -610,11 +610,46 @@ public sealed class TsSet
     private readonly List<TsValue> _entries = new();
     private readonly TsValueMapKeyComparer _comparer = TsValueMapKeyComparer.Instance;
 
+    private ForEachCursor? _activeForEach;
+
+    internal sealed class ForEachCursor(ForEachCursor? previous)
+    {
+        internal ForEachCursor? Previous { get; } = previous;
+        internal int NextIndex;
+    }
+
     public int Count => _entries.Count;
 
     public IReadOnlyList<TsValue> Entries => _entries;
 
     public TsValue GetAt(int index) => _entries[index];
+
+    internal ForEachCursor BeginForEach()
+    {
+        var cursor = new ForEachCursor(_activeForEach);
+        _activeForEach = cursor;
+        return cursor;
+    }
+
+    internal bool TryReadForEachValue(ForEachCursor cursor, out TsValue value)
+    {
+        if (cursor.NextIndex >= _entries.Count)
+        {
+            value = TsValue.Void;
+            return false;
+        }
+
+        // Advance before invoking a callback that can mutate this set.
+        value = _entries[cursor.NextIndex++];
+        return true;
+    }
+
+    internal void EndForEach(ForEachCursor cursor)
+    {
+        // Synchronous reentrant traversals unwind in LIFO order.
+        System.Diagnostics.Debug.Assert(ReferenceEquals(_activeForEach, cursor));
+        _activeForEach = cursor.Previous;
+    }
 
     public bool Add(TsValue value)
     {
@@ -636,10 +671,21 @@ public sealed class TsSet
         if (index < 0)
             return false;
         _entries.RemoveAt(index);
+        for (var cursor = _activeForEach; cursor is not null; cursor = cursor.Previous)
+        {
+            // Deletion at the boundary already shifts the next unread value into place.
+            if (index < cursor.NextIndex)
+                cursor.NextIndex--;
+        }
         return true;
     }
 
-    public void Clear() => _entries.Clear();
+    public void Clear()
+    {
+        _entries.Clear();
+        for (var cursor = _activeForEach; cursor is not null; cursor = cursor.Previous)
+            cursor.NextIndex = 0;
+    }
 
     private int IndexOf(TsValue value)
     {

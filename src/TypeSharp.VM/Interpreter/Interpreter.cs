@@ -2139,10 +2139,16 @@ public sealed class Interpreter
                 throw new InvalidOperationException("'Set::forEach' requires a set receiver and callback");
 
             var callbackValue = args[1];
-            for (int i = 0; i < setReceiver.Value.Count; i++)
+            var set = setReceiver.Value;
+            var cursor = set.BeginForEach();
+            try
             {
-                var value = setReceiver.Value.GetAt(i);
-                Invoke(callbackValue, value, value, args[0]);
+                while (set.TryReadForEachValue(cursor, out var value))
+                    Invoke(callbackValue, value, value, args[0]);
+            }
+            finally
+            {
+                set.EndForEach(cursor);
             }
             return TsValue.Void;
         }
