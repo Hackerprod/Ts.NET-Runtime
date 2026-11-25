@@ -584,7 +584,10 @@ public static class Builtins
                 int start = length - 1;
                 if (args.Length > 2)
                 {
-                    double position = D(args[2]);
+                    double position = args[2] is TsStringValue text
+                        && TryGetArrayLastIndexOfHexPosition(text.Value, length, out int hexPosition)
+                        ? hexPosition
+                        : D(args[2]);
                     double index = double.IsNaN(position) ? 0 : Math.Truncate(position);
                     if (index < -length) return TsValue.FromInt32(-1);
                     start = index < 0 ? (int)(length + index) : (int)Math.Min(index, start);
@@ -1282,6 +1285,33 @@ public static class Builtins
     private static bool IsEcmaTrimWhitespace(char ch) =>
         ch is '\t' or '\v' or '\f' or '\uFEFF' or '\r' or '\n' or '\u2028' or '\u2029' ||
         char.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator;
+
+    private static bool TryGetArrayLastIndexOfHexPosition(string text, int length, out int position)
+    {
+        text = TrimEcmaWhitespace(text);
+        position = 0;
+        if (text.Length < 3 || text[0] != '0' || text[1] is not ('x' or 'X'))
+            return false;
+
+        for (int i = 2; i < text.Length; i++)
+        {
+            char c = text[i];
+            int digit = c switch
+            {
+                >= '0' and <= '9' => c - '0',
+                >= 'a' and <= 'f' => c - 'a' + 10,
+                >= 'A' and <= 'F' => c - 'A' + 10,
+                _ => -1
+            };
+            if (digit < 0)
+                return false;
+
+            // The search already clamps positions at or above length; still validate every digit.
+            position = (int)Math.Min(length, (long)position * 16 + digit);
+        }
+
+        return true;
+    }
 
     private static string TrimEcmaWhitespace(string text)
     {
