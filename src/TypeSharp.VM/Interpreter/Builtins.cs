@@ -77,6 +77,12 @@ public static class Builtins
                 var n = D(args[0]);
                 return Num(n == 0.0 ? n : System.Math.Asinh(n));
             },
+            ["Math::sinh"] = args =>
+            {
+                if (args.Length == 0) return Num(double.NaN);
+                var n = D(args[0]);
+                return Num(n == 0.0 ? n : System.Math.Sinh(n));
+            },
             ["Math::tan"] = args =>
             {
                 if (args.Length == 0) return Num(double.NaN);
