@@ -23,7 +23,7 @@ public static class Builtins
         var t = new Dictionary<string, Func<TsValue[], TsValue>>(StringComparer.Ordinal)
         {
             // ── Math ──
-            ["Math::abs"] = args => Num(Math.Abs(D(args[0]))),
+            ["Math::abs"] = args => Num(Math.Abs(args[0] is TsNull ? 0d : D(args[0]))),
             ["Math::floor"] = args => Num(Math.Floor(D(args[0]))),
             ["Math::ceil"] = args => Num(Math.Ceiling(D(args[0]))),
             ["Math::round"] = args => Num(RoundJsNumber(D(args[0]))),
