@@ -870,7 +870,10 @@ public static class Builtins
                 int end = text.Length;
                 if (args.Length > 2 && args[2] is not TsVoid)
                 {
-                    var position = StringEndsWithPosition(args[2]);
+                    double position = args[2] is TsStringValue positionText
+                        && TryGetBoundedHexPosition(positionText.Value, text.Length, out int hexPosition)
+                        ? hexPosition
+                        : StringEndsWithPosition(args[2]);
                     end = double.IsNaN(position) || position <= 0
                         ? 0
                         : position >= text.Length ? text.Length : (int)Math.Truncate(position);
