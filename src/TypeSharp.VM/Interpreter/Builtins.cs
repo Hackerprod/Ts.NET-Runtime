@@ -770,8 +770,7 @@ public static class Builtins
                     : TsValue.Void;
             },
             ["String::toUpperCase"] = args => TsValue.FromString(StringUppercaseExpansions.Uppercase(S(args[0]))),
-            ["String::toLowerCase"] = args => TsValue.FromString(
-                S(args[0]).Replace("\u0130", "\u0069\u0307", StringComparison.Ordinal).ToLowerInvariant()),
+            ["String::toLowerCase"] = args => TsValue.FromString(Lowercase(S(args[0]))),
             ["String::trim"] = args => TsValue.FromString(TrimEcmaWhitespace(S(args[0]))),
             ["String::trimStart"] = args => TsValue.FromString(TrimStartEcmaWhitespace(S(args[0]))),
             ["String::trimEnd"] = args => TsValue.FromString(TrimEndEcmaWhitespace(S(args[0]))),
@@ -1343,6 +1342,34 @@ public static class Builtins
         }
 
         return true;
+    }
+
+    private static string Lowercase(string text)
+    {
+        const char capitalSigma = '\u03A3';
+        char[]? rewritten = null;
+        for (int i = text.IndexOf(capitalSigma); i >= 0 && i < text.Length;
+             i = text.IndexOf(capitalSigma, i + 1))
+        {
+            // A bounded Final_Sigma proof, not full Unicode context detection.
+            // Only acute is known ignorable here; unsupported units cannot prove a match.
+            int left = i - 1;
+            while (left >= 0 && text[left] == '\u0301') left--;
+            if (left < 0 || text[left] is not (>= '\u0391' and <= '\u03A1' or
+                >= '\u03A3' and <= '\u03A9' or >= '\u03B1' and <= '\u03C9'))
+                continue;
+
+            int right = i + 1;
+            while (right < text.Length && text[right] == '\u0301') right++;
+            if (right < text.Length && text[right] != ' ') continue;
+
+            // Both scans use the original text, including adjacent capital sigmas.
+            rewritten ??= text.ToCharArray();
+            rewritten[i] = '\u03C2';
+        }
+
+        if (rewritten is not null) text = new string(rewritten);
+        return text.Replace("\u0130", "\u0069\u0307", StringComparison.Ordinal).ToLowerInvariant();
     }
 
     private static string TrimEcmaWhitespace(string text)
