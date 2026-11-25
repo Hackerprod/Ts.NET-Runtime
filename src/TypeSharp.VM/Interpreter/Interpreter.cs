@@ -435,6 +435,13 @@ public sealed class Interpreter
                             if (!IsPrivateRuntimeField(field.Key))
                                 targetObject.Value.SetField(field.Key, field.Value);
                     }
+                    else if (target is TsObjectValue arrayTarget && source is TsArrayValue sourceArray)
+                    {
+                        var array = sourceArray.Value;
+                        for (int i = 0; i < array.Count; i++)
+                            if (!array.IsHole(i))
+                                arrayTarget.Value.SetField(i.ToString(CultureInfo.InvariantCulture), array.Get(i));
+                    }
                     break;
                 }
 
