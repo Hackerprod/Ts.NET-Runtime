@@ -287,10 +287,7 @@ public static class Builtins
                 if (milliseconds < DateMinUnixMilliseconds || milliseconds > DateMaxUnixMilliseconds)
                     throw new InvalidOperationException("Invalid Date");
 
-                return TsValue.FromString(DateTimeOffset
-                    .FromUnixTimeMilliseconds(milliseconds)
-                    .UtcDateTime
-                    .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture));
+                return TsValue.FromString(FormatDateUtcIso(milliseconds));
             },
 
             ["Date::getUTCFullYear"] = args =>
@@ -1563,6 +1560,11 @@ public static class Builtins
     private const long DateMinUnixMilliseconds = -62135596800000;
     private const long DateMaxUnixMilliseconds = 253402300799999;
 
+    private static string FormatDateUtcIso(long milliseconds) => DateTimeOffset
+        .FromUnixTimeMilliseconds(milliseconds)
+        .UtcDateTime
+        .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+
     private static TsValue DateTimestamp(TsValue v)
     {
         if (v is TsObjectValue obj && obj.Value.GetField("__timestampMs") is TsFloat64Value timestamp)
@@ -1648,6 +1650,11 @@ public static class Builtins
             set.Value.Entries
                 .Select(v => ToJsonCompatible(v, ancestors, depth + 1))
                 .ToList()),
+        TsObjectValue date when string.Equals(date.Value.TypeName, "Date", StringComparison.Ordinal)
+            && date.Value.GetField("__timestampMs") is TsFloat64Value timestamp
+            && double.IsFinite(timestamp.Value)
+            && timestamp.Value >= DateMinUnixMilliseconds && timestamp.Value <= DateMaxUnixMilliseconds
+            => FormatDateUtcIso((long)Math.Truncate(timestamp.Value)),
         TsObjectValue obj => ConvertComposite(obj.Value, ancestors, depth, () =>
         {
             var members = obj.Value.Fields.Where(pair => pair.Value is not TsVoid).ToDictionary(
