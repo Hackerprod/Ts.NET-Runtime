@@ -186,6 +186,7 @@ public sealed class Binder
         number.Methods["isInteger"] = new TsMethod("isInteger", TsType.Bool, new List<TsParameter>());
         number.Methods["isFinite"] = new TsMethod("isFinite", TsType.Bool, new List<TsParameter>());
         number.Methods["isNaN"] = new TsMethod("isNaN", TsType.Bool, new List<TsParameter>());
+        number.Methods["isSafeInteger"] = new TsMethod("isSafeInteger", TsType.Bool, new List<TsParameter>());
         number.Methods["parseFloat"] = new TsMethod("parseFloat", TsType.Number, new List<TsParameter>());
         number.Methods["parseInt"] = new TsMethod("parseInt", TsType.Number, new List<TsParameter>());
         foreach (var constant in new[]
@@ -3472,7 +3473,7 @@ public sealed class Binder
     {
         var callee = !call.IsNullConditional && call.TypeArguments.Count == 0
             && call.Arguments.Count == 1 && call.Arguments[0] is not SpreadExpressionSyntax
-            && call.Callee is MemberAccessExpressionSyntax { IsNullConditional: false, MemberName: "parseFloat" or "isFinite" or "isNaN" } member
+            && call.Callee is MemberAccessExpressionSyntax { IsNullConditional: false, MemberName: "parseFloat" or "isFinite" or "isNaN" or "isSafeInteger" } member
             ? BindMemberAccess(member, allowBuiltinNumberParseFloatCall: true)
             : BindExpression(call.Callee);
 

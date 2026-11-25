@@ -131,6 +131,7 @@ interface NumberConstructor {
     readonly MIN_SAFE_INTEGER: number;
     isFinite(value: unknown): boolean;
     isNaN(value: unknown): boolean;
+    isSafeInteger(value: unknown): boolean;
     parseInt(value: string, radix?: number): number;
     parseFloat(value: string): number;
 }

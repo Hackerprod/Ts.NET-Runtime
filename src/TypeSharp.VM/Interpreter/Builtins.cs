@@ -146,6 +146,21 @@ public static class Builtins
             ["Number::isNaN"] = args => Bool(
                 (args[0] is TsFloat64Value fd && double.IsNaN(fd.Value)) ||
                 (args[0] is TsFloat32Value ff && float.IsNaN(ff.Value))),
+            ["Number::isSafeInteger"] = args =>
+            {
+                static bool IsSafeBinary64(double value) =>
+                    value >= -9007199254740991d && value <= 9007199254740991d && value == Math.Truncate(value);
+
+                return Bool(args[0] switch
+                {
+                    TsInt32Value => true,
+                    TsFloat32Value f => IsSafeBinary64((double)f.Value),
+                    TsFloat64Value d => IsSafeBinary64(d.Value),
+                    TsDecimalValue m => m.Value >= -9007199254740991m && m.Value <= 9007199254740991m
+                        && m.Value == decimal.Truncate(m.Value),
+                    _ => false
+                });
+            },
             ["Number::parseFloat"] = args => Num(ParseFloatPrefix(S(args[0]))),
             ["Number::parseInt"] = args => Num(long.TryParse(S(args[0]), out var pi) ? pi : double.NaN),
             ["Number"] = args => Num(
