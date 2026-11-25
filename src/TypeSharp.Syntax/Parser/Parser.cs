@@ -156,9 +156,10 @@ public sealed class Parser
             isGenerator = true;
         }
 
+        bool hasName = Check(TokenKind.Identifier);
         var name = ExpectIdentifier();
         var genericParams = ParseGenericParameters();
-        var parameters = ParseParameterList();
+        var parameters = ParseParameterList(allowTerminalInferredOptional: hasName && Check(TokenKind.OpenParen));
         var returnType = Check(TokenKind.Colon) ? (TypeSyntax?)ParseTypeAnnotation() : null;
 
         SyntaxNode body;
@@ -624,7 +625,7 @@ public sealed class Parser
         return field;
     }
 
-    private List<ParameterSyntax> ParseParameterList()
+    private List<ParameterSyntax> ParseParameterList(bool allowTerminalInferredOptional = false)
     {
         Expect(TokenKind.OpenParen);
         var parameters = new List<ParameterSyntax>();
@@ -645,10 +646,19 @@ public sealed class Parser
                 isRest = true;
                 Advance();
             }
+            bool hasIdentifierName = Check(TokenKind.Identifier);
             var name = ExpectMemberName();
             var nameLocation = Peek(-1).Location;
             bool optional = false;
             if (Check(TokenKind.Question) && Peek(1).Kind == TokenKind.Colon)
+            {
+                optional = true;
+                Advance();
+            }
+            else if (allowTerminalInferredOptional && hasIdentifierName && !isRest && !isPropertyParameter &&
+                     Check(TokenKind.Question) &&
+                     (Peek(1).Kind == TokenKind.CloseParen ||
+                      Peek(1).Kind == TokenKind.Comma && Peek(2).Kind == TokenKind.CloseParen))
             {
                 optional = true;
                 Advance();
