@@ -655,6 +655,7 @@ public static class Builtins
                 double depth = args.Length == 1 ? 1 : args[1] switch
                 {
                     TsVoid => 1,
+                    TsNull => 0,
                     TsInt32Value i => i.Value,
                     TsInt64Value l => l.Value,
                     TsUInt64Value u => u.Value,
