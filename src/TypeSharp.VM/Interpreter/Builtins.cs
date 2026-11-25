@@ -77,6 +77,7 @@ public static class Builtins
                 var n = D(args[0]);
                 return Num(n == 0.0 ? n : System.Math.Asinh(n));
             },
+            ["Math::cosh"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Cosh(D(args[0]))),
             ["Math::sinh"] = args =>
             {
                 if (args.Length == 0) return Num(double.NaN);

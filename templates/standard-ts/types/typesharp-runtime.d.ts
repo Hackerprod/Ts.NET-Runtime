@@ -113,6 +113,7 @@ interface Math {
     asin(x: number): number;
     asinh(x: number): number;
     sinh(x: number): number;
+    cosh(x: number): number;
     tan(x: number): number;
     atan(x: number): number;
     atan2(y: number, x: number): number;
