@@ -437,6 +437,19 @@ public sealed class Lexer
                     continue;
                 }
 
+                if (Peek() == 'x')
+                {
+                    int high = HexNibble(Peek(1));
+                    int low = HexNibble(Peek(2));
+                    if (high >= 0 && low >= 0)
+                    {
+                        sb.Append((char)((high << 4) | low));
+                        _position += 3;
+                        _column += 3;
+                        continue;
+                    }
+                }
+
                 sb.Append(Peek() switch
                 {
                     'n' => '\n',
@@ -468,6 +481,14 @@ public sealed class Lexer
         }
 
         return new Token(TokenKind.StringLiteral, sb.ToString(), start, sb.ToString());
+
+        static int HexNibble(char c) => c switch
+        {
+            >= '0' and <= '9' => c - '0',
+            >= 'A' and <= 'F' => c - 'A' + 10,
+            >= 'a' and <= 'f' => c - 'a' + 10,
+            _ => -1
+        };
     }
 
     // Backtick template: cooked text and escaped-dollar offsets travel in
