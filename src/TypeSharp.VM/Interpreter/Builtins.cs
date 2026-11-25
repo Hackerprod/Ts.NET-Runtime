@@ -1008,6 +1008,7 @@ public static class Builtins
             ["String::padEnd"] = args =>
             {
                 string text = S(args[0]);
+                if (args.Length == 1) return TsValue.FromString(text);
                 double numericWidth = D(args[1]);
                 int width = (int)numericWidth;
                 string fill = args.Length > 2 && args[2] is not TsVoid ? S(args[2]) : " ";
