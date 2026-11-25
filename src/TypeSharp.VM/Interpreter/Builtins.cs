@@ -1088,8 +1088,9 @@ public static class Builtins
                 if (args.Length == 1 || args[1] is TsVoid)
                 {
                     if (args.Length > 2 &&
-                        (args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
-                            TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) &&
+                        ((args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
+                            TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) ||
+                            (args[2] is TsStringValue undefinedTextLimit && IsStringSplitDecimalTextLimit(undefinedTextLimit.Value))) &&
                         StringSplitLimit(D(args[2])) == 0)
                         return new TsArrayValue(new TsArray(0));
 
