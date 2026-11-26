@@ -88,7 +88,7 @@ public static class Marshaller
 
         foreach (var prop in properties)
         {
-            if (prop.CanRead)
+            if (prop.CanRead && prop.GetIndexParameters().Length == 0)
             {
                 try
                 {
