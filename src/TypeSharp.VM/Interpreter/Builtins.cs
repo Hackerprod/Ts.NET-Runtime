@@ -785,7 +785,9 @@ public static class Builtins
             ["String::at"] = args =>
             {
                 string s = S(args[0]);
-                double index = args.Length > 1 ? D(args[1]) : 0;
+                double index = args.Length <= 1 ? 0
+                    : args[1] is TsStringValue text && TryGetBoundedHexPosition(text.Value, s.Length, out int hexPosition)
+                        ? hexPosition : D(args[1]);
                 if (double.IsNaN(index))
                     index = 0;
                 if (!double.IsFinite(index))
