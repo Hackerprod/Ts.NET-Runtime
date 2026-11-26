@@ -12,7 +12,9 @@ ARGS = ("run", "--project", "samples/deep-validation/TypeSharp.DeepValidation.cs
 STATUSES = (0, 1, 7)
 
 
-def check_call(command, cwd, env, trace, expected_cwd, expected_args, status):
+def check_call(
+    command, cwd, env, trace, expected_cwd, expected_args, status, *, quiet_stdout=False
+):
     try:
         result = subprocess.run(
             command, cwd=cwd, env=env, shell=False, capture_output=True, timeout=10
@@ -30,6 +32,12 @@ def check_call(command, cwd, env, trace, expected_cwd, expected_args, status):
             f"{command!r}: expected exit {status} and trace {expected!r}; "
             f"got exit {result.returncode} and trace {observed!r}; "
             f"stdout={result.stdout!r}, stderr={result.stderr!r}"
+        )
+
+    if quiet_stdout and result.stdout != b"":
+        raise RuntimeError(
+            f"{command!r}: exit {status} and exact cwd/argv trace verified; "
+            f"expected empty stdout, got {result.stdout!r}"
         )
 
 
@@ -53,14 +61,19 @@ def verify(launcher, *, baseline=False):
         )
         stub.chmod(0o755)
 
-        def run(label, command, status, expected_cwd, expected_args):
+        def run(label, command, status, expected_cwd, expected_args, *, relative=False):
             trace = temp / f"{label}-{status}.trace"
             env = {
                 "PATH": str(private_bin),
                 "TEST_TRACE": str(trace),
                 "TEST_EXIT": str(status),
             }
-            check_call(command, temp, env, trace, expected_cwd, expected_args, status)
+            if relative:
+                env["CDPATH"] = "."
+            check_call(
+                command, temp, env, trace, expected_cwd, expected_args, status,
+                quiet_stdout=relative,
+            )
             if baseline:
                 print(f"{label} exit={status} exact single NUL trace={trace.read_bytes()!r}")
 
@@ -83,6 +96,12 @@ def verify(launcher, *, baseline=False):
             raise RuntimeError("Baseline unexpectedly launched natively")
         for status in STATUSES:
             run("native", [str(launcher)], status, root, ARGS)
+
+        relative_launcher = Path("samples/deep-validation/run.sh")
+        fixture_launcher = temp / relative_launcher
+        fixture_launcher.parent.mkdir(parents=True)
+        shutil.copy2(launcher, fixture_launcher)
+        run("native-relative", [str(relative_launcher)], 7, temp, ARGS, relative=True)
 
 
 if __name__ == "__main__":
