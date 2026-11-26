@@ -148,7 +148,7 @@ public sealed class Lexer
         if (char.IsDigit(c))
             return ReadNumber(start);
 
-        if (char.IsLetter(c) || c == '_' || c == '@')
+        if (char.IsLetter(c) || c is '_' or '$' or '@')
             return ReadIdentifier(start);
 
         return ReadOperator(start);
@@ -607,7 +607,7 @@ public sealed class Lexer
             _column++;
         }
 
-        while (_position < _source.Length && (char.IsLetterOrDigit(Peek()) || Peek() == '_'))
+        while (_position < _source.Length && (char.IsLetterOrDigit(Peek()) || Peek() is '_' or '$'))
         {
             sb.Append(Peek());
             _position++;
