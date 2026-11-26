@@ -109,15 +109,14 @@ public sealed class Lexer
         var start = CurrentLocation();
         char c = Peek();
 
+        if (IsLineTerminator(c))
+        {
+            ConsumeLineTerminator();
+            return new Token(TokenKind.NewLine, _source[start.Offset.._position], start);
+        }
+
         if (char.IsWhiteSpace(c))
         {
-            if (c == '\n')
-            {
-                _position++;
-                _line++;
-                _column = 1;
-                return new Token(TokenKind.NewLine, "\n", start);
-            }
             SkipWhitespace();
             return new Token(TokenKind.Whitespace, " ", start);
         }
@@ -704,9 +703,18 @@ public sealed class Lexer
         return new Token(kind, text, new SourceLocation(_fileName, _line, _column - text.Length, _position - text.Length));
     }
 
+    private static bool IsLineTerminator(char c) => c is '\n' or '\r' or '\u2028' or '\u2029';
+
+    private void ConsumeLineTerminator()
+    {
+        _position += Peek() == '\r' && Peek(1) == '\n' ? 2 : 1;
+        _line++;
+        _column = 1;
+    }
+
     private void SkipWhitespace()
     {
-        while (_position < _source.Length && char.IsWhiteSpace(Peek()) && Peek() != '\n')
+        while (_position < _source.Length && char.IsWhiteSpace(Peek()) && !IsLineTerminator(Peek()))
         {
             _position++;
             _column++;
@@ -715,7 +723,7 @@ public sealed class Lexer
 
     private void SkipLineComment()
     {
-        while (_position < _source.Length && Peek() != '\n')
+        while (_position < _source.Length && !IsLineTerminator(Peek()))
         {
             _position++;
             _column++;
@@ -734,16 +742,15 @@ public sealed class Lexer
                 _column += 2;
                 return;
             }
-            if (Peek() == '\n')
+            if (IsLineTerminator(Peek()))
             {
-                _line++;
-                _column = 1;
+                ConsumeLineTerminator();
             }
             else
             {
+                _position++;
                 _column++;
             }
-            _position++;
         }
     }
 
