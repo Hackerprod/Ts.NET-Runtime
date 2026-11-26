@@ -48,7 +48,7 @@ public sealed class HotReloadManager
     public bool HasChanges(string filePath, string newSource)
     {
         string newHash = ComputeHash(newSource);
-        if (_sourceHashes.TryGetValue(filePath, out var oldHash))
+        if (_sourceHashes.TryGetValue(NormalizeHashPath(filePath), out var oldHash))
         {
             return oldHash != newHash;
         }
@@ -74,7 +74,8 @@ public sealed class HotReloadManager
 
     public void CommitSourceHash(string filePath, string source)
     {
-        _sourceHashes[filePath] = ComputeHash(source);
+        string hash = ComputeHash(source);
+        _sourceHashes[NormalizeHashPath(filePath)] = hash;
     }
 
     public bool CanMigrateInstance(string typeName, string fieldName, string fieldType)
@@ -107,6 +108,26 @@ public sealed class HotReloadManager
             {
                 break;
             }
+        }
+    }
+
+    private static string NormalizeHashPath(string filePath)
+    {
+        try
+        {
+            return Path.GetFullPath(filePath);
+        }
+        catch (ArgumentException)
+        {
+            return filePath;
+        }
+        catch (NotSupportedException)
+        {
+            return filePath;
+        }
+        catch (PathTooLongException)
+        {
+            return filePath;
         }
     }
 
