@@ -85,98 +85,51 @@ APIs, `eval`, and package execution from `node_modules` inside the VM.
 
 ## Host Interop
 
-.NET hosts expose services through explicit registration:
+Register an async .NET host service, then call the script with no arguments:
 
 ```csharp
+using System.Threading.Tasks;
+using TypeSharp.Hosting;
+using TypeSharp.Interop.HostExports;
+
 await using var runtime = await new TypeSharpRuntimeBuilder()
-    .AddSourceDirectory("./scripts")
-    .AddHostService("tasks", new TaskService())
-    .ConfigureLimits(options =>
-    {
-        options.ExecutionTimeout = TimeSpan.FromSeconds(1);
-        options.MaximumInstructions = 1_000_000;
-        options.MaximumMemoryBytes = 64 * 1024 * 1024;
-    })
-    .EnableHotReload()
+    .AddSourceFile("./scripts/main.ts")
+    .AddHostService("profiles", new AsyncProfileHost())
     .BuildAsync();
 
-bool handled = await runtime.InvokeAsync<bool>(
-    "main",
-    "handle",
-    request
-);
-```
+var result = await runtime.InvokeAsync<string>("scripts", "load");
+System.Console.WriteLine(result); // profile:42
 
-Example host service:
-
-```csharp
-public sealed class TaskService
+public class AsyncProfileHost
 {
-    [TsExport("find")]
-    public Task<object?> FindAsync(double id)
-    {
-        return Task.FromResult<object?>(new
-        {
-            id,
-            title = "Review request",
-            completed = false
-        });
-    }
+    [TsExport("findProfile")]
+    public Task<string> FindProfile(double accountId) => Task.FromResult($"profile:{(int)accountId}");
 }
 ```
+
+The canonical module ID is `scripts` for this single-file setup.
+The script can call `findProfile` directly because its name is unique among the
+registered host exports. `profiles` is the registration name, not a script object
+or an import.
 
 ## Script Example
 
+Save this as `./scripts/main.ts`, relative to the host's working directory:
+
 ```ts
-export async function handle(ctx: RequestContext): Promise<boolean> {
-    const task = await ctx.services.tasks.find(ctx.id);
-
-    if (task === null) {
-        ctx.reply({ ok: false, reason: "not_found" });
-        return false;
-    }
-
-    ctx.reply({
-        ok: true,
-        task
-    });
-
-    return true;
-}
-
-interface RequestContext {
-    readonly id: number;
-    readonly services: {
-        readonly tasks: {
-            find(id: number): Promise<Task | null>;
-        };
-    };
-    reply(payload: unknown): void;
-}
-
-interface Task {
-    readonly id: number;
-    readonly title: string;
-    readonly completed: boolean;
+async function load(): Promise<string> {
+    const profile = await findProfile(42);
+    return profile;
 }
 ```
 
 ## Declarations
 
-Runtime and host declarations live in `types/`. Applications should provide
-their own `.d.ts` files for project-specific services and request shapes.
-
-The generic host capability module is declared as `@runtime/host`:
-
-```ts
-import { capability } from "@runtime/host";
-
-const clock = capability<{ now(): number }>("clock");
-const timestamp = clock.now();
-```
-
-Declaration files are for tooling and type checking. They are not executed by
-the VM.
+The `declare module "@runtime/host"` block in `types/runtime-host.d.ts` provides
+ambient declarations for external TypeScript checking and editor tooling only.
+It is not an executable runtime module and is not required for `findProfile`.
+Use app-specific `.d.ts` files when external tooling needs to know about your
+own host exports.
 
 ## Tooling Template
 
