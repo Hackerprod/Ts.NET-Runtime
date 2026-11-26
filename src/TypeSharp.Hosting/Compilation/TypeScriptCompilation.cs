@@ -237,7 +237,7 @@ public sealed class TypeScriptCompilation
         var dir = Path.GetDirectoryName(fromFile) ?? "";
         var resolved = Path.GetFullPath(Path.Combine(dir, importPath));
 
-        if (!resolved.EndsWith(".ts"))
+        if (!resolved.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
             resolved += ".ts";
 
         var root = Path.GetFullPath(_sourceRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
