@@ -196,18 +196,46 @@ formatting. Production execution is handled by the .NET runtime.
 
 ## Hot Reload
 
-When hot reload is enabled, source changes are compiled into a new runtime
-generation. A validated generation can be published atomically while existing
-executions finish on the generation that started them.
+Configure hot reload with `TypeSharpRuntimeBuilder.AddSourceDirectory(...).EnableHotReload().BuildAsync()`.
+The enabled builder watches its configured source directory. To request a
+reload directly, call `await runtime.ReloadAsync(path, cancellationToken)`;
+the token is optional. Watchers debounce changes and dispatch each affected
+file individually. The atomic operation is the generation swap, not a batch
+deployment.
 
-```text
-Generation N: active code and state
-Generation N+1: candidate code compiled and validated
-Generation N+1: published after validation
-```
+Reload compiles the requested file and previously loaded sources with registered
+host symbols. Compilation errors in those sources can reject the reload, but
+an accepted reload publishes only the requested module and carries forward
+the other entries. If two loaded files A and B have independently valid
+changes and only A reloads successfully (with no concurrent reload), B still
+executes its old bytecode until B is separately reloaded, even if the compiler
+read B's edited source. In-flight executions keep using the old generation
+they already leased. New acquisitions see the published generation after
+the swap.
 
-This model lets hosts update script behavior without restarting the process while
-still isolating in-flight executions from partially loaded changes.
+When the initial successful build loaded sources from a single configured
+existing source directory, reload compilation uses that original source
+directory rather than recomputing it from the loaded paths. With both files
+initially loaded from `root`, `root/nested/main.ts` keeps the canonical ID
+`nested` and `root/nested/peer.ts` keeps `nested/peer` when main is reloaded.
+
+With subscribers that return normally, direct `ReloadAsync` has these outcomes:
+
+| Condition | Result | Event | Publication |
+| --- | --- | --- | --- |
+| Disabled, ineligible, or unchanged | `false` | None | No swap |
+| Requested-source read retries exhausted with an `IOException` | `false` | `ReloadError` | No swap by this attempt |
+| Prepublication rejection (compilation, validation, optional startup or custom canary, or migration) | `false` | `ReloadError` | No swap by this attempt |
+| Accepted | `true` | `ModuleReloaded` | Swap and commit source hash before notification |
+
+`ModuleReloaded` carries the canonical module ID and generation ID;
+`ReloadError` uses the requested filename stem. Cancellation observed during
+the initial source read or retries propagates without a reload event. This
+does not cover waiting for the lock or later phases. A throwing `ModuleReloaded` subscriber can
+cause `ReloadError` and a `false` result after the swap. A throwing
+`ReloadError` subscriber can propagate its exception through `ReloadAsync`. Keep handlers non-throwing, and do not take `ReloadError` alone
+as proof that nothing was published. External effects of canaries, migrators,
+or host calls are not rolled back.
 
 ## Security And Limits
 
