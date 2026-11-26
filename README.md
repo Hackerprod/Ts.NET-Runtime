@@ -83,6 +83,44 @@ controlled embedded application logic, including:
 The runtime intentionally avoids implicit access to Node.js modules, browser
 APIs, `eval`, and package execution from `node_modules` inside the VM.
 
+## Run the CLI
+
+Run these commands from the repository checkout root in Bash. Use the .NET 9 SDK
+(or a compatible newer SDK) with the required targeting packs
+and the .NET 8 runtime. The commands select the `net8.0` target explicitly and use absolute
+sample paths expanded by the shell.
+
+### Run the default entry
+
+```bash
+dotnet run --project src/TypeSharp.Hosting/TypeSharp.Hosting.csproj --framework net8.0 -- "$PWD/samples/cli/echo.ts"
+```
+
+With no function name, the CLI invokes `main` and prints `Result: ok` as the
+result line.
+
+### Run a named function with arguments
+
+```bash
+dotnet run --project src/TypeSharp.Hosting/TypeSharp.Hosting.csproj --framework net8.0 -- "$PWD/samples/cli/echo.ts" render 007 "two words"
+```
+
+The CLI invokes `render` and prints `Result: 007|two words` as the result line.
+Tokens after the explicit function name arrive as exact strings,
+not parsed as numbers or booleans. Shell quoting makes `two words` one argument.
+
+### Watch the sample directory
+
+```bash
+dotnet run --project src/TypeSharp.Hosting/TypeSharp.Hosting.csproj --framework net8.0 -- --watch "$PWD/samples/cli"
+```
+
+`--watch` takes exactly one existing directory. It builds and watches executable TypeScript
+files in that directory. To see a reload, open `samples/cli/echo.ts`, change
+`"ok"` to `"updated"`, and save. It reports successful reloads, for example
+`[HotReload] Module 'echo' reloaded (gen N)` (N varies), until you press Ctrl+C.
+It does so without calling `main` or `render` or printing their result.
+
 ## Host Interop
 
 Register an async .NET host service, then call the script with no arguments:
