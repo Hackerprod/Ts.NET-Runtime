@@ -596,7 +596,7 @@ public sealed class Lexer
             '#' => new Token(TokenKind.Hash, "#", start),
             '?' => Peek() switch
             {
-                '.' => AdvanceAnd(TokenKind.QuestionDot, "?."),
+                '.' when Peek(1) is not (>= '0' and <= '9') => AdvanceAnd(TokenKind.QuestionDot, "?."),
                 '?' => AdvanceAnd(TokenKind.QuestionQuestion, "??"),
                 _ => new Token(TokenKind.Question, "?", start)
             },
