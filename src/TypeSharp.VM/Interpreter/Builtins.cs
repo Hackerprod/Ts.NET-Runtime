@@ -747,8 +747,11 @@ public static class Builtins
             {
                 var arr = Arr(args[0]);
                 int length = arr.Count;
-                int start = args.Length > 2 ? FillIndex(args[2], length) : 0;
-                int end = args.Length > 3 && args[3] is not TsVoid ? FillIndex(args[3], length) : length;
+                static int Bound(TsValue bound, int count) =>
+                    bound is TsStringValue text && TryGetBoundedHexPosition(text.Value, count, out int hexPosition)
+                        ? hexPosition : FillIndex(bound, count);
+                int start = args.Length > 2 ? Bound(args[2], length) : 0;
+                int end = args.Length > 3 && args[3] is not TsVoid ? Bound(args[3], length) : length;
                 var value = args.Length > 1 ? args[1] : TsValue.Void;
                 for (int i = start; i < end; i++) arr.Set(i, value);
                 return args[0];
