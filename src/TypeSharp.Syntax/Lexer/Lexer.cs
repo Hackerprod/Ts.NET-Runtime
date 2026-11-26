@@ -607,9 +607,16 @@ public sealed class Lexer
             _column++;
         }
 
-        while (_position < _source.Length && (char.IsLetterOrDigit(Peek()) || Peek() is '_' or '$'))
+        int contentStart = _position;
+        while (_position < _source.Length)
         {
-            sb.Append(Peek());
+            char c = Peek();
+            if (!char.IsLetterOrDigit(c) && c is not ('_' or '$') &&
+                (_position == contentStart || c <= '\u007f' ||
+                 char.GetUnicodeCategory(c) is not (UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark)))
+                break;
+
+            sb.Append(c);
             _position++;
             _column++;
         }
