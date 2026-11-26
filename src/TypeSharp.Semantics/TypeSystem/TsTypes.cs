@@ -142,7 +142,11 @@ public abstract class TsType : IEquatable<TsType>
         foreach (var required in target.Properties.Values)
         {
             if (!TryGetReadableMemberType(source, required.Name, out var actualType))
-                return required.Type is TsNullableType;
+            {
+                if (required.Type is TsNullableType)
+                    continue;
+                return false;
+            }
             if (!IsCompatibleWith(actualType, required.Type))
                 return false;
         }
