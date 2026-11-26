@@ -22,5 +22,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\samples\**\*" Link="samples\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\templates\standard-ts\src\main.ts" Link="templates\standard-ts\src\main.ts" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
