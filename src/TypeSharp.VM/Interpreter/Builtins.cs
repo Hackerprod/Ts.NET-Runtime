@@ -807,8 +807,11 @@ public static class Builtins
             ["String::substring"] = args =>
             {
                 string s = S(args[0]);
-                int start = Math.Clamp(args.Length > 1 ? I(args[1]) : 0, 0, s.Length);
-                int end = Math.Clamp(args.Length > 2 && args[2] is not TsVoid ? I(args[2]) : s.Length, 0, s.Length);
+                static int Bound(TsValue bound, int length) =>
+                    bound is TsStringValue text && TryGetBoundedHexPosition(text.Value, length, out int hexPosition)
+                        ? hexPosition : I(bound);
+                int start = Math.Clamp(args.Length > 1 ? Bound(args[1], s.Length) : 0, 0, s.Length);
+                int end = Math.Clamp(args.Length > 2 && args[2] is not TsVoid ? Bound(args[2], s.Length) : s.Length, 0, s.Length);
                 if (start > end) (start, end) = (end, start);
                 return TsValue.FromString(s[start..end]);
             },
