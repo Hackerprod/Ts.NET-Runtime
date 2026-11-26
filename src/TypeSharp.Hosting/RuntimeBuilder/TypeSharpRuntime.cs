@@ -100,9 +100,12 @@ public sealed class TypeSharpRuntimeBuilder
 
         filesToLoad.AddRange(_sourceFiles.Where(TypeScriptCompilation.IsExecutableTypeScriptFile));
 
+        string? configuredSourceRoot = null;
         if (filesToLoad.Count > 0)
         {
             var sourceRoot = DetermineSourceRoot(filesToLoad, _sourceDirectories);
+            if (_sourceDirectories.Count == 1 && Directory.Exists(sourceRoot))
+                configuredSourceRoot = sourceRoot;
             var compilation = new TypeScriptCompilation(sourceRoot, _hostRegistry.CreateGlobalSymbols());
             foreach (var file in filesToLoad.Distinct(StringComparer.OrdinalIgnoreCase))
                 compilation.AddSourceFile(file);
@@ -136,6 +139,7 @@ public sealed class TypeSharpRuntimeBuilder
             _hostRegistry,
             hotReloadManager,
             _limits,
+            configuredSourceRoot,
             _hotReloadOptions);
 
         if (_hotReloadEnabled)
@@ -182,6 +186,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
     private readonly HostRegistry _hostRegistry;
     private readonly HotReloadManager? _hotReloadManager;
     private readonly VMRuntimeLimits _limits;
+    private readonly string? _configuredSourceRoot;
     private readonly HotReloadOptions _hotReloadOptions;
     private readonly List<FileSystemWatcher> _fileWatchers = new();
     private readonly SemaphoreSlim _reloadLock = new(1, 1);
@@ -221,6 +226,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         HostRegistry hostRegistry,
         HotReloadManager? hotReloadManager,
         VMRuntimeLimits limits,
+        string? configuredSourceRoot,
         HotReloadOptions? hotReloadOptions = null)
     {
         _interpreter = interpreter;
@@ -228,6 +234,7 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         _hostRegistry = hostRegistry;
         _hotReloadManager = hotReloadManager;
         _limits = limits;
+        _configuredSourceRoot = configuredSourceRoot;
         _hotReloadOptions = hotReloadOptions ?? new HotReloadOptions();
         _nextGenerationId = 0;
 
@@ -719,7 +726,8 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             }
         }
 
-        var sourceRoot = TypeSharpRuntimeBuilder.DetermineSourceRoot(files, Array.Empty<string>());
+        var sourceRoot = _configuredSourceRoot
+            ?? TypeSharpRuntimeBuilder.DetermineSourceRoot(files, Array.Empty<string>());
         var compilation = new TypeScriptCompilation(sourceRoot, _hostRegistry.CreateGlobalSymbols());
         foreach (var file in files)
             compilation.AddSourceFile(file);
