@@ -70,7 +70,7 @@ public sealed class TypeSharpProxy
 
         foreach (var prop in properties)
         {
-            if (prop.CanRead)
+            if (prop.CanRead && prop.GetIndexParameters().Length == 0)
             {
                 var value = prop.GetValue(instance);
                 obj.SetField(prop.Name, Marshaller.FromManaged(value));
