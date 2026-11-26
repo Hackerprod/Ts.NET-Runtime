@@ -69,12 +69,11 @@ public static class Marshaller
     {
         await task.ConfigureAwait(false);
 
-        var taskType = task.GetType();
-        if (!taskType.IsGenericType)
-            return TsValue.Void;
+        Type? taskType = task.GetType();
+        while (taskType != null && (!taskType.IsGenericType || taskType.GetGenericTypeDefinition() != typeof(Task<>)))
+            taskType = taskType.BaseType;
 
-        var genericArguments = taskType.GetGenericArguments();
-        if (genericArguments.Length == 1 && genericArguments[0].FullName == "System.Threading.Tasks.VoidTaskResult")
+        if (taskType == null || taskType.GetGenericArguments()[0].FullName == "System.Threading.Tasks.VoidTaskResult")
             return TsValue.Void;
 
         var result = taskType.GetProperty("Result")?.GetValue(task);
