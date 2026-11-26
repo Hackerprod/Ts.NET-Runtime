@@ -104,17 +104,18 @@ public sealed class TsList<T> where T : class
 public sealed class TsDictionary<TKey, TValue> where TKey : notnull
 {
     private readonly Dictionary<TKey, TValue> _inner;
+    private readonly IReadOnlyDictionary<TKey, TValue> _readOnly;
 
     public int Count => _inner.Count;
 
-    public TsDictionary()
+    public TsDictionary() : this(0)
     {
-        _inner = new Dictionary<TKey, TValue>();
     }
 
     public TsDictionary(int capacity)
     {
         _inner = new Dictionary<TKey, TValue>(capacity);
+        _readOnly = new System.Collections.ObjectModel.ReadOnlyDictionary<TKey, TValue>(_inner);
     }
 
     public TValue? Get(TKey key)
@@ -131,5 +132,5 @@ public sealed class TsDictionary<TKey, TValue> where TKey : notnull
 
     public bool Remove(TKey key) => _inner.Remove(key);
 
-    public IReadOnlyDictionary<TKey, TValue> AsReadOnly() => _inner;
+    public IReadOnlyDictionary<TKey, TValue> AsReadOnly() => _readOnly;
 }
