@@ -1,6 +1,6 @@
 # TypeSharp Deep Validation — Round 2
 
-**106 pruebas independientes · 38 archivos TypeSharp**
+**108 pruebas independientes · 39 archivos TypeSharp**
 
 Segunda tanda de validación para **TypeSharp / TS.NET Runtime**. Está diseñada para encontrar errores semánticos y de aislamiento que no suelen aparecer en pruebas funcionales básicas.
 
@@ -26,6 +26,18 @@ PowerShell:
 ```powershell
 dotnet run --project .\samples\deep-validation\TypeSharp.DeepValidation.csproj
 ```
+
+## Verificar el inventario
+
+Desde la raíz del repositorio, con Python 3 y Git:
+
+```bash
+python3 samples/deep-validation/check-inventory.py
+```
+
+Por defecto comprueba `HEAD`; acepta otra referencia de Git como argumento.
+Compara los casos registrados en el runner y los archivos `.ts` versionados bajo
+`scripts/` con las dos publicaciones. No usa cambios locales ni ejecuta la suite.
 
 ## Cobertura
 
