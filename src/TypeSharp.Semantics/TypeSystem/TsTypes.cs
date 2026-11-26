@@ -49,6 +49,11 @@ public abstract class TsType : IEquatable<TsType>
 
         if (source.Equals(target)) return true;
 
+        if (source is not TsNullableType &&
+            target is TsNullableType { ElementType: TsUnionType nullableUnion } &&
+            IsCompatibleWithNullableUnionMember(source, nullableUnion))
+            return true;
+
         if (source is TsLiteralType sourceLiteral && target is not TsLiteralType)
             return IsCompatibleWith(sourceLiteral.BaseType, target);
 
@@ -69,6 +74,14 @@ public abstract class TsType : IEquatable<TsType>
 
         return false;
     }
+
+    private static bool IsCompatibleWithNullableUnionMember(TsType source, TsType member) => member switch
+    {
+        TsUnionType union => union.Types.Any(type => IsCompatibleWithNullableUnionMember(source, type)),
+        TsIntersectionType intersection => intersection.Types.All(type => IsCompatibleWithNullableUnionMember(source, type)),
+        TsLiteralType literal => source.Equals(literal),
+        _ => IsCompatibleWith(source, member)
+    };
 
     private static bool SatisfiesStructuralContract(TsType source, TsType target)
     {
