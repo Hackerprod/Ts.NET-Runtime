@@ -101,8 +101,12 @@ public sealed class TypeScriptCompilation
 
     public void Parse()
     {
+        var seenPaths = new HashSet<string>(StringComparer.Ordinal);
         foreach (var file in _sourceFiles)
         {
+            if (!seenPaths.Add(file))
+                continue;
+
             string moduleId = ComputeModuleId(file, _sourceRoot);
 
             try
@@ -124,6 +128,18 @@ public sealed class TypeScriptCompilation
                         };
                         _diagnostics.Add(diag);
                     }
+                    continue;
+                }
+
+                if (_units.TryGetValue(moduleId, out var existing) &&
+                    !string.Equals(existing.FilePath, file, StringComparison.Ordinal))
+                {
+                    _diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                        $"Duplicate module ID '{moduleId}': source '{file}' conflicts with '{existing.FilePath}'.",
+                        new SourceLocation(file, 1, 1, 0), DiagnosticCode.TS3001)
+                    {
+                        ModuleId = moduleId
+                    });
                     continue;
                 }
 
