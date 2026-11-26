@@ -958,7 +958,7 @@ public static class Builtins
                     (args.Length == 2 || args[2] is TsVoid);
                 string template = emptyPrimitiveWithUndefinedReplacement ? S(TsValue.Void) : S(args[2]);
                 if (!emptyPrimitiveWithUndefinedReplacement && (args[0] is not TsStringValue ||
-                    args[1] is not (TsStringValue or TsBoolValue or TsInt32Value) || args[2] is not TsStringValue))
+                    args[1] is not (TsStringValue or TsBoolValue or TsInt32Value or TsFloat64Value) || args[2] is not TsStringValue))
                     return TsValue.FromString(s.Replace(find, template));
 
                 static bool IsToken(char c) => c is '$' or '&' or '`' or '\'';
