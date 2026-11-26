@@ -449,6 +449,18 @@ public sealed class Lexer
                     }
                 }
 
+                if (Peek() == 'u' &&
+                    TryReadUnicodeEscape(_source.AsSpan(_position), out int width, out int value))
+                {
+                    if (value <= 0xFFFF)
+                        sb.Append((char)value);
+                    else
+                        sb.Append(char.ConvertFromUtf32(value));
+                    _position += width;
+                    _column += width;
+                    continue;
+                }
+
                 sb.Append(Peek() switch
                 {
                     'n' => '\n',
@@ -480,6 +492,44 @@ public sealed class Lexer
         }
 
         return new Token(TokenKind.StringLiteral, sb.ToString(), start, sb.ToString());
+
+        // Probe without moving the raw cursor; failures use the existing fallback.
+        static bool TryReadUnicodeEscape(ReadOnlySpan<char> raw, out int width, out int value)
+        {
+            width = 0;
+            value = 0;
+            if (raw.Length > 1 && raw[1] == '{')
+            {
+                int i = 2;
+                for (; i < raw.Length && raw[i] != '}'; i++)
+                {
+                    int nibble = HexNibble(raw[i]);
+                    if (nibble < 0)
+                        return false;
+                    value = value * 16 + nibble;
+                    if (value > 0x10FFFF)
+                        return false;
+                }
+
+                if (i == 2 || i == raw.Length)
+                    return false;
+                width = i + 1;
+                return true;
+            }
+
+            if (raw.Length < 5)
+                return false;
+            for (int i = 1; i <= 4; i++)
+            {
+                int nibble = HexNibble(raw[i]);
+                if (nibble < 0)
+                    return false;
+                value = value * 16 + nibble;
+            }
+
+            width = 5;
+            return true;
+        }
 
         static int HexNibble(char c) => c switch
         {
