@@ -131,7 +131,8 @@ public abstract class TsType : IEquatable<TsType>
                 function.Parameters.Select(p => new TsParameter(p.Name, Substitute(p.Type, genericArguments))
                 {
                     HasDefault = p.HasDefault,
-                    DefaultValue = p.DefaultValue
+                    DefaultValue = p.DefaultValue,
+                    IsRest = p.IsRest
                 }).ToList(),
                 Substitute(function.ReturnType, genericArguments))
             {
