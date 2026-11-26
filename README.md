@@ -150,6 +150,38 @@ The script can call `findProfile` directly because its name is unique among the
 registered host exports. `profiles` is the registration name, not a script object
 or an import.
 
+### Canonical module IDs and .NET invocation
+
+With one `AddSourceDirectory("./scripts")`, that directory is the source root.
+Canonical module IDs are extensionless paths relative to that root, use slash
+separators, and preserve exact case. A nested lowercase `main.ts` uses its
+folder ID; a root lowercase `main.ts` uses the root directory basename.
+`index.ts` is not special.
+
+| Source path | Canonical module ID |
+| --- | --- |
+| `scripts/modA.ts` | `modA` |
+| `scripts/modB.ts` | `modB` |
+| `scripts/billing/main.ts` | `billing` |
+| `scripts/billing/index.ts` | `billing/index` |
+| `scripts/main.ts` | `scripts` |
+
+`scripts/billing.ts` and `scripts/billing/main.ts` both map to `billing`, so the
+same compilation rejects them as duplicate canonical module IDs (TS3001).
+
+If each of `modA.ts` and `modB.ts` defines its own `tick` returning the value
+shown, qualified invocation selects the requested module regardless of
+registration order:
+
+```csharp
+var a = await runtime.InvokeAsync<int>("modA", "tick"); // 10
+var b = await runtime.InvokeAsync<int>("modB", "tick"); // 20
+```
+
+When names are duplicated, `Invoke("tick")` and an invoked
+`CreateFunctionHandle("tick")` can select either module. Module order is
+unspecified; do not rely on it.
+
 ## Script Example
 
 Save this as `./scripts/main.ts`, relative to the host's working directory:
