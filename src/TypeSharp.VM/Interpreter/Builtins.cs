@@ -46,7 +46,7 @@ public static class Builtins
                     ? 0.0
                     : args.Length == 1 && args[0] is TsNull ? 0d : D(args[0]))),
             ["Math::log2"] = args => Num(Math.Log2(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::log10"] = args => Num(Math.Log10(D(args[0]))),
+            ["Math::log10"] = args => Num(Math.Log10(args[0] is TsNull ? 0d : D(args[0]))),
             ["Math::exp"] = args => Num(Math.Exp(args[0] is TsNull ? 0d : D(args[0]))),
             ["Math::sign"] = args =>
             {
