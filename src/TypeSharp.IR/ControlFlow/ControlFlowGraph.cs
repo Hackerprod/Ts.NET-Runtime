@@ -20,6 +20,12 @@ public sealed class ControlFlowGraph
     {
         foreach (var block in Blocks)
         {
+            block.Successors.Clear();
+            block.Predecessors.Clear();
+        }
+
+        foreach (var block in Blocks)
+        {
             if (block.Instructions.Count == 0) continue;
 
             var last = block.LastInstruction;
