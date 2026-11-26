@@ -627,7 +627,19 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             if (_hotReloadManager == null || !TypeScriptCompilation.IsExecutableTypeScriptFile(filePath))
                 return false;
 
-            string source = await ReadSourceSafelyAsync(filePath, cancellationToken);
+            string source;
+            try
+            {
+                source = await ReadSourceSafelyAsync(filePath, cancellationToken);
+            }
+            catch (IOException ex)
+            {
+                ReloadError?.Invoke(this, new ModuleReloadErrorEventArgs(
+                    Path.GetFileNameWithoutExtension(filePath), ex.Message));
+
+                Debug.WriteLine($"[HotReload] Failed to reload {Path.GetFileName(filePath)}: {ex.Message}");
+                return false;
+            }
 
             if (!_hotReloadManager.HasChanges(filePath, source))
                 return false;
