@@ -76,7 +76,8 @@ public sealed class TsList<T> where T : class
         return default;
     }
 
-    public IReadOnlyList<T> AsReadOnly() => new ArraySegment<T>(_items, 0, _count);
+    public IReadOnlyList<T> AsReadOnly() =>
+        new System.Collections.ObjectModel.ReadOnlyCollection<T>(new ArraySegment<T>(_items, 0, _count));
 
     public void Clear()
     {
