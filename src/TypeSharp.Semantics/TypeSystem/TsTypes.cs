@@ -245,17 +245,24 @@ public abstract class TsType : IEquatable<TsType>
         return false;
     }
 
-    private static bool IsFunctionAssignable(TsFunctionType source, TsFunctionType target)
+    internal static bool IsFunctionAssignable(TsFunctionType source, TsFunctionType target)
     {
-        if (source.Parameters.Count > target.Parameters.Count)
-            return false;
-
-        for (int i = 0; i < source.Parameters.Count; i++)
+        var pairedCount = Math.Min(source.Parameters.Count, target.Parameters.Count);
+        for (int i = 0; i < pairedCount; i++)
         {
+            // A callback that accepts a wider parameter type can stand in for
+            // one that will be called with a narrower type.
             if (!AreParameterTypesCompatible(target.Parameters[i], source.Parameters[i]))
                 return false;
         }
 
+        for (int i = pairedCount; i < source.Parameters.Count; i++)
+        {
+            if (!source.Parameters[i].HasDefault || source.Parameters[i].IsRest)
+                return false;
+        }
+
+        // The caller is free to ignore a return value when expecting void.
         return target.ReturnType.Equals(Void) || IsCompatibleWith(source.ReturnType, target.ReturnType);
     }
 
@@ -676,20 +683,7 @@ public sealed class TsFunctionType : TsType
         if (Equals(other)) return true;
         if (other is not TsFunctionType target)
             return false;
-        if (Parameters.Count > target.Parameters.Count)
-            return false;
-
-        for (int i = 0; i < Parameters.Count; i++)
-        {
-            // A callback that accepts a wider parameter type can stand in for
-            // one that will be called with a narrower type.
-            if (!TsType.AreParameterTypesCompatible(target.Parameters[i], Parameters[i]))
-                return false;
-        }
-
-        // TypeScript allows callbacks that return a value where void is
-        // expected; the caller is free to ignore that result.
-        return target.ReturnType.Equals(Void) || IsCompatibleWith(ReturnType, target.ReturnType);
+        return TsType.IsFunctionAssignable(this, target);
     }
 }
 
