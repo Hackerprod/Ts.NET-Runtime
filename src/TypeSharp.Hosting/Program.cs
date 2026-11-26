@@ -18,8 +18,22 @@ public static class Program
             return;
         }
 
-        if (args[0] == "--watch" && args.Length > 1)
+        if (args[0] == "--watch")
         {
+            if (args.Length != 2)
+            {
+                Console.Error.WriteLine("Usage: typesharp --watch <directory>");
+                Environment.ExitCode = 1;
+                return;
+            }
+
+            if (!Directory.Exists(args[1]))
+            {
+                Console.Error.WriteLine($"Error: Watch directory does not exist: {args[1]}");
+                Environment.ExitCode = 1;
+                return;
+            }
+
             await RunWatchMode(args[1]);
         }
         else
