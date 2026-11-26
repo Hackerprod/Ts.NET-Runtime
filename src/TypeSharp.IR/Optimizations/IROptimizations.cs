@@ -124,14 +124,6 @@ public sealed class PeepholeOptimization : IROptimization
                     i--;
                     continue;
                 }
-
-                // Double negation
-                if (curr.Opcode == Opcode.Not_Bool && next.Opcode == Opcode.Not_Bool)
-                {
-                    block.Instructions.RemoveRange(i, 2);
-                    changed = true;
-                    i--;
-                }
             }
         }
 
