@@ -243,6 +243,7 @@ public sealed class Lexer
         }
 
         string text = _source[numberStart.._position];
+        _column += text.Length;
 
         if (!isFloat && Peek() == 'n')
         {
@@ -279,8 +280,6 @@ public sealed class Lexer
             decimal decValue = decimal.Parse(text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture);
             return new Token(TokenKind.FloatLiteral, text + "m", start, decValue);
         }
-
-        _column += text.Length;
 
         string numericText = firstSeparator < 0 ? text : text.Replace("_", "");
         object value;
