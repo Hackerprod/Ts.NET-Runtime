@@ -26,31 +26,38 @@ public sealed class ControlFlowGraph
 
         foreach (var block in Blocks)
         {
-            if (block.Instructions.Count == 0) continue;
-
-            var last = block.LastInstruction;
-            switch (last.Opcode)
+            for (int i = 0; i < block.Instructions.Count; i++)
             {
-                case Opcode.Branch:
-                    block.Successors.Add(last.Operand0);
-                    break;
+                var instruction = block.Instructions[i];
+                switch (instruction.Opcode)
+                {
+                    case Opcode.BranchTrue:
+                    case Opcode.BranchFalse:
+                        block.Successors.Add(instruction.Operand0);
+                        if (i == block.Instructions.Count - 1 && block.Instructions.Count > 1)
+                        {
+                            int nextBlockIdx = Blocks.IndexOf(block) + 1;
+                            if (nextBlockIdx < Blocks.Count)
+                                block.Successors.Add(Blocks[nextBlockIdx].Id);
+                        }
+                        continue;
 
-                case Opcode.BranchTrue:
-                case Opcode.BranchFalse:
-                    block.Successors.Add(last.Operand0);
-                    if (block.Instructions.Count > 1)
-                    {
-                        int nextBlockIdx = Blocks.IndexOf(block) + 1;
-                        if (nextBlockIdx < Blocks.Count)
-                            block.Successors.Add(Blocks[nextBlockIdx].Id);
-                    }
-                    break;
+                    case Opcode.Branch:
+                        block.Successors.Add(instruction.Operand0);
+                        break;
 
-                case Opcode.Return:
-                case Opcode.ReturnVoid:
-                case Opcode.Throw:
-                    block.Successors.Add(Exit.Id);
-                    break;
+                    case Opcode.Return:
+                    case Opcode.ReturnVoid:
+                    case Opcode.Throw:
+                        block.Successors.Add(Exit.Id);
+                        break;
+
+                    default:
+                        continue;
+                }
+
+                // A terminal instruction ends the block's outgoing control flow.
+                break;
             }
         }
 
