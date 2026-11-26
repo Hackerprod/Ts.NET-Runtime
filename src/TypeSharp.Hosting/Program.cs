@@ -1,4 +1,5 @@
 using TypeSharp.Hosting;
+using TypeSharp.VM.Memory;
 
 namespace TypeSharp.Hosting;
 
@@ -13,6 +14,7 @@ public static class Program
         {
             Console.WriteLine("Usage: typesharp <file.ts> [function] [args...]");
             Console.WriteLine("       typesharp --watch <directory>");
+            Console.WriteLine("       Function arguments are passed as strings.");
             return;
         }
 
@@ -48,7 +50,8 @@ public static class Program
 
             Console.WriteLine($"Executing {filePath} -> {entryFunction}...");
 
-            var result = runtime.Invoke(entryFunction);
+            var functionArgs = args.Length > 1 ? args.Skip(1).Select(TsValue.FromString).ToArray() : null;
+            var result = runtime.Invoke(entryFunction, functionArgs);
             Console.WriteLine($"Result: {result}");
         }
         catch (Exception ex)
