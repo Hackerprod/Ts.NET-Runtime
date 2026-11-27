@@ -726,6 +726,8 @@ internal sealed class TsValueMapKeyComparer : IEqualityComparer<TsValue>
             return SameValueZero(AsNumber(x), AsNumber(y));
         if (IsBigInt(x) && IsBigInt(y))
             return AsBigInt(x) == AsBigInt(y);
+        if (x is TsObjectValue xo && y is TsObjectValue yo)
+            return ReferenceEquals(xo.Value, yo.Value);
         return false;
     }
 
