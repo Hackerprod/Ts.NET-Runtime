@@ -233,15 +233,29 @@ public static class Builtins
                 var target = Bytes(args[0]);
                 if (args.Length < 2) return TsValue.Null;
                 int offset = args.Length > 2 ? I(args[2]) : 0;
+
+                static void CheckRange(int start, int sourceLength, int targetLength)
+                {
+                    if (start < 0 || start > targetLength || sourceLength > targetLength - start)
+                    {
+                        var error = new TsObject("RangeError");
+                        error.SetField("name", TsValue.FromString("RangeError"));
+                        error.SetField("message", TsValue.FromString("Offset or source length is outside the destination Uint8Array bounds"));
+                        throw new TsThrownException(TsValue.FromObject(error));
+                    }
+                }
+
                 if (args[1] is TsUint8ArrayValue sourceBytes)
                 {
-                    for (int i = 0; i < sourceBytes.Length && offset + i < target.Length; i++)
+                    CheckRange(offset, sourceBytes.Length, target.Length);
+                    for (int i = 0; i < sourceBytes.Length; i++)
                         target.Value[offset + i] = sourceBytes.Get(i);
                     return TsValue.Void;
                 }
                 else if (args[1] is TsArrayValue sourceArray)
                 {
-                    for (int i = 0; i < sourceArray.Value.Count && offset + i < target.Length; i++)
+                    CheckRange(offset, sourceArray.Value.Count, target.Length);
+                    for (int i = 0; i < sourceArray.Value.Count; i++)
                         target.Value[offset + i] = ToByte(sourceArray.Value.Get(i));
                     return TsValue.Void;
                 }
