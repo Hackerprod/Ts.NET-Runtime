@@ -610,7 +610,8 @@ public sealed class Lexer
             char c = Peek();
             if (!char.IsLetterOrDigit(c) && c is not ('_' or '$') &&
                 (_position == contentStart || c <= '\u007f' ||
-                 char.GetUnicodeCategory(c) is not (UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark)))
+                 char.GetUnicodeCategory(c) is not (UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or
+                     UnicodeCategory.ConnectorPunctuation)))
                 break;
 
             sb.Append(c);
