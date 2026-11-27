@@ -456,7 +456,10 @@ public sealed class TsArray
         var presence = EnsurePresence();
 
         if (index >= _count)
+        {
+            Array.Clear(presence, _count, index - _count);
             _count = index + 1;
+        }
 
         _elements[index] = TsValue.Void;
         presence[index] = false;
