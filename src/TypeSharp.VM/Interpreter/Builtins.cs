@@ -691,6 +691,7 @@ public static class Builtins
                                (n is TsFloat64Value f64 && double.IsNaN(f64.Value)) => 0,
                     TsFloat32Value f when float.IsFinite(f.Value) => Math.Truncate(f.Value),
                     TsFloat64Value d when double.IsFinite(d.Value) => Math.Truncate(d.Value),
+                    TsStringValue s => FlatStringDepth(s),
                     TsDecimalValue m => (double)decimal.Truncate(m.Value),
                     _ => throw new InvalidOperationException("Array.flat depth must be a finite number or undefined")
                 };
@@ -1343,6 +1344,15 @@ public static class Builtins
             out var parsed) => parsed,
         _ => double.NaN
     };
+
+    private static double FlatStringDepth(TsStringValue value)
+    {
+        double depth = D(value);
+        if (double.IsNaN(depth)) return 0;
+        if (!double.IsFinite(depth))
+            throw new InvalidOperationException("Array.flat depth must be a finite number or undefined");
+        return Math.Truncate(depth);
+    }
 
     private static bool IsNegativeRepeatCount(TsValue count) => count switch
     {
