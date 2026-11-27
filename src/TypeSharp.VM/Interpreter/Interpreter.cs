@@ -2638,6 +2638,13 @@ public sealed class Interpreter
             return;
         }
 
+        if (args[0] is TsSetValue source)
+        {
+            foreach (var entry in source.Value.Entries)
+                set.Add(entry);
+            return;
+        }
+
         if (args[0] is not TsArrayValue entries)
             throw new InvalidOperationException("Set constructor expects an array of values");
 
