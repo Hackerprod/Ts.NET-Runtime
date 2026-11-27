@@ -60,7 +60,8 @@ public static class Builtins
                 return Num(n == 0.0 ? n : System.Math.Sin(n));
             },
             ["Math::cos"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Cos(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::fround"] = args => Num(args.Length == 0 ? double.NaN : (double)(float)D(args[0])),
+            ["Math::fround"] = args => Num(args.Length == 0 ? double.NaN :
+                args[0] is TsNull ? 0d : (double)(float)D(args[0])),
             ["Math::clz32"] = args => Num(CountLeadingZeroBits32(D(args[0]))),
             ["Math::imul"] = args => Num(unchecked((int)(ToUInt32(D(args[0])) * ToUInt32(D(args[1]))))),
             ["Math::acos"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Acos(D(args[0]))),
