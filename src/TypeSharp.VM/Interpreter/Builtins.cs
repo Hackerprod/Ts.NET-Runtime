@@ -1039,8 +1039,7 @@ public static class Builtins
                 string text = S(args[0]);
                 if (args.Length == 1) return TsValue.FromString(text);
                 double numericWidth = D(args[1]);
-                if (args[1] is TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue
-                    && numericWidth < 0) return TsValue.FromString(text);
+                if (IsNegativeStringPaddingWidth(args[1], numericWidth)) return TsValue.FromString(text);
                 int width = (int)numericWidth;
                 if (width < 0) return TsValue.FromString(text.PadLeft(width));
                 if (width <= text.Length) return TsValue.FromString(text);
@@ -1069,8 +1068,7 @@ public static class Builtins
                 double numericWidth = D(args[1]);
                 int width = (int)numericWidth;
                 string fill = args.Length > 2 && args[2] is not TsVoid ? S(args[2]) : " ";
-                if (args[1] is TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue
-                    && numericWidth < 0) return TsValue.FromString(text);
+                if (IsNegativeStringPaddingWidth(args[1], numericWidth)) return TsValue.FromString(text);
                 if (width < 0) return TsValue.FromString(text.PadRight(width));
                 if (width <= text.Length || fill.Length == 0) return TsValue.FromString(text);
                 if (fill.Length == 1) return TsValue.FromString(text.PadRight(width, fill[0]));
@@ -1160,6 +1158,11 @@ public static class Builtins
         };
         return t;
     }
+
+    private static bool IsNegativeStringPaddingWidth(TsValue widthArg, double numericWidth) =>
+        numericWidth < 0 &&
+        ((widthArg is TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue) ||
+         (widthArg is TsStringValue && double.IsFinite(numericWidth)));
 
     // Accept only whole fixed-point ASCII decimal text for this split limit.
     private static bool IsStringSplitDecimalTextLimit(string text)
