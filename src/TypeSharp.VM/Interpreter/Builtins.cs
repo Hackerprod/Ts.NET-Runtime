@@ -555,10 +555,24 @@ public static class Builtins
             ["Array::splice"] = args =>
             {
                 var arr = Arr(args[0]);
-                int start = args.Length > 1 ? Normalize(I(args[1]), arr.Count) : 0;
-                int deleteCount = args.Length > 2
-                    ? Math.Clamp(I(args[2]), 0, arr.Count - start)
-                    : args.Length == 1 ? 0 : arr.Count - start;
+                int length = arr.Count;
+                int start = 0;
+                if (args.Length > 1)
+                {
+                    start = args[1] is TsStringValue startText &&
+                        TryGetBoundedHexPosition(startText.Value, length, out int hexStart)
+                        ? hexStart : Normalize(I(args[1]), length);
+                }
+
+                int remaining = length - start;
+                int deleteCount = args.Length > 1 ? remaining : 0;
+                if (args.Length > 2)
+                {
+                    deleteCount = args[2] is TsStringValue countText &&
+                        TryGetBoundedHexPosition(countText.Value, remaining, out int hexCount)
+                        ? hexCount : Math.Clamp(I(args[2]), 0, remaining);
+                }
+
                 var removed = new TsArray(deleteCount);
                 for (int i = 0; i < deleteCount; i++)
                 {
