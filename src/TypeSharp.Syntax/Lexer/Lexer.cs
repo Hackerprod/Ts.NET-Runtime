@@ -219,6 +219,11 @@ public sealed class Lexer
             _position++;
             ReadDecimalDigitRun(allowSeparators, ref firstSeparator);
         }
+        else if (Peek() == '.' && CanEndDecimalAtPoint(numberStart))
+        {
+            isFloat = true;
+            _position++;
+        }
 
         if (Peek() == 'e' || Peek() == 'E')
         {
@@ -295,6 +300,36 @@ public sealed class Lexer
 
         var tok = new Token(isFloat ? TokenKind.FloatLiteral : TokenKind.IntegerLiteral, text, start, value);
         return tok;
+    }
+
+    private bool CanEndDecimalAtPoint(int numberStart)
+    {
+        int next = _position + 1;
+        while (next < _source.Length && IsHorizontalWhitespace(_source[next]))
+            next++;
+
+        // Preserve member access across trivia and leave comments and line breaks alone.
+        if (next < _source.Length)
+        {
+            char boundary = _source[next];
+            if (boundary is not (';' or ',' or ')' or ']' or '}' or ':' or '+' or '-' or '*' or '/' or '%'))
+                return false;
+            if (boundary == '/' && next + 1 < _source.Length && _source[next + 1] is '/' or '*')
+                return false;
+        }
+
+        // ReadDecimalDigitRun already enforces interdigit separators, but also reads Unicode digits.
+        char first = _source[numberStart];
+        if (first == '0')
+            return _position == numberStart + 1;
+        if (first is not (>= '1' and <= '9'))
+            return false;
+        for (int i = numberStart + 1; i < _position; i++)
+        {
+            if (!char.IsAsciiDigit(_source[i]) && _source[i] != '_')
+                return false;
+        }
+        return true;
     }
 
     private void ReadDecimalDigitRun(bool allowSeparators, ref int firstSeparator)
