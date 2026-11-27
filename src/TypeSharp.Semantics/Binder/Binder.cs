@@ -3472,9 +3472,14 @@ public sealed class Binder
     private BoundNode BindCall(CallExpressionSyntax call)
     {
         var callee = !call.IsNullConditional && call.TypeArguments.Count == 0
-            && call.Arguments.Count == 1 && call.Arguments[0] is not SpreadExpressionSyntax
-            && call.Callee is MemberAccessExpressionSyntax { IsNullConditional: false, MemberName: "parseFloat" or "isFinite" or "isNaN" or "isSafeInteger" or "isInteger" } member
-            ? BindMemberAccess(member, allowBuiltinNumberParseFloatCall: true)
+            && call.Callee is MemberAccessExpressionSyntax { IsNullConditional: false } member
+            && (member.MemberName == "parseInt"
+                ? call.Arguments.Count is 1 or 2
+                    && call.Arguments[0] is not SpreadExpressionSyntax
+                    && (call.Arguments.Count == 1 || call.Arguments[1] is not SpreadExpressionSyntax)
+                : call.Arguments.Count == 1 && call.Arguments[0] is not SpreadExpressionSyntax
+                    && member.MemberName is "parseFloat" or "isFinite" or "isNaN" or "isSafeInteger" or "isInteger")
+            ? BindMemberAccess(member, allowBuiltinNumberStaticCall: true)
             : BindExpression(call.Callee);
 
         TsType returnType = TsType.Void;
@@ -3893,13 +3898,13 @@ public sealed class Binder
         return TsType.IsCompatibleWith(argumentType, parameter.Type);
     }
 
-    private BoundNode BindMemberAccess(MemberAccessExpressionSyntax member, bool allowBuiltinNumberParseFloatCall = false)
+    private BoundNode BindMemberAccess(MemberAccessExpressionSyntax member, bool allowBuiltinNumberStaticCall = false)
     {
         var obj = BindExpression(member.Object);
 
         // The default conversion is the visible Number symbol. Reuse the original
         // namespace only for this direct call, and never for a shadowing symbol.
-        if (allowBuiltinNumberParseFloatCall && _builtinNumberNamespace is { } numberNamespace
+        if (allowBuiltinNumberStaticCall && _builtinNumberNamespace is { } numberNamespace
             && _builtinNumberConversion is { } numberConversion
             && obj is BoundVariableExpression receiver && ReferenceEquals(receiver.Symbol, numberConversion))
         {

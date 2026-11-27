@@ -162,7 +162,7 @@ public static class Builtins
                 });
             },
             ["Number::parseFloat"] = args => Num(ParseFloatPrefix(S(args[0]))),
-            ["Number::parseInt"] = args => Num(long.TryParse(S(args[0]), out var pi) ? pi : double.NaN),
+            ["Number::parseInt"] = ParseIntBuiltin,
             ["Number"] = args => Num(
                 args.Length == 0 || args[0] is TsNull ||
                 (args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0)
@@ -467,27 +467,7 @@ public static class Builtins
             },
 
             // ── Global functions ──
-            ["parseInt"] = args =>
-            {
-                if ((args.Length == 1 || (args.Length == 2 && args[1] is TsVoid)) &&
-                    args[0] is TsStringValue primitiveString)
-                    return Num(ParseIntExplicitRadix(primitiveString.Value, 0));
-
-                string input = S(args[0]);
-                if (args.Length > 1 && TryGetExplicitParseIntRadix(args[1], out int explicitRadix))
-                    return Num(ParseIntExplicitRadix(input, explicitRadix));
-
-                string text = input.Trim();
-                int radix = args.Length > 1 ? I(args[1]) : 10;
-                try
-                {
-                    return Num(Convert.ToInt64(text, radix));
-                }
-                catch
-                {
-                    return Num(long.TryParse(text, out var direct) ? direct : double.NaN);
-                }
-            },
+            ["parseInt"] = ParseIntBuiltin,
             ["parseFloat"] = args => Num(ParseFloatPrefix(S(args[0]))),
             ["isNaN"] = args => Bool(args[0] is not TsNull
                 && !(args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0)
@@ -1489,6 +1469,28 @@ public static class Builtins
         while (end > 0 && IsEcmaTrimWhitespace(text[end - 1]))
             end--;
         return end == text.Length ? text : text[..end];
+    }
+
+    private static TsValue ParseIntBuiltin(TsValue[] args)
+    {
+        if ((args.Length == 1 || (args.Length == 2 && args[1] is TsVoid)) &&
+            args[0] is TsStringValue primitiveString)
+            return Num(ParseIntExplicitRadix(primitiveString.Value, 0));
+
+        string input = S(args[0]);
+        if (args.Length > 1 && TryGetExplicitParseIntRadix(args[1], out int explicitRadix))
+            return Num(ParseIntExplicitRadix(input, explicitRadix));
+
+        string text = input.Trim();
+        int radix = args.Length > 1 ? I(args[1]) : 10;
+        try
+        {
+            return Num(Convert.ToInt64(text, radix));
+        }
+        catch
+        {
+            return Num(long.TryParse(text, out var direct) ? direct : double.NaN);
+        }
     }
 
     private static bool TryGetExplicitParseIntRadix(TsValue value, out int radix)
