@@ -115,7 +115,7 @@ public sealed class Lexer
             return new Token(TokenKind.NewLine, _source[start.Offset.._position], start);
         }
 
-        if (char.IsWhiteSpace(c))
+        if (IsHorizontalWhitespace(c))
         {
             SkipWhitespace();
             return new Token(TokenKind.Whitespace, " ", start);
@@ -760,6 +760,8 @@ public sealed class Lexer
 
     private static bool IsLineTerminator(char c) => c is '\n' or '\r' or '\u2028' or '\u2029';
 
+    private static bool IsHorizontalWhitespace(char c) => c == '\uFEFF' || (char.IsWhiteSpace(c) && !IsLineTerminator(c));
+
     private void ConsumeLineTerminator()
     {
         _position += Peek() == '\r' && Peek(1) == '\n' ? 2 : 1;
@@ -769,7 +771,7 @@ public sealed class Lexer
 
     private void SkipWhitespace()
     {
-        while (_position < _source.Length && char.IsWhiteSpace(Peek()) && !IsLineTerminator(Peek()))
+        while (_position < _source.Length && IsHorizontalWhitespace(Peek()))
         {
             _position++;
             _column++;
