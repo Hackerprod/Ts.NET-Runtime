@@ -1383,6 +1383,18 @@ public sealed class Parser
     private ThrowStatementSyntax ParseThrowStatement()
     {
         var throwKw = Advance();
+        var next = Peek();
+        if (next.Location.Line > throwKw.Location.Line)
+        {
+            Diagnostics.Add(new Diagnostic(DiagnosticSeverity.Error,
+                "Line break not permitted after 'throw'.", next.Location));
+
+            // Leave the next token to the enclosing parser for recovery.
+            var range = new SourceRange(throwKw.Location, throwKw.Location);
+            var placeholder = new LiteralExpressionSyntax(new Token(TokenKind.NullLiteral, "", throwKw.Location), range);
+            return new ThrowStatementSyntax(placeholder, range);
+        }
+
         var expr = ParseExpression();
         if (Check(TokenKind.Semicolon)) Advance();
         return new ThrowStatementSyntax(expr, new SourceRange(throwKw.Location, Peek(-1).Location));
