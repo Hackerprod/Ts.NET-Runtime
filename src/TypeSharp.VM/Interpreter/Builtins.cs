@@ -820,8 +820,11 @@ public static class Builtins
             ["String::slice"] = args =>
             {
                 string s = S(args[0]);
-                int start = Normalize(args.Length > 1 ? I(args[1]) : 0, s.Length);
-                int end = Normalize(args.Length > 2 && args[2] is not TsVoid ? I(args[2]) : s.Length, s.Length);
+                static int Bound(TsValue bound, int length) =>
+                    bound is TsStringValue text && TryGetBoundedHexPosition(text.Value, length, out int hexPosition)
+                        ? hexPosition : Normalize(I(bound), length);
+                int start = args.Length > 1 ? Bound(args[1], s.Length) : 0;
+                int end = args.Length > 2 && args[2] is not TsVoid ? Bound(args[2], s.Length) : s.Length;
                 return TsValue.FromString(start < end ? s[start..end] : "");
             },
             ["String::repeat"] = args =>
