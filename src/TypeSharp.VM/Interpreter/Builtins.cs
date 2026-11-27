@@ -1113,10 +1113,11 @@ public static class Builtins
                 if (args.Length == 1 || args[1] is TsVoid)
                 {
                     if (args.Length > 2 &&
-                        ((args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
-                            TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) ||
-                            (args[2] is TsStringValue undefinedTextLimit && IsStringSplitDecimalTextLimit(undefinedTextLimit.Value))) &&
-                        StringSplitLimit(D(args[2])) == 0)
+                        (args[2] is TsNull ||
+                            (((args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
+                                TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) ||
+                                (args[2] is TsStringValue undefinedTextLimit && IsStringSplitDecimalTextLimit(undefinedTextLimit.Value))) &&
+                                StringSplitLimit(D(args[2])) == 0)))
                         return new TsArrayValue(new TsArray(0));
 
                     var whole = new TsArray(1);
@@ -1127,12 +1128,12 @@ public static class Builtins
                 string sep = S(args[1]);
                 if ((args[1] is TsStringValue or TsInt32Value or TsInt64Value or TsUInt64Value or
                         TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) && args.Length > 2 &&
-                    ((args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
+                    ((args[2] is TsNull or TsInt32Value or TsInt64Value or TsUInt64Value or
                         TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) ||
                         (args[1] is TsStringValue && args[2] is TsStringValue textLimit &&
                             IsStringSplitDecimalTextLimit(textLimit.Value))))
                 {
-                    uint limit = StringSplitLimit(D(args[2]));
+                    uint limit = args[2] is TsNull ? 0u : StringSplitLimit(D(args[2]));
                     if (limit == 0)
                         return new TsArrayValue(new TsArray(0));
 
