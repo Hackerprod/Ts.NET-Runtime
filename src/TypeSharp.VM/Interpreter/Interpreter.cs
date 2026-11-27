@@ -2570,7 +2570,11 @@ public sealed class Interpreter
                     : double.NaN;
             }
 
+            const double TimeClipMaxMilliseconds = 8_640_000_000_000_000d;
             var timestamp = AsFloat64(args[0]);
+            if (IsNumericValue(args[0]) && Math.Abs(timestamp) > TimeClipMaxMilliseconds)
+                return double.NaN;
+
             return double.IsFinite(timestamp) ? Math.Truncate(timestamp) : double.NaN;
         }
 
