@@ -628,11 +628,17 @@ public static class Builtins
                     var element = arr.Get(i);
                     if (element is TsArrayValue nested && TryFormatFlatInner(nested.Value, out string inner))
                         return inner;
-                    return element is TsNull or TsVoid ? string.Empty
-                        : element is TsBoolValue ? S(element)
-                        : (element is TsFloat32Value f32 && f32.Value == 0f)
-                            || (element is TsFloat64Value f64 && f64.Value == 0d) ? "0"
-                        : element.ToString();
+                    return element switch
+                    {
+                        TsNull or TsVoid => string.Empty,
+                        TsBoolValue => S(element),
+                        TsFloat32Value f32 when f32.Value == 0f => "0",
+                        TsFloat64Value f64 when f64.Value == 0d => "0",
+                        TsFloat32Value f32 when float.IsFinite(f32.Value) => f32.Value.ToString(CultureInfo.InvariantCulture),
+                        TsFloat64Value f64 when double.IsFinite(f64.Value) => f64.Value.ToString(CultureInfo.InvariantCulture),
+                        TsDecimalValue dec when dec.Value != 0m => dec.Value.ToString(CultureInfo.InvariantCulture),
+                        _ => element.ToString()
+                    };
                 })));
 
                 static bool TryFormatFlatInner(TsArray array, out string result)
