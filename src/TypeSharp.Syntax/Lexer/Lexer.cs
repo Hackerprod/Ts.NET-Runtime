@@ -427,11 +427,9 @@ public sealed class Lexer
             {
                 _position++;
                 _column++;
-                if (Peek() == '\n' || (Peek() == '\r' && Peek(1) == '\n'))
+                if (IsLineTerminator(Peek()))
                 {
-                    _position += Peek() == '\r' ? 2 : 1;
-                    _line++;
-                    _column = 1;
+                    ConsumeLineTerminator();
                     continue;
                 }
 
