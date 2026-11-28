@@ -103,7 +103,7 @@ public sealed class DateGetUtcMillisecondsIntegrationTests(ITestOutputHelper out
         Assert.NotNull(capability);
         Assert.Equal(StandardCapabilityStatus.Supported, capability.Status);
         Assert.Single(Regex.Matches(capability.Signature, @"(?<![A-Za-z0-9_$])getUTCMilliseconds\(\)(?![A-Za-z0-9_$])"));
-        Assert.Contains("getUTCMilliseconds returns the millisecond within the UTC second (0 through 999), or NaN if invalid or unavailable in the supported calendar.", capability.Semantics);
+        Assert.Contains("getUTCMilliseconds returns the millisecond within the UTC second (0 through 999), or NaN if invalid.", capability.Semantics);
         Assert.Single(capability.Tests.Where(test => test == nameof(GetUtcMilliseconds_ReturnsMillisecondOfStoredUtcInstant)));
 
         var declarations = File.ReadAllText(Path.Combine(

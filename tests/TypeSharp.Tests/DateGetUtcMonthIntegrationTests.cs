@@ -89,7 +89,7 @@ public sealed class DateGetUtcMonthIntegrationTests(ITestOutputHelper output)
         Assert.NotNull(capability);
         Assert.Equal(StandardCapabilityStatus.Supported, capability.Status);
         Assert.Contains("getUTCMonth()", capability.Signature);
-        Assert.Contains("getUTCMonth returns the zero-based UTC month (January 0 through December 11), or NaN if invalid or unavailable in the supported calendar", capability.Semantics);
+        Assert.Contains("getUTCMonth returns the zero-based UTC month (January 0 through December 11), or NaN if invalid", capability.Semantics);
         Assert.Contains(nameof(GetUtcMonth_ReturnsZeroBasedUtcMonth), capability.Tests);
 
         var declarations = File.ReadAllText(Path.Combine(

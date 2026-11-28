@@ -10,7 +10,7 @@ namespace TypeSharp.VM.Tests;
 public sealed class JsonStringifyNativeDateTests(ITestOutputHelper output)
 {
     private sealed record Row(string Name, string Expression, (string Type, int Arity)[] Constructors,
-        string Stock, string Expected);
+        string Baseline, string Expected);
 
     [Fact]
     public void JsonStringify_UsesUtcIsoStringForSupportedNativeDate()
@@ -23,10 +23,10 @@ public sealed class JsonStringifyNativeDateTests(ITestOutputHelper output)
                 "{\"at\":{\"__timestampMs\":1234}}", "{\"at\":\"1970-01-01T00:00:01.234Z\"}"),
             new("impostor", "{ __timestampMs: 0 }", [("Object", 0)],
                 "{\"__timestampMs\":0}", "{\"__timestampMs\":0}"),
-            new("invalid-fallback", "new Date(\"not-a-date\")", [("Date", 1)],
-                "{\"__timestampMs\":null}", "{\"__timestampMs\":null}"),
-            new("unsupported-fallback", "new Date(253402300800000)", [("Date", 1)],
-                "{\"__timestampMs\":253402300800000}", "{\"__timestampMs\":253402300800000}"),
+            new("c316-invalid-leak", "new Date(\"not-a-date\")", [("Date", 1)],
+                "{\"__timestampMs\":null}", "null"),
+            new("c316-expanded-year-leak", "new Date(253402300800000)", [("Date", 1)],
+                "{\"__timestampMs\":253402300800000}", "\"+010000-01-01T00:00:00.000Z\""),
         ];
 
         var observed = rows.Select(row => (Row: row, Result: Execute(row))).ToArray();
@@ -37,17 +37,12 @@ public sealed class JsonStringifyNativeDateTests(ITestOutputHelper output)
             return (item.Row, Actual: result.Value);
         }).ToArray();
 
-        foreach (var (row, actual) in values.Skip(2))
+        // The first two Baseline values record the old C218 red behavior.
+        // The last two Baseline values record the separate C316 red behavior.
+        // The ordinary object is a control in both cycles.
+        foreach (var (row, actual) in values)
             Assert.True(string.Equals(actual, row.Expected, StringComparison.Ordinal),
-                $"Unchanged control {row.Name}: expected={row.Expected}; actual={actual}");
-
-        var changed = values.Take(2).ToArray();
-        bool stock = changed.All(item => string.Equals(item.Actual, item.Row.Stock, StringComparison.Ordinal));
-        bool correct = changed.All(item => string.Equals(item.Actual, item.Row.Expected, StringComparison.Ordinal));
-        string details = string.Join("; ", changed.Select(item =>
-            $"{item.Row.Name}: stock={item.Row.Stock}; expected={item.Row.Expected}; actual={item.Actual}"));
-        Assert.True(stock || correct, $"Unexpected native Date JSON result vector: {details}");
-        Assert.True(correct, $"C218_JSON_STRINGIFY_NATIVE_DATE_RESULT {details}");
+                $"C218/C317 {row.Name}: baseline={row.Baseline}; expected={row.Expected}; actual={actual}");
     }
 
     private TsValue Execute(Row row)
@@ -77,6 +72,7 @@ public sealed class JsonStringifyNativeDateTests(ITestOutputHelper output)
         Assert.Equal(row.Constructors, constructors);
 
         var bytecode = BytecodeCompiler.Compile(ir);
+        BytecodeVerifier.Verify(bytecode);
         var result = new TypeSharp.VM.Interpreter.Interpreter().Execute(bytecode, "main", []);
         output.WriteLine("C218_JSON_STRINGIFY_NATIVE_DATE " + JsonSerializer.Serialize(new
         {
@@ -84,7 +80,7 @@ public sealed class JsonStringifyNativeDateTests(ITestOutputHelper output)
             call = call.Opcode.ToString(), target, argc = call.Operand1,
             constructors = constructors.Select(constructor => new { type = constructor.Type, arity = constructor.Arity }).ToArray(),
             actualType = result.GetType().Name, actualTag = result.ValueType.ToString(),
-            actual = (result as TsStringValue)?.Value, stock = row.Stock, expected = row.Expected
+            actual = (result as TsStringValue)?.Value, baseline = row.Baseline, expected = row.Expected
         }));
         return result;
     }

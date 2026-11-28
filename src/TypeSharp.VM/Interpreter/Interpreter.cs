@@ -1216,7 +1216,7 @@ public sealed class Interpreter
                     var obj = frame.Pop();
                     bool deleted = false;
                     if (obj is TsObjectValue objVal)
-                        deleted = objVal.Value.Fields.Remove(fieldName);
+                        deleted = objVal.Value.Fields.Remove(fieldName) || objVal.Value.NativeDateTimestamp.HasValue;
                     frame.Push(new TsBoolValue(deleted));
                     break;
                 }
@@ -1233,6 +1233,11 @@ public sealed class Interpreter
                             arrVal.Value.DeleteAt(i);
                             deleted = true;
                         }
+                    }
+                    else if (obj is TsObjectValue { Value.NativeDateTimestamp: not null } date)
+                    {
+                        date.Value.Fields.Remove(ToPropertyKey(indexVal));
+                        deleted = true;
                     }
                     else if (obj is TsMapValue mapVal)
                     {
@@ -1535,10 +1540,15 @@ public sealed class Interpreter
 
                     if (typeName == "Date")
                     {
-                        var args = new TsValue[argCount];
-                        for (int i = argCount - 1; i >= 0; i--)
+                        // Argument expressions have already run. Date consumes
+                        // at most seven inputs; discard the rest from the stack.
+                        int used = Math.Min(argCount, 7);
+                        for (int i = argCount; i > used; --i)
+                            frame.Pop();
+                        var args = new TsValue[used];
+                        for (int i = used - 1; i >= 0; --i)
                             args[i] = frame.Pop();
-                        frame.Push(CreateDate(ctx, args));
+                        frame.Push(NativeDate.Construct(ctx, args));
                         break;
                     }
 
@@ -1667,7 +1677,7 @@ public sealed class Interpreter
                             : TsValue.Null);
                     }
                     else if (target is TsObjectValue objectTarget)
-                        frame.Push(objectTarget.Value.GetField(ToPropertyKey(index)));
+                        frame.Push(ReadFieldValue(objectTarget, ToPropertyKey(index)));
                     else if (target is TsNull)
                         throw new InvalidOperationException("Cannot index a null value");
                     else
@@ -2457,6 +2467,8 @@ public sealed class Interpreter
 
     private static TsValue ReadFieldValue(TsValue receiver, string fieldName) => receiver switch
     {
+        TsObjectValue { Value.NativeDateTimestamp: not null } date =>
+            date.Value.Fields.TryGetValue(fieldName, out var value) ? value : TsValue.Void,
         TsObjectValue objVal => objVal.Value.GetField(fieldName),
         TsArrayValue arrVal when fieldName == "length" => TsValue.FromInt32(arrVal.Value.Count),
         TsMapValue mapVal when fieldName == "size" => TsValue.FromFloat64(mapVal.Value.Count),
@@ -2501,83 +2513,6 @@ public sealed class Interpreter
 
     private static bool IsBigIntValue(TsValue value) =>
         value is TsInt64Value or TsUInt64Value or TsBigIntValue;
-
-    private const long DateMinUnixMilliseconds = -62135596800000;
-    private const long DateMaxUnixMilliseconds = 253402300799999;
-
-    private static TsObjectValue CreateDate(ExecutionContext ctx, TsValue[] args)
-    {
-        var date = ctx.Heap.AllocateObject("Date");
-        date.SetField("__timestampMs", TsValue.FromFloat64(ComputeUtcDateMilliseconds(args)));
-        return new TsObjectValue(date);
-    }
-
-    private static double ComputeUtcDateMilliseconds(TsValue[] args)
-    {
-        if (args.Length == 0)
-            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-        if (args.Length == 1)
-        {
-            if (args[0] is TsObjectValue date &&
-                date.Value.TypeName == "Date" &&
-                date.Value.GetField("__timestampMs") is TsFloat64Value dateTimestamp)
-            {
-                return dateTimestamp.Value;
-            }
-
-            if (args[0] is TsStringValue text)
-            {
-                return DateTimeOffset.TryParse(
-                    text.Value,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-                    out var parsed)
-                    ? parsed.ToUnixTimeMilliseconds()
-                    : double.NaN;
-            }
-
-            const double TimeClipMaxMilliseconds = 8_640_000_000_000_000d;
-            var timestamp = AsFloat64(args[0]);
-            if (IsNumericValue(args[0]) && Math.Abs(timestamp) > TimeClipMaxMilliseconds)
-                return double.NaN;
-
-            return double.IsFinite(timestamp) ? Math.Truncate(timestamp) : double.NaN;
-        }
-
-        try
-        {
-            var year = AsInt32(args[0]);
-            if (year is >= 0 and <= 99)
-                year += 1900;
-
-            var monthZeroBased = AsInt32(args[1]);
-            var day = args.Length > 2 ? AsInt32(args[2]) : 1;
-            var hour = args.Length > 3 ? AsInt32(args[3]) : 0;
-            var minute = args.Length > 4 ? AsInt32(args[4]) : 0;
-            var second = args.Length > 5 ? AsInt32(args[5]) : 0;
-            var millisecond = args.Length > 6 ? AsInt32(args[6]) : 0;
-
-            if (monthZeroBased < 0 || monthZeroBased > 11)
-                return double.NaN;
-
-            var utc = new DateTimeOffset(
-                year,
-                monthZeroBased + 1,
-                day,
-                hour,
-                minute,
-                second,
-                millisecond,
-                TimeSpan.Zero);
-            var timestamp = utc.ToUnixTimeMilliseconds();
-            return timestamp is >= DateMinUnixMilliseconds and <= DateMaxUnixMilliseconds ? timestamp : double.NaN;
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            return double.NaN;
-        }
-    }
 
     private static void PopulateMap(TsMap map, TsValue[] args)
     {

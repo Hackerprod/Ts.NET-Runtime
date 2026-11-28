@@ -97,7 +97,7 @@ public sealed class DateGetUtcDateIntegrationTests(ITestOutputHelper output)
         Assert.NotNull(capability);
         Assert.Equal(StandardCapabilityStatus.Supported, capability.Status);
         Assert.Contains("getUTCDate()", capability.Signature);
-        Assert.Contains("getUTCDate returns the UTC day of the month (1 through 31), or NaN if invalid or unavailable in the supported calendar.", capability.Semantics);
+        Assert.Contains("getUTCDate returns the UTC day of the month (1 through 31), or NaN if invalid.", capability.Semantics);
         Assert.Contains(nameof(GetUtcDate_ReturnsOneBasedUtcDayAndInvalidNaN), capability.Tests);
 
         var declarations = File.ReadAllText(Path.Combine(

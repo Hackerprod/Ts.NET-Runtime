@@ -97,7 +97,7 @@ public sealed class DateGetUtcDayIntegrationTests(ITestOutputHelper output)
         Assert.NotNull(capability);
         Assert.Equal(StandardCapabilityStatus.Supported, capability.Status);
         Assert.Contains("getUTCDay()", capability.Signature);
-        Assert.Contains("getUTCDay returns the UTC weekday (Sunday 0 through Saturday 6), or NaN if invalid or unavailable in the supported calendar.", capability.Semantics);
+        Assert.Contains("getUTCDay returns the UTC weekday (Sunday 0 through Saturday 6), or NaN if invalid.", capability.Semantics);
         Assert.Contains(nameof(GetUtcDay_ReturnsZeroBasedUtcWeekdayAndInvalidNaN), capability.Tests);
 
         var declarations = File.ReadAllText(Path.Combine(

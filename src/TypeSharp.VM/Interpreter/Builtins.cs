@@ -2,6 +2,7 @@ using System.Collections.Specialized;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using TypeSharp.VM.Memory;
 
 namespace TypeSharp.VM.Interpreter;
@@ -12,6 +13,11 @@ namespace TypeSharp.VM.Interpreter;
 public static class Builtins
 {
     private static readonly Dictionary<string, Func<TsValue[], TsValue>> Table = Build();
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        MaxDepth = 1001,
+        Converters = { new NativeDateJsonConverter() },
+    };
 
     public static IReadOnlyCollection<string> Names => Table.Keys;
 
@@ -179,7 +185,7 @@ public static class Builtins
                 ? TsValue.Void
                 : TsValue.FromString(JsonSerializer.Serialize(
                     ToJsonCompatible(args[0], new HashSet<object>(ReferenceEqualityComparer.Instance), 0),
-                    new JsonSerializerOptions { MaxDepth = 1001 })),
+                    JsonOptions)),
 
             // ── Array construction + statics ──
             ["Array::ctor"] = args =>
@@ -277,116 +283,17 @@ public static class Builtins
             },
 
             // Date instance members (receiver = args[0]).
-            ["Date::getTime"] = args => DateTimestamp(args[0]),
-            ["Date::valueOf"] = args => DateTimestamp(args[0]),
-            ["Date::toISOString"] = args =>
-            {
-                var timestamp = D(DateTimestamp(args[0]));
-                if (!double.IsFinite(timestamp))
-                    throw new InvalidOperationException("Invalid Date");
-
-                var milliseconds = (long)Math.Truncate(timestamp);
-                if (milliseconds < DateMinUnixMilliseconds || milliseconds > DateMaxUnixMilliseconds)
-                    throw new InvalidOperationException("Invalid Date");
-
-                return TsValue.FromString(FormatDateUtcIso(milliseconds));
-            },
-
-            ["Date::getUTCFullYear"] = args =>
-            {
-                var timestamp = D(DateTimestamp(args[0]));
-                if (!double.IsFinite(timestamp) ||
-                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
-                    return TsValue.FromFloat64(double.NaN);
-
-                return TsValue.FromFloat64(DateTimeOffset
-                    .FromUnixTimeMilliseconds((long)timestamp)
-                    .UtcDateTime.Year);
-            },
-
-            ["Date::getUTCMonth"] = args =>
-            {
-                var timestamp = D(DateTimestamp(args[0]));
-                if (!double.IsFinite(timestamp) ||
-                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
-                    return TsValue.FromFloat64(double.NaN);
-
-                return TsValue.FromFloat64(DateTimeOffset
-                    .FromUnixTimeMilliseconds((long)timestamp)
-                    .UtcDateTime.Month - 1);
-            },
-
-            ["Date::getUTCDate"] = args =>
-            {
-                var timestamp = D(DateTimestamp(args[0]));
-                if (!double.IsFinite(timestamp) ||
-                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
-                    return TsValue.FromFloat64(double.NaN);
-
-                return TsValue.FromFloat64(DateTimeOffset
-                    .FromUnixTimeMilliseconds((long)timestamp)
-                    .UtcDateTime.Day);
-            },
-
-            ["Date::getUTCDay"] = args =>
-            {
-                var timestamp = D(DateTimestamp(args[0]));
-                if (!double.IsFinite(timestamp) ||
-                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
-                    return TsValue.FromFloat64(double.NaN);
-
-                return TsValue.FromFloat64((int)DateTimeOffset
-                    .FromUnixTimeMilliseconds((long)timestamp)
-                    .UtcDateTime.DayOfWeek);
-            },
-
-            ["Date::getUTCHours"] = args =>
-            {
-                var timestamp = D(DateTimestamp(args[0]));
-                if (!double.IsFinite(timestamp) ||
-                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
-                    return TsValue.FromFloat64(double.NaN);
-
-                return TsValue.FromFloat64(DateTimeOffset
-                    .FromUnixTimeMilliseconds((long)timestamp)
-                    .UtcDateTime.Hour);
-            },
-
-            ["Date::getUTCMinutes"] = args =>
-            {
-                var timestamp = D(DateTimestamp(args[0]));
-                if (!double.IsFinite(timestamp) ||
-                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
-                    return TsValue.FromFloat64(double.NaN);
-
-                return TsValue.FromFloat64(DateTimeOffset
-                    .FromUnixTimeMilliseconds((long)timestamp)
-                    .UtcDateTime.Minute);
-            },
-
-            ["Date::getUTCSeconds"] = args =>
-            {
-                var timestamp = D(DateTimestamp(args[0]));
-                if (!double.IsFinite(timestamp) ||
-                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
-                    return TsValue.FromFloat64(double.NaN);
-
-                return TsValue.FromFloat64(DateTimeOffset
-                    .FromUnixTimeMilliseconds((long)timestamp)
-                    .UtcDateTime.Second);
-            },
-
-            ["Date::getUTCMilliseconds"] = args =>
-            {
-                var timestamp = D(DateTimestamp(args[0]));
-                if (!double.IsFinite(timestamp) ||
-                    timestamp < DateMinUnixMilliseconds || timestamp > DateMaxUnixMilliseconds)
-                    return TsValue.FromFloat64(double.NaN);
-
-                return TsValue.FromFloat64(DateTimeOffset
-                    .FromUnixTimeMilliseconds((long)timestamp)
-                    .UtcDateTime.Millisecond);
-            },
+            ["Date::getTime"] = args => NativeDate.Timestamp(args[0]),
+            ["Date::valueOf"] = args => NativeDate.Timestamp(args[0]),
+            ["Date::toISOString"] = args => NativeDate.ToIsoString(args[0]),
+            ["Date::getUTCFullYear"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Year),
+            ["Date::getUTCMonth"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Month),
+            ["Date::getUTCDate"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Date),
+            ["Date::getUTCDay"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Day),
+            ["Date::getUTCHours"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Hours),
+            ["Date::getUTCMinutes"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Minutes),
+            ["Date::getUTCSeconds"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Seconds),
+            ["Date::getUTCMilliseconds"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Milliseconds),
 
             // Set instance members (receiver = args[0]).
             ["Set::add"] = args =>
@@ -1636,30 +1543,23 @@ public static class Builtins
         ? set.Value
         : throw new InvalidOperationException("Receiver is not a Set");
 
-    private const long DateMinUnixMilliseconds = -62135596800000;
-    private const long DateMaxUnixMilliseconds = 253402300799999;
+    internal static bool TryGetNativeDateTimestamp(TsObjectValue value, out double result) =>
+        NativeDate.TryGetTimestamp(value, out result);
 
-    private static string FormatDateUtcIso(long milliseconds) => DateTimeOffset
-        .FromUnixTimeMilliseconds(milliseconds)
-        .UtcDateTime
-        .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+    private sealed record NativeDateJson(string Iso);
 
-    private static TsValue DateTimestamp(TsValue v)
+    private sealed class NativeDateJsonConverter : JsonConverter<NativeDateJson>
     {
-        if (v is TsObjectValue obj && obj.Value.GetField("__timestampMs") is TsFloat64Value timestamp)
-            return timestamp;
-        throw new InvalidOperationException("Receiver is not a Date");
-    }
+        public override NativeDateJson Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            throw new NotSupportedException();
 
-    internal static bool TryGetNativeDateTimestamp(TsObjectValue value, out double result)
-    {
-        if (value.Value.TypeName == "Date" && value.Value.GetField("__timestampMs") is TsFloat64Value timestamp)
+        public override void Write(Utf8JsonWriter writer, NativeDateJson value, JsonSerializerOptions options)
         {
-            result = timestamp.Value;
-            return true;
+            // An ISO string contains only checked ASCII Date characters. Write
+            // it exactly (including a leading '+' on expanded positive years)
+            // without changing escaping for any ordinary JSON string.
+            writer.WriteRawValue("\"" + value.Iso + "\"", skipInputValidation: true);
         }
-        result = double.NaN;
-        return false;
     }
 
     private static TsArrayValue CreateEntryPair(TsValue key, TsValue value)
@@ -1740,11 +1640,8 @@ public static class Builtins
             set.Value.Entries
                 .Select(v => ToJsonCompatible(v, ancestors, depth + 1))
                 .ToList()),
-        TsObjectValue date when string.Equals(date.Value.TypeName, "Date", StringComparison.Ordinal)
-            && date.Value.GetField("__timestampMs") is TsFloat64Value timestamp
-            && double.IsFinite(timestamp.Value)
-            && timestamp.Value >= DateMinUnixMilliseconds && timestamp.Value <= DateMaxUnixMilliseconds
-            => FormatDateUtcIso((long)Math.Truncate(timestamp.Value)),
+        TsObjectValue date when NativeDate.TryGetTimestamp(date, out double timestamp) =>
+            double.IsNaN(timestamp) ? null : new NativeDateJson(NativeDate.FormatIso(timestamp)),
         TsObjectValue obj => ConvertComposite(obj.Value, ancestors, depth, () =>
         {
             var members = obj.Value.Fields.Where(pair => pair.Value is not TsVoid).ToDictionary(

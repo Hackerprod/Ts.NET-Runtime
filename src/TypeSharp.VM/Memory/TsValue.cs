@@ -377,6 +377,11 @@ public sealed class TsObject
     public string TypeName { get; }
     public Dictionary<string, TsValue> Fields { get; } = new();
     private int _generationId;
+    // Native Date brand and timestamp, independent of script-visible Fields.
+    // Null means unbranded; a present NaN is a branded invalid Date.
+    internal double? NativeDateTimestamp { get; }
+
+    internal TsObject(double timestamp) : this("Date") => NativeDateTimestamp = timestamp;
 
     public TsObject(string typeName, int generationId = 0)
     {
@@ -945,6 +950,13 @@ public sealed class TsHeap
         Interlocked.Add(ref _logicalBytes, 128);
         Interlocked.Increment(ref _objectsCreated);
         return new TsObject(typeName);
+    }
+
+    internal TsObject AllocateNativeDate(double timestamp)
+    {
+        Interlocked.Add(ref _logicalBytes, 128);
+        Interlocked.Increment(ref _objectsCreated);
+        return new TsObject(timestamp);
     }
 
     public TsObject AllocateObject(string typeName, int id)

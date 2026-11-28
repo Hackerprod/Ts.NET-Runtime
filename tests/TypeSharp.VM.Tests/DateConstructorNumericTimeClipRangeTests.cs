@@ -13,8 +13,11 @@ public sealed class DateConstructorNumericTimeClipRangeTests
     private const string Numeric = "function main(n: number): number { return new Date(n).getTime(); }";
     private const string Any = "function main(n: any): number { return new Date(n).getTime(); }";
 
+    // Stock records the historical C308 observation where available.
+    // C316 retained several former coercion controls; new expectations here
+    // describe class-wide Date admission rather than rewriting that oracle.
     internal sealed record Row(string Id, string Source, TsValue[] Arguments, int Arity, string Target,
-        double Stock, double Expected, bool Clock = false);
+        double Stock, double Expected, bool Clock = false, int ConstructorCount = 1);
 
     internal static IEnumerable<Row> Cases()
     {
@@ -31,13 +34,15 @@ public sealed class DateConstructorNumericTimeClipRangeTests
             ("positive-fraction", 42.75, 42),
             ("negative-fraction", -42.75, -42),
             ("epoch", 0, 0),
-            ("negative-zero", -0d, -0d),
+            ("negative-zero", -0d, 0d),
+            ("negative-fraction-to-zero", -0.75d, 0d),
             ("positive-infinity", double.PositiveInfinity, double.NaN),
             ("negative-infinity", double.NegativeInfinity, double.NaN),
             ("nan", double.NaN, double.NaN)
         })
             yield return new Row(id, Numeric, [TsValue.FromFloat64(value)], 1, "Date::getTime",
-                double.IsFinite(value) && double.IsNaN(expected) ? value : expected, expected);
+                double.IsFinite(value) && double.IsNaN(expected) ? value :
+                    id is "negative-zero" or "negative-fraction-to-zero" ? -0d : expected, expected);
 
         yield return new Row("float32-outside", Numeric, [TsValue.FromFloat32(1e16f)], 1,
             "Date::getTime", (double)1e16f, double.NaN);
@@ -47,25 +52,37 @@ public sealed class DateConstructorNumericTimeClipRangeTests
 
         var legacyInt = -9_000_000_000_000_001L;
         var legacyUInt = 9_000_000_000_000_001UL;
-        var legacyBig = new BigInteger(9_000_000_000_000_002L);
-        foreach (var (id, input, expected) in new (string, TsValue, double)[]
+        foreach (var (id, input, stock, expected) in new (string, TsValue, double, double)[]
         {
-            ("legacy-int64", TsValue.FromInt64(legacyInt), (double)legacyInt),
-            ("legacy-uint64", TsValue.FromUInt64(legacyUInt), (double)legacyUInt),
-            ("legacy-bigint", TsValue.FromBigInt(legacyBig), (double)legacyBig),
-            ("legacy-null", TsValue.Null, 0),
-            ("legacy-undefined", TsValue.Void, 0),
-            ("legacy-true", TsValue.FromBool(true), 0),
-            ("legacy-false", TsValue.FromBool(false), 0),
-            ("legacy-object", TsValue.FromObject(new TsObject("Object")), 0),
-            ("legacy-array", new TsArrayValue(new TsArray(0)), 0),
-            ("text", TsValue.FromString("1970-01-01T00:00:02.000Z"), 2000),
-            ("malformed-text", TsValue.FromString("not-a-date"), double.NaN),
-            ("copy-native-valid", NativeDate(1234), 1234),
-            ("copy-native-invalid", NativeDate(double.NaN), double.NaN),
-            ("copy-native-legacy-outside", NativeDate(Limit + 1), Limit + 1)
+            ("fixed-int64-outside", TsValue.FromInt64(legacyInt), (double)legacyInt, double.NaN),
+            ("fixed-uint64-outside", TsValue.FromUInt64(legacyUInt), (double)legacyUInt, double.NaN),
+            ("fixed-int64-in-range", TsValue.FromInt64(-5_000_000_000L), -5_000_000_000d, -5_000_000_000d),
+            ("fixed-uint64-in-range", TsValue.FromUInt64(5_000_000_000UL), 5_000_000_000d, 5_000_000_000d),
+            ("null", TsValue.Null, 0, 0),
+            ("undefined", TsValue.Void, 0, double.NaN),
+            ("true", TsValue.FromBool(true), 0, 1),
+            ("false", TsValue.FromBool(false), 0, 0),
+            ("plain-object", TsValue.FromObject(new TsObject("Object")), 0, double.NaN),
+            ("empty-array", new TsArrayValue(new TsArray(0)), 0, double.NaN),
+            ("text", TsValue.FromString("1970-01-01T00:00:02.000Z"), 2000, 2000),
+            ("malformed-text", TsValue.FromString("not-a-date"), double.NaN, double.NaN)
         })
-            yield return new Row(id, Any, [input], 1, "Date::getTime", expected, expected);
+            yield return new Row(id, Any, [input], 1, "Date::getTime", stock, expected);
+
+        foreach (var (id, expression, stock, expected) in new (string, string, double, double)[]
+        {
+            ("copy-native-valid", "1234", 1234, 1234),
+            ("copy-native-invalid", "\"not-a-date\"", double.NaN, double.NaN),
+            ("copy-native-extended", "8640000000000000", Limit, Limit),
+            ("copy-native-outside", "8640000000000001", Limit + 1, double.NaN)
+        })
+            yield return new Row(id, $"function main(): number {{ return new Date(new Date({expression})).getTime(); }}",
+                [], 1, "Date::getTime", stock, expected, ConstructorCount: 2);
+
+        var impostor = new TsObject("Date");
+        impostor.SetField("__timestampMs", TsValue.FromFloat64(1234));
+        yield return new Row("copy-unbranded-host-impostor", Any, [TsValue.FromObject(impostor)], 1,
+            "Date::getTime", 1234, double.NaN);
 
         yield return new Row("component-utc", "function main(): number { return new Date(1970, 0, 1, 0, 0, 2, 0).getTime(); }",
             [], 7, "Date::getTime", 2000, 2000);
@@ -75,13 +92,6 @@ public sealed class DateConstructorNumericTimeClipRangeTests
             [], 1, "Date::getUTCFullYear", 1970, 1970);
         yield return new Row("clock", "function main(): number { return new Date().getTime(); }",
             [], 0, "Date::getTime", 0, 0, Clock: true);
-    }
-
-    private static TsValue NativeDate(double milliseconds)
-    {
-        var obj = new TsObject("Date");
-        obj.SetField("__timestampMs", TsValue.FromFloat64(milliseconds));
-        return TsValue.FromObject(obj);
     }
 
     internal static bool Same(double actual, double expected) => double.IsNaN(expected)
@@ -100,9 +110,9 @@ public sealed class DateConstructorNumericTimeClipRangeTests
             throw new InvalidOperationException($"{row.Id} {diagnostics}: {string.Join("; ", binder.Diagnostics.All)}");
         var ir = new IRGenerator().Generate(bound);
         var instructions = ir.Functions.Single(f => f.Name == "main").Blocks.SelectMany(b => b.Instructions).ToArray();
-        var constructor = instructions.Single(i => i.Opcode == Opcode.NewObject);
+        var constructors = instructions.Where(i => i.Opcode == Opcode.NewObject).ToArray();
         var call = instructions.Single(i => i.Opcode is Opcode.Call or Opcode.CallVirt or Opcode.CallDynamic or Opcode.CallDynamicArray);
-        if (constructor.OperandObject is not string type || type != "Date" || constructor.Operand1 != row.Arity
+        if (constructors.Length != row.ConstructorCount || constructors.Any(i => i.OperandObject is not "Date" || i.Operand1 != row.Arity)
             || call.Opcode != Opcode.Call || call.OperandObject is not string target || target != row.Target || call.Operand1 != 1)
             throw new InvalidOperationException($"{row.Id} unexpected constructor/native call");
         var bytecode = BytecodeCompiler.Compile(ir);
@@ -115,7 +125,36 @@ public sealed class DateConstructorNumericTimeClipRangeTests
         var value = milliseconds.Value;
         if (row.Clock && (!double.IsFinite(value) || value < before || value > after))
             throw new InvalidOperationException($"{row.Id} timestamp {Number(value)} is outside [{before}, {after}]");
-        return (value, $"{diagnostics} verified ctor={type}/{constructor.Operand1} call={target}/{call.Operand1} tag={result.ValueType}");
+        return (value, $"{diagnostics} verified ctor=Date/{row.Arity} count={constructors.Length} call={target}/{call.Operand1} tag={result.ValueType}");
+    }
+
+    [Fact]
+    public void ConstructFromRealBigInt_ThrowsCatchableTypeError()
+    {
+        const string source = """
+            function main(n: any): any {
+                try { return new Date(n).getTime(); }
+                catch(e) { return (e as any).name; }
+            }
+            """;
+        var parser = new TypeSharp.Syntax.Parser.Parser(new TypeSharp.Syntax.Lexer(source).Tokenize());
+        var binder = new TypeSharp.Semantics.Binder.Binder();
+        var bound = binder.Bind(parser.Parse());
+        Assert.Empty(parser.Diagnostics);
+        Assert.Empty(binder.Diagnostics.All);
+        var ir = new IRGenerator().Generate(bound);
+        var instructions = ir.Functions.Single(f => f.Name == "main").Blocks.SelectMany(b => b.Instructions).ToArray();
+        var ctor = Assert.Single(instructions, i => i.Opcode == Opcode.NewObject);
+        Assert.Equal("Date", Assert.IsType<string>(ctor.OperandObject));
+        Assert.Equal(1, ctor.Operand1);
+        var call = Assert.Single(instructions, i => i.Opcode == Opcode.Call);
+        Assert.Equal("Date::getTime", Assert.IsType<string>(call.OperandObject));
+        Assert.Equal(1, call.Operand1);
+        var bytecode = BytecodeCompiler.Compile(ir);
+        BytecodeVerifier.Verify(bytecode);
+        var vm = new TypeSharp.VM.Interpreter.Interpreter();
+        var caught = Assert.IsType<TsStringValue>(vm.Execute(bytecode, "main", [TsValue.FromBigInt(new BigInteger(9_000_000_000_000_002L))]));
+        Assert.Equal("TypeError", caught.Value);
     }
 
     [Fact]

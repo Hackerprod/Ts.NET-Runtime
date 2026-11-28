@@ -93,7 +93,7 @@ public sealed class DateGetUtcHoursIntegrationTests(ITestOutputHelper output)
         Assert.NotNull(capability);
         Assert.Equal(StandardCapabilityStatus.Supported, capability.Status);
         Assert.Contains("getUTCHours()", capability.Signature);
-        Assert.Contains("getUTCHours returns the UTC hour (0 through 23), or NaN if invalid or unavailable in the supported calendar.", capability.Semantics);
+        Assert.Contains("getUTCHours returns the UTC hour (0 through 23), or NaN if invalid.", capability.Semantics);
         Assert.Contains(nameof(GetUtcHours_ReturnsHourOfStoredUtcInstant), capability.Tests);
 
         var declarations = File.ReadAllText(Path.Combine(
