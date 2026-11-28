@@ -255,7 +255,9 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
     public void InitializeGeneration()
     {
         var modules = new Dictionary<string, TsModule>();
-        foreach (var mod in _moduleManager.Registry.GetActiveModules())
+        // The generation map keeps the last active binding for each module name.
+        var activeBindings = _moduleManager.Registry.Modules.Values.Where(m => m.IsActive).ToList();
+        foreach (var mod in activeBindings)
         {
             modules[mod.Name] = mod;
         }

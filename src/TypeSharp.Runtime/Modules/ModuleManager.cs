@@ -58,8 +58,17 @@ public sealed class ModuleRegistry
 
     public int NextGenerationId() => Interlocked.Increment(ref _nextGenerationId);
 
-    public IReadOnlyList<TsModule> GetActiveModules() =>
-        _modules.Values.Where(m => m.IsActive).ToList();
+    public IReadOnlyList<TsModule> GetActiveModules()
+    {
+        var seen = new HashSet<TsModule>(ReferenceEqualityComparer.Instance);
+        var activeModules = new List<TsModule>();
+        foreach (var module in _modules.Values)
+        {
+            if (module.IsActive && seen.Add(module))
+                activeModules.Add(module);
+        }
+        return activeModules;
+    }
 
     public TsModule? DeactivateModule(string name)
     {
