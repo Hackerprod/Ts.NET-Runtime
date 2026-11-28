@@ -219,10 +219,10 @@ public static partial class BytecodeVerifier
         }
     }
 
-    // Ordinary bytecode remains unchanged unless it introduces the dedicated
-    // three-input member bridge. Use the ordinary branch and catch depths to
-    // validate the actual values consumed by the new instruction there as well.
-    private static void VerifyGeneratorMemberStack(BytecodeFunction function)
+    // Ordinary bytecode retains its legacy checks unless it uses an instruction
+    // with a scoped stack contract. Use the ordinary branch and catch depths
+    // for both the member bridge and the computed rest instructions.
+    private static void VerifyScopedInstructionStack(BytecodeFunction function)
     {
         var decoded = DecodeGeneratorInstructions(function).ToDictionary(i => i.Offset);
         var depths = new Dictionary<int, int>();
@@ -307,11 +307,12 @@ public static partial class BytecodeVerifier
             Opcodes.Yield => (1, -1),
             Opcodes.ArrayAppend or Opcodes.ArrayAppendSpread or Opcodes.CopyObjectFields or Opcodes.StoreField => (2, -2),
             Opcodes.StoreElement => (3, -3),
-            Opcodes.GCallMember => (3, -2),
+            Opcodes.GCallMember or Opcodes.LoadObjectRestKey => (3, -2),
+            Opcodes.NormalizeObjectRestKey => (2, -1),
             Opcodes.Call or Opcodes.CallHost or Opcodes.CallVirt or Opcodes.MakeClosure or
             Opcodes.NewObject => (ins.B, 1 - ins.B),
             Opcodes.NewArray => (ins.A, 1 - ins.A),
-            Opcodes.CallDynamic or Opcodes.ObjectRest => (SaturatingPlusOne(ins.A), -ins.A),
+            Opcodes.CallDynamic or Opcodes.ObjectRest or Opcodes.ObjectRestComputed => (SaturatingPlusOne(ins.A), -ins.A),
             Opcodes.Branch or Opcodes.EnterTry or Opcodes.LeaveTry or Opcodes.Nop or
             Opcodes.ReturnVoid => (0, 0),
             _ => throw new BytecodeVerificationException(

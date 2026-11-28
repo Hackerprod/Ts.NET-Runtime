@@ -138,6 +138,7 @@ public enum Opcode
     // Appended to preserve public Opcode enum values.
     LoadInvocationReceiver,
     GStart, GBlock, GEnter, GTransfer, GReturn, GEndFinally, GCallMember,
+    NormalizeObjectRestKey, LoadObjectRestKey, ObjectRestComputed,
 }
 
 public sealed class Instruction

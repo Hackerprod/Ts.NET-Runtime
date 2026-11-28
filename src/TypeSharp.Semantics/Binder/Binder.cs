@@ -2155,7 +2155,8 @@ public sealed class Binder
                 declaration.Pattern,
                 new BoundVariableExpression(temp),
                 declaration.IsConst,
-                statements);
+                statements,
+                useScopedKeys: IsFlatComputedRestPattern(declaration.Pattern));
             return new BoundBlockStatement(statements);
         }
 
@@ -2207,7 +2208,8 @@ public sealed class Binder
         ExpressionSyntax pattern,
         BoundNode source,
         bool isConst,
-        List<BoundNode> statements)
+        List<BoundNode> statements,
+        bool useScopedKeys = false)
     {
         switch (pattern)
         {
@@ -2228,23 +2230,30 @@ public sealed class Binder
 
             case ObjectLiteralExpressionSyntax obj:
                 var excluded = new List<string>();
+                List<BoundNode>? scoped = useScopedKeys ? [] : null;
                 foreach (var property in obj.Properties)
                 {
                     if (property is ObjectSpreadPropertySyntax spread)
                     {
-                        DeclareDestructuringBinding(spread.Value, new BoundObjectRestExpression(source, excluded.ToList()), isConst, statements);
+                        var rest = scoped is null
+                            ? new BoundObjectRestExpression(source, excluded.ToList())
+                            : BoundObjectRestExpression.WithScopedExclusions(source, excluded.ToList(), scoped.ToList());
+                        DeclareDestructuringBinding(spread.Value, rest, isConst, statements);
                         continue;
                     }
 
                     if (property is ComputedObjectPropertySyntax computed)
                     {
                         var key = BindExpression(computed.KeyExpression);
-                        var value = new BoundIndexExpression(source, key, TsType.Any);
+                        BoundNode value = scoped is null
+                            ? new BoundIndexExpression(source, key, TsType.Any)
+                            : CaptureObjectRestKey(source, key, computed.Range, scoped, statements);
                         BindDestructuringDeclarationElement(computed.Value, value, isConst, statements);
                     }
                     else
                     {
                         excluded.Add(property.Key);
+                        scoped?.Add(new BoundLiteralExpression(property.Key, TsType.String));
                         var value = new BoundMemberAccessExpression(source, new PropertySymbol(property.Key, TsType.Any, property.Range));
                         BindDestructuringDeclarationElement(property.Value, value, isConst, statements);
                     }
@@ -4406,18 +4415,45 @@ public sealed class Binder
             new(sourceTemp, source)
         };
         var assignments = new List<BoundAssignmentExpression>();
+        var result = new BoundVariableExpression(sourceTemp);
+        Dictionary<int, BoundIndexExpression>? selectors = IsFlatComputedRestPattern(assign.Target) ? [] : null;
 
         BindDestructuringAssignmentPattern(
-            assign.Target,
-            new BoundVariableExpression(sourceTemp),
-            temporaries,
-            assignments,
-            new List<string>());
+            assign.Target, result, temporaries, assignments, new List<string>(), selectors);
 
-        return new BoundDestructuringAssignmentExpression(
-            temporaries,
-            assignments,
-            new BoundVariableExpression(sourceTemp));
+        // Keep the entire legacy root for late-discovered captures. The IR
+        // generator chooses the alternate only after all IsCaptured flags settle.
+        if (selectors is null || temporaries.Count != 1 ||
+            assignments.Any(a => a.Target is not BoundVariableExpression
+                { Symbol: LocalSymbol { IsModuleScoped: false } or ParameterSymbol }))
+            return new BoundDestructuringAssignmentExpression(temporaries, assignments, result);
+
+        var steps = new List<BoundNode>();
+        var exclusions = new List<BoundNode>();
+        for (int i = 0; i < assignments.Count; i++)
+        {
+            var assignment = assignments[i];
+            var property = ((ObjectLiteralExpressionSyntax)assign.Target).Properties[i];
+            if (assignment.Value is BoundObjectRestExpression rest)
+            {
+                steps.Add(new BoundAssignmentExpression(assignment.Target,
+                    BoundObjectRestExpression.WithScopedExclusions(rest.Source, rest.ExcludedKeys, exclusions.ToList())));
+            }
+            else if (selectors.TryGetValue(i, out var original))
+            {
+                var read = CaptureObjectRestKey(result, original.Index, property.Range, exclusions, steps);
+                var value = assignment.Value is BoundConditionalExpression defaulted
+                    ? BuildDestructuringDefault(read, defaulted.WhenTrue)
+                    : read;
+                steps.Add(new BoundAssignmentExpression(assignment.Target, value));
+            }
+            else
+            {
+                exclusions.Add(new BoundLiteralExpression(property.Key, TsType.String));
+                steps.Add(assignment);
+            }
+        }
+        return BoundDestructuringAssignmentExpression.WithScopedSteps(temporaries, assignments, result, steps);
     }
 
     private void BindDestructuringAssignmentPattern(
@@ -4425,7 +4461,8 @@ public sealed class Binder
         BoundNode source,
         List<BoundVariableDeclaration> temporaries,
         List<BoundAssignmentExpression> assignments,
-        List<string> excludedObjectKeys)
+        List<string> excludedObjectKeys,
+        Dictionary<int, BoundIndexExpression>? selectors = null)
     {
         switch (pattern)
         {
@@ -4460,6 +4497,7 @@ public sealed class Binder
                     {
                         var key = BindExpression(computed.KeyExpression);
                         var value = new BoundIndexExpression(source, key, TsType.Any);
+                        selectors?.Add(assignments.Count, value);
                         BindDestructuringAssignmentElement(computed.Value, value, temporaries, assignments, localExcludedObjectKeys);
                     }
                     else
@@ -4511,13 +4549,61 @@ public sealed class Binder
         if (defaultValue == null)
             return value;
 
-        var fallback = BindExpression(defaultValue);
+        return BuildDestructuringDefault(value, BindExpression(defaultValue));
+    }
+
+    private static BoundNode BuildDestructuringDefault(BoundNode value, BoundNode fallback)
+    {
         var isUndefined = new BoundBinaryExpression(value, TokenKind.TripleEquals,
             new BoundLiteralExpression(null, TsType.Undefined), TsType.Bool);
         var isNull = new BoundBinaryExpression(value, TokenKind.TripleEquals,
             new BoundLiteralExpression(null, TsType.Any), TsType.Bool);
         var isMissing = new BoundBinaryExpression(isUndefined, TokenKind.PipePipe, isNull, TsType.Bool);
         return new BoundConditionalExpression(isMissing, fallback, value, TsType.Any);
+    }
+
+    // Scope only a fully flat object root with a simple local destination for
+    // every selector and rest. Nested patterns or assignments in a selector/default
+    // stay on the existing lowering until their target/hoist ordering is admitted.
+    private static bool IsFlatComputedRestPattern(ExpressionSyntax pattern)
+    {
+        if (pattern is not ObjectLiteralExpressionSyntax obj || obj.Properties.Count < 2 ||
+            obj.Properties[^1] is not ObjectSpreadPropertySyntax { Value: IdentifierExpressionSyntax } ||
+            !obj.Properties.Any(p => p is ComputedObjectPropertySyntax))
+            return false;
+
+        static bool HasAssignment(SyntaxNode node) =>
+            node is AssignmentExpressionSyntax || node.GetChildren().Any(HasAssignment);
+
+        foreach (var property in obj.Properties.Take(obj.Properties.Count - 1))
+        {
+            if (property is ObjectSpreadPropertySyntax ||
+                property is ComputedObjectPropertySyntax computed && HasAssignment(computed.KeyExpression))
+                return false;
+            if (property.Value is IdentifierExpressionSyntax)
+                continue;
+            if (property.Value is not AssignmentExpressionSyntax { Target: IdentifierExpressionSyntax,
+                    OperatorToken.Kind: TokenKind.Equals } defaulted || HasAssignment(defaulted.Value))
+                return false;
+        }
+        return true;
+    }
+
+    private static BoundNode CaptureObjectRestKey(BoundNode source, BoundNode key, SourceRange range,
+        List<BoundNode> exclusions, List<BoundNode> steps)
+    {
+        // The unique source-root name and per-pattern ordinal distinguish captures.
+        // A colon cannot appear in a source identifier, so these private names
+        // cannot share the IR's name-keyed slots with script declarations.
+        string prefix = ((BoundVariableExpression)source).Symbol.Name + $":rest-key:{exclusions.Count}";
+        var rawSymbol = new LocalSymbol(prefix + ":raw", TsType.Any, range, isConst: true);
+        var normalizedSymbol = new LocalSymbol(prefix + ":normalized", TsType.Any, range, isConst: true);
+        var raw = new BoundVariableExpression(rawSymbol);
+        var normalized = new BoundVariableExpression(normalizedSymbol);
+        steps.Add(new BoundVariableDeclaration(rawSymbol, key));
+        steps.Add(new BoundVariableDeclaration(normalizedSymbol, new BoundNormalizeObjectRestKeyExpression(source, raw)));
+        exclusions.Add(normalized);
+        return new BoundLoadObjectRestKeyExpression(source, raw, normalized);
     }
 
     private BoundNode BindDestructuringTarget(ExpressionSyntax target)

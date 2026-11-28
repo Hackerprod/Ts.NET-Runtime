@@ -166,7 +166,9 @@ public static class BytecodeCompiler
         Opcode.EnumerateKeys => 0, // pop value, push keys array
         Opcode.IterableValues => 0, // pop iterable, push materialized value array
         Opcode.ArraySliceFrom => 0, // pop source, push copied suffix
-        Opcode.ObjectRest => -instr.Operand0, // source + N keys -> object
+        Opcode.ObjectRest or Opcode.ObjectRestComputed => -instr.Operand0, // source + N keys -> object
+        Opcode.NormalizeObjectRestKey => -1,
+        Opcode.LoadObjectRestKey => -2,
         Opcode.ArrayAppend or Opcode.ArrayAppendSpread => -2, // duplicated target + value; original array remains
         Opcode.NewGenerator => 0, // legacy: pop yielded array, push generator
         Opcode.Yield => -1, // pop yielded value; resume object receives it out-of-band
@@ -491,6 +493,9 @@ public static class BytecodeCompiler
             case Opcode.IterableValues: writer.Write(Opcodes.IterableValues); break;
             case Opcode.ArraySliceFrom: writer.Write(Opcodes.ArraySliceFrom); writer.WriteInt32(instr.Operand0); break;
             case Opcode.ObjectRest: writer.Write(Opcodes.ObjectRest); writer.WriteInt32(instr.Operand0); break;
+            case Opcode.NormalizeObjectRestKey: writer.Write(Opcodes.NormalizeObjectRestKey); break;
+            case Opcode.LoadObjectRestKey: writer.Write(Opcodes.LoadObjectRestKey); break;
+            case Opcode.ObjectRestComputed: writer.Write(Opcodes.ObjectRestComputed); writer.WriteInt32(instr.Operand0); break;
             case Opcode.Dup: writer.Write(Opcodes.Dup); break;
             case Opcode.Pop: writer.Write(Opcodes.Pop); break;
 

@@ -169,6 +169,9 @@ public static class Opcodes
     public const byte GReturn                 = 0xC4;
     public const byte GEndFinally             = 0xC5;
     public const byte GCallMember             = 0xC6;
+    public const byte NormalizeObjectRestKey  = 0xC7;
+    public const byte LoadObjectRestKey       = 0xC8;
+    public const byte ObjectRestComputed      = 0xC9;
 
     public const byte Branch                   = 0x70;
     public const byte BranchTrue               = 0x71;
@@ -404,6 +407,9 @@ public static class OpcodeFormats
         Reg(0xAA);                       // ENUMERATE_KEYS
         Reg(0xAB, OperandKind.Int32);    // ARRAY_SLICE_FROM
         Reg(0xAC, OperandKind.Int32);    // OBJECT_REST
+        Reg(Opcodes.NormalizeObjectRestKey);
+        Reg(Opcodes.LoadObjectRestKey);
+        Reg(Opcodes.ObjectRestComputed, OperandKind.Int32);
         Reg(0xAD);                       // ARRAY_APPEND
         Reg(0xAE);                       // ARRAY_APPEND_SPREAD
         Reg(0xAF);                       // CALL_DYNAMIC_ARRAY

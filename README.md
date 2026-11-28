@@ -48,6 +48,13 @@ The host provides source files, declares exported services, configures execution
 limits, and invokes script entry points. Script code can call only the
 capabilities made available by the host.
 
+Serialized bytecode uses TSBC v2 for ordinary modules and v3 for modules
+using generator instructions. A module that uses scoped computed object-rest
+instructions is written as v4, including when it also uses generator
+instructions. v4 needs an updated reader; the current reader still accepts
+v2 and v3. Recompile older sources to use the new computed-rest lowering;
+loading an older artifact does not add exclusions that were not encoded.
+
 ## TypeScript Surface
 
 The developer-facing API is intended to use familiar TypeScript types:

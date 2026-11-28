@@ -79,6 +79,8 @@ public enum BoundNodeKind
     EnumDeclaration,
     ImportDeclaration,
     SourceFile,
+    NormalizeObjectRestKeyExpression,
+    LoadObjectRestKeyExpression,
 }
 
 // Bound expressions
@@ -341,17 +343,33 @@ public sealed class BoundDestructuringAssignmentExpression : BoundNode
     public IReadOnlyList<BoundVariableDeclaration> Temporaries { get; }
     public IReadOnlyList<BoundAssignmentExpression> Assignments { get; }
     public BoundNode Result { get; }
+    public IReadOnlyList<BoundNode>? ScopedSteps { get; }
 
     public BoundDestructuringAssignmentExpression(
         IReadOnlyList<BoundVariableDeclaration> temporaries,
         IReadOnlyList<BoundAssignmentExpression> assignments,
         BoundNode result)
+        : this(temporaries, assignments, result, null) { }
+
+    private BoundDestructuringAssignmentExpression(
+        IReadOnlyList<BoundVariableDeclaration> temporaries,
+        IReadOnlyList<BoundAssignmentExpression> assignments,
+        BoundNode result,
+        IReadOnlyList<BoundNode>? scopedSteps)
         : base(BoundNodeKind.DestructuringAssignmentExpression, result.Type)
     {
         Temporaries = temporaries;
         Assignments = assignments;
         Result = result;
+        ScopedSteps = scopedSteps;
     }
+
+    public static BoundDestructuringAssignmentExpression WithScopedSteps(
+        IReadOnlyList<BoundVariableDeclaration> temporaries,
+        IReadOnlyList<BoundAssignmentExpression> assignments,
+        BoundNode result,
+        IReadOnlyList<BoundNode> scopedSteps) =>
+        new(temporaries, assignments, result, scopedSteps);
 }
 
 public sealed class BoundConditionalExpression : BoundNode
@@ -609,9 +627,37 @@ public sealed class BoundObjectRestExpression : BoundNode
 {
     public BoundNode Source { get; }
     public IReadOnlyList<string> ExcludedKeys { get; }
+    public IReadOnlyList<BoundNode>? ScopedExcludedKeys { get; }
+
     public BoundObjectRestExpression(BoundNode source, IReadOnlyList<string> excludedKeys)
+        : this(source, excludedKeys, null) { }
+
+    private BoundObjectRestExpression(BoundNode source, IReadOnlyList<string> excludedKeys, IReadOnlyList<BoundNode>? scopedExcludedKeys)
         : base(BoundNodeKind.ObjectRestExpression, TsType.Any)
-    { Source = source; ExcludedKeys = excludedKeys; }
+    {
+        Source = source;
+        ExcludedKeys = excludedKeys;
+        ScopedExcludedKeys = scopedExcludedKeys;
+    }
+
+    public static BoundObjectRestExpression WithScopedExclusions(
+        BoundNode source, IReadOnlyList<string> namedKeys, IReadOnlyList<BoundNode> scopedExcludedKeys) =>
+        new(source, namedKeys, scopedExcludedKeys);
+}
+
+public sealed class BoundNormalizeObjectRestKeyExpression(BoundNode source, BoundNode rawKey)
+    : BoundNode(BoundNodeKind.NormalizeObjectRestKeyExpression, TsType.Any)
+{
+    public BoundNode Source { get; } = source;
+    public BoundNode RawKey { get; } = rawKey;
+}
+
+public sealed class BoundLoadObjectRestKeyExpression(BoundNode source, BoundNode rawKey, BoundNode normalizedKey)
+    : BoundNode(BoundNodeKind.LoadObjectRestKeyExpression, TsType.Any)
+{
+    public BoundNode Source { get; } = source;
+    public BoundNode RawKey { get; } = rawKey;
+    public BoundNode NormalizedKey { get; } = normalizedKey;
 }
 
 public sealed class BoundBreakStatement : BoundNode

@@ -450,19 +450,8 @@ public sealed class Interpreter
                 {
                     var source = frame.Pop();
                     var target = frame.Pop();
-                    if (target is TsObjectValue targetObject && source is TsObjectValue sourceObject)
-                    {
-                        foreach (var field in sourceObject.Value.Fields)
-                            if (!IsPrivateRuntimeField(field.Key))
-                                targetObject.Value.SetField(field.Key, field.Value);
-                    }
-                    else if (target is TsObjectValue arrayTarget && source is TsArrayValue sourceArray)
-                    {
-                        var array = sourceArray.Value;
-                        for (int i = 0; i < array.Count; i++)
-                            if (!array.IsHole(i))
-                                arrayTarget.Value.SetField(i.ToString(CultureInfo.InvariantCulture), array.Get(i));
-                    }
+                    if (target is TsObjectValue targetObject)
+                        CopyOwnObjectFields(source, targetObject.Value);
                     break;
                 }
 
@@ -505,6 +494,10 @@ public sealed class Interpreter
                                 if (!arrayValue.Value.IsHole(i))
                                     keys.Add(TsValue.FromString(i.ToString(CultureInfo.InvariantCulture)));
                             break;
+                        case TsUint8ArrayValue bytes:
+                            for (int i = 0; i < bytes.Length; i++)
+                                keys.Add(TsValue.FromString(i.ToString(CultureInfo.InvariantCulture)));
+                            break;
                         case TsStringValue stringValue:
                             for (int i = 0; i < stringValue.Value.Length; i++)
                                 keys.Add(TsValue.FromString(i.ToString(CultureInfo.InvariantCulture)));
@@ -532,19 +525,42 @@ public sealed class Interpreter
                     break;
                 }
 
+                case Opcodes.NormalizeObjectRestKey:
+                {
+                    var key = frame.Pop();
+                    frame.Push(NormalizeObjectRestKey(frame.Pop(), key));
+                    break;
+                }
+
+                case Opcodes.LoadObjectRestKey:
+                {
+                    var normalized = frame.Pop();
+                    var raw = frame.Pop();
+                    frame.Push(ReadObjectRestKey(frame.Pop(), raw, normalized));
+                    break;
+                }
+
                 case Opcodes.ObjectRest:
+                case Opcodes.ObjectRestComputed:
                 {
                     int excludedCount = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var excluded = new HashSet<string>(StringComparer.Ordinal);
                     for (int i = 0; i < excludedCount; i++)
-                        excluded.Add(ToPropertyKey(frame.Pop()));
+                    {
+                        var key = frame.Pop();
+                        if (op == Opcodes.ObjectRest)
+                            excluded.Add(ToPropertyKey(key));
+                        else if (key is TsStringValue text)
+                            excluded.Add(text.Value);
+                        else if (key is not TsVoid)
+                            throw new InvalidOperationException("Computed object rest requires normalized property keys");
+                    }
                     var source = frame.Pop();
-                    if (source is not TsObjectValue objectValue)
+                    if (source is not (TsObjectValue or TsArrayValue or TsStringValue or TsUint8ArrayValue
+                        or TsInt32Value or TsFloat64Value or TsBoolValue))
                         throw new InvalidOperationException("Object rest binding requires an object value");
                     var copy = ctx.Heap.AllocateObject("Object");
-                    foreach (var field in objectValue.Value.Fields)
-                        if (!excluded.Contains(field.Key) && !IsPrivateRuntimeField(field.Key))
-                            copy.SetField(field.Key, field.Value);
+                    CopyOwnObjectFields(source, copy, excluded);
                     frame.Push(new TsObjectValue(copy));
                     break;
                 }
@@ -1798,26 +1814,7 @@ public sealed class Interpreter
                 {
                     var index = frame.Pop();
                     var target = frame.Pop();
-                    if (target is TsArrayValue arrVal)
-                        frame.Push(arrVal.Value.Get(AsInt32(index)));
-                    else if (target is TsUint8ArrayValue bytesVal)
-                        frame.Push(Uint8ArrayOperations.ReadElement(bytesVal, index));
-                    else if (target is TsStringValue strTarget)
-                        frame.Push(NativeString.Read(strTarget, index));
-                    else if (target is TsMapValue map)
-                        frame.Push(NativeMap.IsSizeKey(index) ? ReadFieldValue(map, "size") : map.Value.Get(index));
-                    else if (target is TsSetValue set && index is TsStringValue name)
-                        frame.Push(NativeSet.ReadProperty(set, name.Value));
-                    else if (target is TsRegexValue regex && index is TsStringValue regexKey)
-                        frame.Push(NativeRegex.ReadProperty(regex, regexKey.Value));
-                    else if (target is TsGeneratorValue generator && index is TsStringValue generatorKey)
-                        frame.Push(ReadFieldValue(generator, generatorKey.Value));
-                    else if (target is TsObjectValue objectTarget)
-                        frame.Push(ReadFieldValue(objectTarget, ToPropertyKey(index)));
-                    else if (target is TsNull)
-                        throw new InvalidOperationException("Cannot index a null value");
-                    else
-                        frame.Push(TsValue.Null);
+                    frame.Push(ReadElementValue(target, index));
                     break;
                 }
 
@@ -2754,6 +2751,110 @@ public sealed class Interpreter
             return StrictEquals(left, right);
         return false;
     }
+
+    // Copy only represented own slots. In particular, a byte view enumerates
+    // its logical window, and a string contributes UTF-16 units, not runes.
+    private static void CopyOwnObjectFields(TsValue source, TsObject target, HashSet<string>? excluded = null)
+    {
+        bool Include(string key) => excluded is null || !excluded.Contains(key);
+        switch (source)
+        {
+            case TsObjectValue obj:
+                foreach (var field in obj.Value.Fields)
+                    if (!IsPrivateRuntimeField(field.Key) && Include(field.Key))
+                        target.SetField(field.Key, field.Value);
+                break;
+            case TsArrayValue array:
+                for (int i = 0; i < array.Value.Count; i++)
+                {
+                    if (array.Value.IsHole(i)) continue;
+                    string key = i.ToString(CultureInfo.InvariantCulture);
+                    if (Include(key)) target.SetField(key, array.Value.Get(i));
+                }
+                break;
+            case TsStringValue text:
+                for (int i = 0; i < text.Value.Length; i++)
+                {
+                    string key = i.ToString(CultureInfo.InvariantCulture);
+                    if (Include(key)) target.SetField(key, TsValue.FromString(text.Value[i].ToString()));
+                }
+                break;
+            case TsUint8ArrayValue bytes:
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    string key = i.ToString(CultureInfo.InvariantCulture);
+                    if (Include(key)) target.SetField(key, TsValue.FromFloat64(bytes.Get(i)));
+                }
+                break;
+        }
+    }
+
+    private static bool TryObjectRestIndex(string key, out int index)
+    {
+        index = 0;
+        if (key.Length == 0 || (key.Length > 1 && key[0] == '0')) return false;
+        foreach (char c in key)
+        {
+            int digit = c - '0';
+            if ((uint)digit > 9 || index > (int.MaxValue - digit) / 10) return false;
+            index = index * 10 + digit;
+        }
+        return true;
+    }
+
+    private static TsValue NormalizeObjectRestKey(TsValue receiver, TsValue raw)
+    {
+        if (receiver is not (TsObjectValue { Value.TypeName: "Object" } or TsArrayValue or
+            TsStringValue or TsUint8ArrayValue))
+            return TsValue.Void;
+
+        var text = raw switch
+        {
+            TsStringValue str => str,
+            TsInt32Value n => new TsStringValue(n.Value.ToString(CultureInfo.InvariantCulture)),
+            TsFloat64Value n when n.Value >= int.MinValue && n.Value <= int.MaxValue &&
+                n.Value == Math.Truncate(n.Value) => new TsStringValue(((int)n.Value).ToString(CultureInfo.InvariantCulture)),
+            _ => null,
+        };
+        if (text is null) return TsValue.Void;
+        return receiver switch
+        {
+            TsStringValue when !TryObjectRestIndex(text.Value, out _) => TsValue.Void,
+            TsArrayValue when text.Value != "length" && !TryObjectRestIndex(text.Value, out _) => TsValue.Void,
+            _ => text,
+        };
+    }
+
+    private static TsValue ReadObjectRestKey(TsValue receiver, TsValue raw, TsValue normalized)
+    {
+        if (normalized is TsVoid) return ReadElementValue(receiver, raw);
+        if (normalized is not TsStringValue key)
+            throw new InvalidOperationException("Computed object rest requires a normalized property key");
+
+        return receiver switch
+        {
+            TsObjectValue { Value.TypeName: "Object" } obj => obj.Value.GetField(key.Value),
+            TsArrayValue array when key.Value == "length" => TsValue.FromInt32(array.Value.Count),
+            TsArrayValue array when TryObjectRestIndex(key.Value, out int index) => array.Value.Get(index),
+            TsStringValue text => NativeString.Read(text, key),
+            TsUint8ArrayValue bytes => Uint8ArrayOperations.ReadElement(bytes, key),
+            _ => ReadElementValue(receiver, raw),
+        };
+    }
+
+    private static TsValue ReadElementValue(TsValue target, TsValue index) => target switch
+    {
+        TsArrayValue array => array.Value.Get(AsInt32(index)),
+        TsUint8ArrayValue bytes => Uint8ArrayOperations.ReadElement(bytes, index),
+        TsStringValue text => NativeString.Read(text, index),
+        TsMapValue map => NativeMap.IsSizeKey(index) ? ReadFieldValue(map, "size") : map.Value.Get(index),
+        TsSetValue set when index is TsStringValue name => NativeSet.ReadProperty(set, name.Value),
+        TsRegexValue regex when index is TsStringValue name => NativeRegex.ReadProperty(regex, name.Value),
+        TsGeneratorValue generator when index is TsStringValue name => ReadFieldValue(generator, name.Value),
+        TsObjectValue obj => ReadFieldValue(obj, ToPropertyKey(index)),
+        TsNull => throw new InvalidOperationException("Cannot index a null value"),
+        _ => TsValue.Null,
+    };
 
     private static TsValue ReadFieldValue(TsValue receiver, string fieldName) => receiver switch
     {

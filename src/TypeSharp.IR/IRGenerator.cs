@@ -280,6 +280,24 @@ public sealed partial class IRGenerator
                 CollectCaptureInfo(index.Object);
                 CollectCaptureInfo(index.Index);
                 break;
+            case BoundNormalizeObjectRestKeyExpression normalize:
+                CollectCaptureInfo(normalize.Source);
+                CollectCaptureInfo(normalize.RawKey);
+                break;
+            case BoundLoadObjectRestKeyExpression scopedRead:
+                CollectCaptureInfo(scopedRead.Source);
+                CollectCaptureInfo(scopedRead.RawKey);
+                CollectCaptureInfo(scopedRead.NormalizedKey);
+                break;
+            case BoundObjectRestExpression { ScopedExcludedKeys: { } scoped } rest:
+                CollectCaptureInfo(rest.Source);
+                foreach (var key in scoped) CollectCaptureInfo(key);
+                break;
+            case BoundDestructuringAssignmentExpression assignment when CanEmitScopedDestructuring(assignment):
+                foreach (var temp in assignment.Temporaries) CollectCaptureInfo(temp);
+                foreach (var step in assignment.ScopedSteps!) CollectCaptureInfo(step);
+                CollectCaptureInfo(assignment.Result);
+                break;
             case BoundArrayLiteralExpression arr:
                 foreach (var element in arr.Elements) CollectCaptureInfo(element);
                 break;
@@ -397,6 +415,16 @@ public sealed partial class IRGenerator
                 return ContainsCapturedThis(member.Object);
             case BoundIndexExpression index:
                 return ContainsCapturedThis(index.Object) || ContainsCapturedThis(index.Index);
+            case BoundNormalizeObjectRestKeyExpression normalize:
+                return ContainsCapturedThis(normalize.Source) || ContainsCapturedThis(normalize.RawKey);
+            case BoundLoadObjectRestKeyExpression scopedRead:
+                return ContainsCapturedThis(scopedRead.Source) || ContainsCapturedThis(scopedRead.RawKey)
+                    || ContainsCapturedThis(scopedRead.NormalizedKey);
+            case BoundObjectRestExpression { ScopedExcludedKeys: { } scoped } rest:
+                return ContainsCapturedThis(rest.Source) || scoped.Any(ContainsCapturedThis);
+            case BoundDestructuringAssignmentExpression assignment when CanEmitScopedDestructuring(assignment):
+                return assignment.Temporaries.Any(ContainsCapturedThis) || assignment.ScopedSteps!.Any(ContainsCapturedThis)
+                    || ContainsCapturedThis(assignment.Result);
             case BoundArrayLiteralExpression arr:
                 return arr.Elements.Any(ContainsCapturedThis);
             case BoundArrayConstructionExpression arrCtor:
@@ -491,7 +519,7 @@ public sealed partial class IRGenerator
         return funcIR;
     }
 
-    private bool IsBoxedSymbol(Symbol symbol) => symbol switch
+    private static bool IsBoxedSymbol(Symbol symbol) => symbol switch
     {
         LocalSymbol { IsCaptured: true } => true,
         ParameterSymbol { IsCaptured: true } => true,
@@ -1387,11 +1415,30 @@ public sealed partial class IRGenerator
                 GenerateExpression(slice.Source);
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.ArraySliceFrom, slice.Start));
                 break;
+            case BoundNormalizeObjectRestKeyExpression normalize:
+                GenerateExpression(normalize.Source);
+                GenerateExpression(normalize.RawKey);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.NormalizeObjectRestKey));
+                break;
+            case BoundLoadObjectRestKeyExpression scopedRead:
+                GenerateExpression(scopedRead.Source);
+                GenerateExpression(scopedRead.RawKey);
+                GenerateExpression(scopedRead.NormalizedKey);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadObjectRestKey));
+                break;
             case BoundObjectRestExpression rest:
                 GenerateExpression(rest.Source);
-                foreach (var key in rest.ExcludedKeys)
-                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_String, 0, 0, key));
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.ObjectRest, rest.ExcludedKeys.Count));
+                if (rest.ScopedExcludedKeys is { } scopedKeys)
+                {
+                    foreach (var key in scopedKeys) GenerateExpression(key);
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.ObjectRestComputed, scopedKeys.Count));
+                }
+                else
+                {
+                    foreach (var key in rest.ExcludedKeys)
+                        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_String, 0, 0, key));
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.ObjectRest, rest.ExcludedKeys.Count));
+                }
                 break;
             case BoundIterableValuesExpression iterable:
                 GenerateExpression(iterable.Source);
@@ -2854,20 +2901,41 @@ public sealed partial class IRGenerator
         }
     }
 
+    private static bool CanEmitScopedDestructuring(BoundDestructuringAssignmentExpression assign) =>
+        assign.ScopedSteps is not null && assign.Temporaries.Count == 1 &&
+        assign.Assignments.All(a => a.Target is BoundVariableExpression
+            { Symbol: LocalSymbol { IsModuleScoped: false } or ParameterSymbol } target && !IsBoxedSymbol(target.Symbol));
+
     private void GenerateDestructuringAssignment(BoundDestructuringAssignmentExpression assign)
     {
         foreach (var temporary in assign.Temporaries)
             GenerateVariableDeclaration(temporary);
 
-        foreach (var assignment in assign.Assignments)
+        if (CanEmitScopedDestructuring(assign))
         {
-            GenerateAssignment(assignment);
-            // Ciclo 8: cada asignación interior deja neto +1; descartarlo para
-            // que la desestructuración deje solo su Result (+1) como valor.
-            _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
+            foreach (var step in assign.ScopedSteps!)
+            {
+                if (step is BoundVariableDeclaration capture)
+                    GenerateVariableDeclaration(capture);
+                else
+                    EmitDestructuringWrite((BoundAssignmentExpression)step);
+            }
+        }
+        else
+        {
+            foreach (var assignment in assign.Assignments)
+                EmitDestructuringWrite(assignment);
         }
 
         GenerateExpression(assign.Result);
+    }
+
+    private void EmitDestructuringWrite(BoundAssignmentExpression assignment)
+    {
+        GenerateAssignment(assignment);
+        // Each inner assignment leaves its assigned value; only the RHS is the
+        // value of the whole destructuring expression.
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Pop));
     }
 
     private void GenerateMemberAccess(BoundMemberAccessExpression member, int? objectSlot = null)

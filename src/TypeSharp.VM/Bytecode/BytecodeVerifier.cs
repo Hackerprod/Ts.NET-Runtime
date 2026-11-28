@@ -34,7 +34,7 @@ public static partial class BytecodeVerifier
         var boundaries = new HashSet<int> { 0 };
         var branches = new List<int>();
         bool structured = code.Length > 0 && code[0] == Opcodes.GStart;
-        bool generatorCalls = false;
+        bool needsScopedStackCheck = false;
         int ip = 0;
 
         while (ip < code.Length)
@@ -50,7 +50,7 @@ public static partial class BytecodeVerifier
                 Fail(function, "GStart requires a synchronous generator at offset zero");
             if (opcode is >= Opcodes.GBlock and <= Opcodes.GEndFinally && !structured)
                 Fail(function, "generator region instruction without GStart");
-            generatorCalls |= opcode == Opcodes.GCallMember;
+            needsScopedStackCheck |= opcode == Opcodes.GCallMember || IsComputedRestOpcode(opcode);
             ValidateOperands(function, opcode, code, ip, branches);
             ip += format.OperandBytes;
             boundaries.Add(ip);
@@ -63,23 +63,32 @@ public static partial class BytecodeVerifier
         }
         if (structured)
             VerifyStructuredGenerator(function);
-        else if (generatorCalls)
-            VerifyGeneratorMemberStack(function);
+        else if (needsScopedStackCheck)
+            VerifyScopedInstructionStack(function);
     }
 
     // Called only after full verification; step by actual instruction width,
     // never look for magic bytes inside an operand.
-    internal static bool UsesGeneratorExtensions(BytecodeModule module)
+    internal static (bool Generator, bool ComputedRest) GetExtensions(BytecodeModule module)
     {
+        bool generator = false;
+        bool computedRest = false;
         foreach (var function in module.Functions)
         {
             var code = function.Instructions;
             for (int offset = 0; offset < code.Length; offset += OpcodeFormats.InstructionSize(code[offset]))
-                if (code[offset] is >= Opcodes.GStart and <= Opcodes.GCallMember)
-                    return true;
+            {
+                byte op = code[offset];
+                generator |= op is >= Opcodes.GStart and <= Opcodes.GCallMember;
+                computedRest |= IsComputedRestOpcode(op);
+                if (generator && computedRest) return (true, true);
+            }
         }
-        return false;
+        return (generator, computedRest);
     }
+
+    private static bool IsComputedRestOpcode(byte op) =>
+        op is >= Opcodes.NormalizeObjectRestKey and <= Opcodes.ObjectRestComputed;
 
     private static void ValidateOperands(BytecodeFunction function, byte opcode, byte[] code, int offset,
         List<int> branches)
@@ -123,6 +132,9 @@ public static partial class BytecodeVerifier
                 if (first < 0 || first >= function.DecimalConstants.Length) Fail(function, $"decimal index {first} is out of range");
                 break;
             }
+            case Opcodes.ObjectRestComputed:
+                if (ReadInt32(code, offset) < 0) Fail(function, "negative computed object rest exclusion count");
+                break;
             case Opcodes.NewArray:
             {
                 int first = ReadInt32(code, offset);

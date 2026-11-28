@@ -5,6 +5,7 @@ public static class BytecodeSerializer
     private const uint Magic = 0x43425354; // TSBC
     private const int LegacyVersion = 2;
     private const int GeneratorVersion = 3;
+    private const int ComputedRestVersion = 4;
     private const int MaxCollectionLength = 1_000_000;
 
     public static void Serialize(Stream destination, BytecodeModule module)
@@ -14,7 +15,8 @@ public static class BytecodeSerializer
 
         using var writer = new BinaryWriter(destination, System.Text.Encoding.UTF8, leaveOpen: true);
         writer.Write(Magic);
-        writer.Write(BytecodeVerifier.UsesGeneratorExtensions(module) ? GeneratorVersion : LegacyVersion);
+        var extensions = BytecodeVerifier.GetExtensions(module);
+        writer.Write(extensions.ComputedRest ? ComputedRestVersion : extensions.Generator ? GeneratorVersion : LegacyVersion);
         writer.Write(module.Name);
         writer.Write(module.Functions.Length);
         foreach (var function in module.Functions)
@@ -28,7 +30,7 @@ public static class BytecodeSerializer
         if (reader.ReadUInt32() != Magic)
             throw new BytecodeVerificationException("Invalid bytecode magic");
         int version = reader.ReadInt32();
-        if (version is not (LegacyVersion or GeneratorVersion))
+        if (version is not (LegacyVersion or GeneratorVersion or ComputedRestVersion))
             throw new BytecodeVerificationException("Unsupported bytecode version");
 
         var name = reader.ReadString();
@@ -39,7 +41,10 @@ public static class BytecodeSerializer
 
         var module = new BytecodeModule(name, functions);
         BytecodeVerifier.Verify(module);
-        if (version == LegacyVersion && BytecodeVerifier.UsesGeneratorExtensions(module))
+        var extensions = BytecodeVerifier.GetExtensions(module);
+        if (version < ComputedRestVersion && extensions.ComputedRest)
+            throw new BytecodeVerificationException("Computed object rest requires bytecode version 4");
+        if (version < GeneratorVersion && extensions.Generator)
             throw new BytecodeVerificationException("Generator extension requires bytecode version 3");
         return module;
     }
