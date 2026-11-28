@@ -89,14 +89,7 @@ public sealed class TypeSharpRuntimeBuilder
         var filesToLoad = new List<string>();
 
         foreach (var dir in _sourceDirectories)
-        {
-            if (Directory.Exists(dir))
-            {
-                var tsFiles = Directory.GetFiles(dir, "*.ts", SearchOption.AllDirectories)
-                    .Where(TypeScriptCompilation.IsExecutableTypeScriptFile);
-                filesToLoad.AddRange(tsFiles);
-            }
-        }
+            filesToLoad.AddRange(TypeScriptCompilation.DiscoverSourceFiles(dir));
 
         filesToLoad.AddRange(_sourceFiles.Where(TypeScriptCompilation.IsExecutableTypeScriptFile));
 
@@ -107,7 +100,11 @@ public sealed class TypeSharpRuntimeBuilder
             if (_sourceDirectories.Count == 1 && Directory.Exists(sourceRoot))
                 configuredSourceRoot = sourceRoot;
             var compilation = new TypeScriptCompilation(sourceRoot, _hostRegistry.CreateGlobalSymbols());
-            foreach (var file in filesToLoad.Distinct(StringComparer.OrdinalIgnoreCase))
+            // On Linux, let compilation deduplicate normalized paths ordinally.
+            var initialFiles = OperatingSystem.IsLinux()
+                ? filesToLoad
+                : filesToLoad.Distinct(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in initialFiles)
                 compilation.AddSourceFile(file);
 
             var compiledModules = compilation.Compile();

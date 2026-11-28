@@ -72,10 +72,14 @@ public sealed class TypeScriptCompilation
 
     public void AddSourceDirectory(string directory)
     {
-        if (!Directory.Exists(directory)) return;
-        var files = Directory.GetFiles(directory, "*.ts", SearchOption.AllDirectories)
+        _sourceFiles.AddRange(DiscoverSourceFiles(directory).Select(f => Path.GetFullPath(f)));
+    }
+
+    internal static IEnumerable<string> DiscoverSourceFiles(string directory)
+    {
+        if (!Directory.Exists(directory)) return Array.Empty<string>();
+        return Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
             .Where(IsExecutableTypeScriptFile);
-        _sourceFiles.AddRange(files.Select(f => Path.GetFullPath(f)));
     }
 
     public static bool IsExecutableTypeScriptFile(string filePath)
