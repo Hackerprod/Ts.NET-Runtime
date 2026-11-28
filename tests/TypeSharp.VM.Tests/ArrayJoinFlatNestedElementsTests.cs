@@ -20,7 +20,7 @@ public sealed class ArrayJoinFlatNestedElementsTests(ITestOutputHelper output)
     [InlineData("empty-inner", "|end")]
     [InlineData("empty-outer-separator", "-2,0end")]
     [InlineData("flat-control", "7||x")]
-    [InlineData("deeper-control", Fallback)]
+    [InlineData("deeper-control", "1,2|end")]
     [InlineData("unsupported-control", Fallback)]
     [InlineData("cycle-control", Fallback)]
     public void ArrayJoin_FormatsOnlyFlatSupportedNestedFields(string id, string expected)

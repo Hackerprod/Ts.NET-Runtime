@@ -367,18 +367,16 @@ public static class Builtins
                 int start = 0;
                 if (args.Length > 1)
                 {
-                    start = args[1] is TsStringValue startText &&
-                        TryGetBoundedHexPosition(startText.Value, length, out int hexStart)
-                        ? hexStart : Normalize(I(args[1]), length);
+                    start = ArrayIPosition(args[1], length);
                 }
 
                 int remaining = length - start;
                 int deleteCount = args.Length > 1 ? remaining : 0;
                 if (args.Length > 2)
                 {
-                    deleteCount = args[2] is TsStringValue countText &&
-                        TryGetBoundedHexPosition(countText.Value, remaining, out int hexCount)
-                        ? hexCount : Math.Clamp(I(args[2]), 0, remaining);
+                    deleteCount = TryArrayPrimitiveInteger(args[2], out double count)
+                        ? (int)Math.Clamp(count, 0, remaining)
+                        : Math.Clamp(I(args[2]), 0, remaining);
                 }
 
                 var removed = new TsArray(deleteCount);
@@ -433,11 +431,7 @@ public static class Builtins
                 int start = length - 1;
                 if (args.Length > 2)
                 {
-                    double position = args[2] is TsStringValue text
-                        && TryGetBoundedHexPosition(text.Value, length, out int hexPosition)
-                        ? hexPosition
-                        : D(args[2]);
-                    double index = double.IsNaN(position) ? 0 : Math.Truncate(position);
+                    double index = ArrayDPosition(args[2]);
                     if (index < -length) return TsValue.FromInt32(-1);
                     start = index < 0 ? (int)(length + index) : (int)Math.Min(index, start);
                 }
@@ -453,58 +447,25 @@ public static class Builtins
                 return TsValue.FromString(string.Join(sep, Enumerable.Range(0, arr.Count).Select(i =>
                 {
                     var element = arr.Get(i);
-                    if (element is TsArrayValue nested && TryFormatFlatInner(nested.Value, out string inner))
+                    if (element is TsArrayValue nested && TryFormatNestedArrayJoin(nested.Value, out string inner))
                         return inner;
                     return element switch
                     {
                         TsNull or TsVoid => string.Empty,
                         TsBoolValue => S(element),
                         TsFloat32Value f32 when f32.Value == 0f => "0",
-                        TsFloat64Value f64 when f64.Value == 0d => "0",
                         TsFloat32Value f32 when float.IsFinite(f32.Value) => f32.Value.ToString(CultureInfo.InvariantCulture),
-                        TsFloat64Value f64 when double.IsFinite(f64.Value) => f64.Value.ToString(CultureInfo.InvariantCulture),
+                        TsFloat64Value f64 when double.IsFinite(f64.Value) => Uint8ArrayOperations.CanonicalNumberText(f64.Value),
                         TsDecimalValue dec when dec.Value != 0m => dec.Value.ToString(CultureInfo.InvariantCulture),
                         _ => element.ToString()
                     };
                 })));
-
-                static bool TryFormatFlatInner(TsArray array, out string result)
-                {
-                    int count = array.Count;
-                    for (int i = 0; i < count; i++)
-                    {
-                        if (array.Get(i) is not (TsInt32Value or TsStringValue or TsBoolValue or TsNull or TsVoid))
-                        {
-                            result = string.Empty;
-                            return false;
-                        }
-                    }
-
-                    var fields = new string[count];
-                    for (int i = 0; i < count; i++)
-                    {
-                        fields[i] = array.Get(i) switch
-                        {
-                            TsInt32Value n => n.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                            TsStringValue text => text.Value,
-                            TsBoolValue flag => flag.Value ? "true" : "false",
-                            TsNull or TsVoid => string.Empty,
-                            _ => throw new InvalidOperationException("Ineligible flat array field")
-                        };
-                    }
-
-                    result = string.Join(",", fields);
-                    return true;
-                }
             },
             ["Array::slice"] = args =>
             {
                 var arr = Arr(args[0]);
-                static int Bound(TsValue bound, int length) =>
-                    bound is TsStringValue text && TryGetBoundedHexPosition(text.Value, length, out int hexPosition)
-                        ? hexPosition : Normalize(I(bound), length);
-                int start = args.Length > 1 ? Bound(args[1], arr.Count) : 0;
-                int end = args.Length > 2 && args[2] is not TsVoid ? Bound(args[2], arr.Count) : arr.Count;
+                int start = args.Length > 1 ? ArrayIPosition(args[1], arr.Count) : 0;
+                int end = args.Length > 2 && args[2] is not TsVoid ? ArrayIPosition(args[2], arr.Count) : arr.Count;
                 var result = new TsArray(Math.Max(end - start, 0));
                 for (int i = start; i < end; i++)
                 {
@@ -524,10 +485,9 @@ public static class Builtins
                     TsInt32Value i => i.Value,
                     TsInt64Value l => l.Value,
                     TsUInt64Value u => u.Value,
-                    var n when (n is TsFloat32Value f32 && float.IsNaN(f32.Value)) ||
-                               (n is TsFloat64Value f64 && double.IsNaN(f64.Value)) => 0,
+                    TsFloat32Value f when float.IsNaN(f.Value) => 0,
                     TsFloat32Value f when float.IsFinite(f.Value) => Math.Truncate(f.Value),
-                    TsFloat64Value d when double.IsFinite(d.Value) => Math.Truncate(d.Value),
+                    TsFloat64Value d => ToArrayInteger(d.Value),
                     TsStringValue s => FlatStringDepth(s),
                     TsDecimalValue m => (double)decimal.Truncate(m.Value),
                     _ => throw new InvalidOperationException("Array.flat depth must be a finite number or undefined")
@@ -535,6 +495,11 @@ public static class Builtins
                 depth = Math.Max(0, depth);
 
                 var result = new TsArray();
+                // Only unbounded traversal needs a path set. The same backing may be visited again
+                // once it has left the path, and each occurrence contributes its entries.
+                HashSet<TsArray>? active = double.IsPositiveInfinity(depth)
+                    ? new HashSet<TsArray>(ReferenceEqualityComparer.Instance) { array }
+                    : null;
                 var frames = new Stack<(TsArray Array, int Length, int NextIndex, long Level)>();
                 frames.Push((array, array.Count, 0, 0));
                 while (frames.TryPop(out var frame))
@@ -546,14 +511,17 @@ public static class Builtins
                         var value = frame.Array.Get(index);
                         if (frame.Level < depth && value is TsArrayValue nested)
                         {
+                            var child = nested.Value;
+                            if (active is not null && !active.Add(child))
+                                throw new InvalidOperationException("Array.flat cannot traverse a circular array at unbounded depth");
                             // Save the parent at its next index, then visit the child in order.
                             frames.Push(frame);
-                            var child = nested.Value;
                             frame = (child, child.Count, 0, frame.Level + 1);
                         }
                         else
                             result.Add(value);
                     }
+                    active?.Remove(frame.Array);
                 }
                 return new TsArrayValue(result);
             },
@@ -579,11 +547,8 @@ public static class Builtins
             {
                 var arr = Arr(args[0]);
                 int length = arr.Count;
-                static int Bound(TsValue bound, int count) =>
-                    bound is TsStringValue text && TryGetBoundedHexPosition(text.Value, count, out int hexPosition)
-                        ? hexPosition : FillIndex(bound, count);
-                int start = args.Length > 2 ? Bound(args[2], length) : 0;
-                int end = args.Length > 3 && args[3] is not TsVoid ? Bound(args[3], length) : length;
+                int start = args.Length > 2 ? FillIndex(args[2], length) : 0;
+                int end = args.Length > 3 && args[3] is not TsVoid ? FillIndex(args[3], length) : length;
                 var value = args.Length > 1 ? args[1] : TsValue.Void;
                 for (int i = start; i < end; i++) arr.Set(i, value);
                 return args[0];
@@ -759,13 +724,53 @@ public static class Builtins
         _ => double.NaN
     };
 
+    private static bool TryFormatNestedArrayJoin(TsArray array, out string result)
+    {
+        var text = new StringBuilder();
+        var active = new HashSet<TsArray>(ReferenceEqualityComparer.Instance) { array };
+        var frames = new Stack<(TsArray Array, int Length, int NextIndex)>();
+        frames.Push((array, array.Count, 0));
+        while (frames.TryPop(out var frame))
+        {
+            while (frame.NextIndex < frame.Length)
+            {
+                int index = frame.NextIndex++;
+                if (index != 0) text.Append(',');
+                switch (frame.Array.Get(index))
+                {
+                    case TsArrayValue nested when active.Add(nested.Value):
+                        frames.Push(frame);
+                        frame = (nested.Value, nested.Value.Count, 0);
+                        break;
+                    case TsInt32Value n: text.Append(n.Value.ToString(CultureInfo.InvariantCulture)); break;
+                    case TsFloat64Value n when double.IsFinite(n.Value):
+                        text.Append(Uint8ArrayOperations.CanonicalNumberText(n.Value));
+                        break;
+                    case TsStringValue field: text.Append(field.Value); break;
+                    case TsBoolValue flag: text.Append(flag.Value ? "true" : "false"); break;
+                    case TsNull or TsVoid: break;
+                    default:
+                        // Neither a partial field nor an ineligible child escapes to the outer join.
+                        result = string.Empty;
+                        return false;
+                }
+            }
+            active.Remove(frame.Array);
+        }
+        result = text.ToString();
+        return true;
+    }
+
     private static double FlatStringDepth(TsStringValue value)
     {
-        double depth = D(value);
-        if (double.IsNaN(depth)) return 0;
-        if (!double.IsFinite(depth))
+        string text = TrimEcmaWhitespace(value.Value);
+        double depth = EcmaNumberText.Parse(text);
+        if (text is "Infinity" or "+Infinity" or "-Infinity") return depth;
+        // Overflow is not an explicit Infinity argument. Keep the historical rejection
+        // of noncanonical CLR nonfinite text even where the ECMAScript grammar rejects it.
+        if (double.IsInfinity(depth) || double.IsInfinity(D(value)))
             throw new InvalidOperationException("Array.flat depth must be a finite number or undefined");
-        return Math.Truncate(depth);
+        return ToArrayInteger(depth);
     }
 
     private static int I(TsValue v) => (int)D(v);
@@ -860,33 +865,6 @@ public static class Builtins
     internal static bool IsEcmaTrimWhitespace(char ch) =>
         ch is '\t' or '\v' or '\f' or '\uFEFF' or '\r' or '\n' or '\u2028' or '\u2029' ||
         char.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator;
-
-    private static bool TryGetBoundedHexPosition(string text, int length, out int position)
-    {
-        text = TrimEcmaWhitespace(text);
-        position = 0;
-        if (text.Length < 3 || text[0] != '0' || text[1] is not ('x' or 'X'))
-            return false;
-
-        for (int i = 2; i < text.Length; i++)
-        {
-            char c = text[i];
-            int digit = c switch
-            {
-                >= '0' and <= '9' => c - '0',
-                >= 'a' and <= 'f' => c - 'a' + 10,
-                >= 'A' and <= 'F' => c - 'A' + 10,
-                _ => -1
-            };
-            if (digit < 0)
-                return false;
-
-            // The search already clamps positions at or above length; still validate every digit.
-            position = (int)Math.Min(length, (long)position * 16 + digit);
-        }
-
-        return true;
-    }
 
     private static string Lowercase(string text)
     {
@@ -1225,11 +1203,35 @@ public static class Builtins
 
     private static TsValue Bool(bool value) => new TsBoolValue(value);
 
-    private static int FillIndex(TsValue value, int length)
+    private static double ToArrayInteger(double number) =>
+        double.IsNaN(number) || number == 0 ? 0 : Math.Truncate(number);
+
+    private static bool TryArrayPrimitiveInteger(TsValue value, out double integer)
     {
-        double number = D(value);
-        if (double.IsNaN(number)) return 0;
-        double index = Math.Truncate(number);
+        switch (value)
+        {
+            case TsStringValue text: integer = ToArrayInteger(EcmaNumberText.Parse(text.Value)); return true;
+            case TsInt32Value n: integer = n.Value; return true;
+            case TsFloat64Value n: integer = ToArrayInteger(n.Value); return true;
+            case TsBoolValue b: integer = b.Value ? 1 : 0; return true;
+            case TsNull or TsVoid: integer = 0; return true;
+            default: integer = 0; return false;
+        }
+    }
+
+    private static int ArrayIPosition(TsValue value, int length) =>
+        TryArrayPrimitiveInteger(value, out double index)
+            ? RelativeArrayIndex(index, length)
+            : Normalize(I(value), length);
+
+    private static double ArrayDPosition(TsValue value) =>
+        TryArrayPrimitiveInteger(value, out double index) ? index : ToArrayInteger(D(value));
+
+    private static int FillIndex(TsValue value, int length) =>
+        RelativeArrayIndex(ArrayDPosition(value), length);
+
+    private static int RelativeArrayIndex(double index, int length)
+    {
         if (index < 0)
             return index <= -length ? 0 : (int)(length + index);
         return index >= length ? length : (int)index;
