@@ -166,6 +166,9 @@ public sealed class Token
     public string Text { get; }
     public SourceLocation Location { get; }
     public object? Value { get; }
+    // Set only by the lexer for a bare Bang after intervening line terminator trivia.
+    // Manually constructed tokens have no such source information.
+    internal bool HasPrecedingLineTerminator { get; set; }
 
     // Sorted UTF-16 offsets in the cooked text, present only for lexer-escaped dollars.
     private readonly int[]? _escapedTemplateDollarOffsets;

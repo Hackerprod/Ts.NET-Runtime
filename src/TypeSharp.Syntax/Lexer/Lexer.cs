@@ -94,11 +94,18 @@ public sealed class Lexer
     public List<Token> Tokenize()
     {
         var tokens = new List<Token>();
+        int? previousTokenEndLine = null;
         while (_position < _source.Length)
         {
             var token = ReadNextToken();
             if (token.Kind != TokenKind.Whitespace && token.Kind != TokenKind.Comment && token.Kind != TokenKind.NewLine)
+            {
+                if (token.Kind == TokenKind.Bang && previousTokenEndLine is int endLine)
+                    token.HasPrecedingLineTerminator = token.Location.Line != endLine;
                 tokens.Add(token);
+                // A multiline token can end on the same line as the following Bang.
+                previousTokenEndLine = _line;
+            }
         }
         tokens.Add(new Token(TokenKind.EOF, "", CurrentLocation()));
         return tokens;

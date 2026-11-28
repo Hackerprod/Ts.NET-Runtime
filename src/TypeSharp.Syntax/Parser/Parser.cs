@@ -7,20 +7,23 @@ public sealed class Parser
 {
     private readonly List<Token> _tokens;
     private readonly bool _diagnoseLiteralSeparators;
+    private readonly bool _enforcePostfixBangLineBoundary;
     private HashSet<Diagnostic>? _arraySeparatorDiagnostics;
     private Dictionary<Diagnostic, int>? _objectSeparatorOwners;
     private int _position;
 
     public List<Diagnostic> Diagnostics { get; } = new();
 
-    public Parser(List<Token> tokens) : this(tokens, diagnoseLiteralSeparators: true)
+    public Parser(List<Token> tokens)
+        : this(tokens, diagnoseLiteralSeparators: true, enforcePostfixBangLineBoundary: true)
     {
     }
 
-    private Parser(List<Token> tokens, bool diagnoseLiteralSeparators)
+    private Parser(List<Token> tokens, bool diagnoseLiteralSeparators, bool enforcePostfixBangLineBoundary)
     {
         _tokens = tokens;
         _diagnoseLiteralSeparators = diagnoseLiteralSeparators;
+        _enforcePostfixBangLineBoundary = enforcePostfixBangLineBoundary;
     }
 
     public SourceFileSyntax Parse(string fileName = "<input>")
@@ -1922,7 +1925,8 @@ public sealed class Parser
                 expr = new SatisfiesExpressionSyntax(expr, targetType,
                     new SourceRange(expr.Range.Start, Peek(-1).Location));
             }
-            else if (Check(TokenKind.Bang))
+            else if (Check(TokenKind.Bang)
+                && (!_enforcePostfixBangLineBoundary || !Peek().HasPrecedingLineTerminator))
             {
                 // Postfix non-null assertion `expr!`. A bare Bang can never
                 // continue a binary expression (`!=`/`!==` lex as one token).
@@ -2384,7 +2388,9 @@ public sealed class Parser
             string inner = raw[(placeholder + 2)..scan];
             var innerTokens = new Lexer(inner, template.Location.Source).Tokenize();
             // The interpolation substring lexer does not retain original source offsets.
-            var innerParser = new Parser(innerTokens, diagnoseLiteralSeparators: false);
+            // Cooked escapes can create line breaks that are absent from the original source.
+            var innerParser = new Parser(innerTokens, diagnoseLiteralSeparators: false,
+                enforcePostfixBangLineBoundary: false);
             var innerExpr = innerParser.ParseExpression();
             Diagnostics.AddRange(innerParser.Diagnostics);
             Append(new TemplatePartSyntax(innerExpr, range));
