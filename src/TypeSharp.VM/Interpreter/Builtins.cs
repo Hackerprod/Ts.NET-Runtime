@@ -306,11 +306,9 @@ public static class Builtins
 
             // ── Global functions ──
             ["parseInt"] = ParseIntBuiltin,
-            ["parseFloat"] = args => Num(ParseFloatPrefix(S(args[0]))),
-            ["isNaN"] = args => Bool(args[0] is not TsNull
-                && !(args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0)
-                && double.IsNaN(D(args[0]))),
-            ["isFinite"] = args => Bool(args[0] is TsNull || (args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0) || double.IsFinite(D(args[0]))),
+            ["parseFloat"] = args => Num(ParseFloatPrefix(GlobalParseFloatText(NumberSlot(args)))),
+            ["isNaN"] = args => Bool(double.IsNaN(MathNumber(NumberSlot(args)))),
+            ["isFinite"] = args => Bool(double.IsFinite(MathNumber(NumberSlot(args)))),
             ["String"] = args => TsValue.FromString(args.Length > 0 ? S(args[0]) : ""),
             ["Boolean"] = args => Bool(args.Length > 0 && args[0] switch
             {
@@ -1361,18 +1359,43 @@ public static class Builtins
         return Num(ParseIntExplicitRadix(text, radix32));
     }
 
+    // Only floating carriers change their text representation here; preserve other legacy carriers.
+    private static string GlobalParseFloatText(TsValue value) =>
+        value is TsFloat32Value or TsFloat64Value ? NumberPrimitiveText(value) : S(value);
+
+    private static bool IsDefaultGlobalParseIntRadix(TsValue radix) => radix switch
+    {
+        TsVoid or TsNull => true,
+        TsBoolValue boolean => !boolean.Value,
+        TsInt32Value number => number.Value == 0,
+        TsFloat32Value number => number.Value == 0 || !float.IsFinite(number.Value),
+        TsFloat64Value number => number.Value == 0 || !double.IsFinite(number.Value),
+        TsDecimalValue number => number.Value == 0m,
+        _ => false
+    };
+
     private static TsValue ParseIntBuiltin(TsValue[] args)
     {
-        if ((args.Length == 1 || (args.Length == 2 && args[1] is TsVoid)) &&
-            args[0] is TsStringValue primitiveString)
-            return Num(ParseIntExplicitRadix(primitiveString.Value, 0));
+        if (args.Length == 0)
+            return Num(double.NaN);
 
-        string input = S(args[0]);
-        if (args.Length > 1 && TryGetExplicitParseIntRadix(args[1], out int explicitRadix))
+        TsValue first = NumberSlot(args);
+        TsValue radixArg = NumberSlot(args, 1);
+        if (first is TsStringValue primitiveString)
+        {
+            if (IsDefaultGlobalParseIntRadix(radixArg))
+                return Num(ParseIntExplicitRadix(primitiveString.Value, 0));
+            if (radixArg is TsBoolValue) // false took the default branch; true is radix 1.
+                return Num(ParseIntExplicitRadix(primitiveString.Value, 1));
+        }
+
+        // Non-string first arguments and unrecognized radix carriers retain the global legacy path.
+        string input = S(first);
+        if (args.Length > 1 && TryGetExplicitParseIntRadix(radixArg, out int explicitRadix))
             return Num(ParseIntExplicitRadix(input, explicitRadix));
 
         string text = input.Trim();
-        int radix = args.Length > 1 ? I(args[1]) : 10;
+        int radix = args.Length > 1 ? I(radixArg) : 10;
         try
         {
             return Num(Convert.ToInt64(text, radix));
