@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Specialized;
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -320,7 +321,7 @@ public static class Builtins
                 TsMapValue or TsSetValue => true,
                 _ => D(args[0]) != 0 && !double.IsNaN(D(args[0]))
             }),
-            ["BigInt"] = args => args.Length > 0 ? ToBigInt(args[0]) : TsValue.FromBigInt(System.Numerics.BigInteger.Zero),
+            ["BigInt"] = args => ToBigInt(args.Length == 0 ? TsValue.Void : args[0]),
             ["RegExp::test"] = args =>
             {
                 if (args.Length == 0 || args[0] is not TsRegexValue regex)
@@ -1205,20 +1206,91 @@ public static class Builtins
 
     private static int I(TsValue v) => (int)D(v);
 
-    private static TsValue ToBigInt(TsValue v) => v switch
+    private static TsValue ToBigInt(TsValue value) => value switch
     {
-        TsBigIntValue => v,
-        TsInt64Value l => TsValue.FromBigInt(new System.Numerics.BigInteger(l.Value)),
-        TsUInt64Value u => TsValue.FromBigInt(new System.Numerics.BigInteger(u.Value)),
-        TsInt32Value i => TsValue.FromBigInt(new System.Numerics.BigInteger(i.Value)),
-        TsStringValue s when System.Numerics.BigInteger.TryParse(
-            s.Value.Trim(),
-            System.Globalization.NumberStyles.Integer,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out var parsed) => TsValue.FromBigInt(parsed),
-        TsBoolValue b => TsValue.FromBigInt(b.Value ? System.Numerics.BigInteger.One : System.Numerics.BigInteger.Zero),
-        _ => throw new InvalidOperationException("Cannot convert value to BigInt")
+        TsBigIntValue => value,
+        TsInt32Value i => TsValue.FromBigInt(new BigInteger(i.Value)),
+        TsInt64Value l => TsValue.FromBigInt(new BigInteger(l.Value)),
+        TsUInt64Value u => TsValue.FromBigInt(new BigInteger(u.Value)),
+        TsFloat32Value f => IntegralFloatToBigInt(f.Value),
+        TsFloat64Value d => IntegralFloatToBigInt(d.Value),
+        TsDecimalValue m => m.Value == decimal.Truncate(m.Value)
+            ? TsValue.FromBigInt(new BigInteger(m.Value))
+            : throw BigIntError("RangeError", "Cannot convert a non-integer number to BigInt"),
+        TsStringValue s => TsValue.FromBigInt(ParseBigIntText(s.Value)),
+        TsBoolValue b => TsValue.FromBigInt(b.Value ? BigInteger.One : BigInteger.Zero),
+        _ => throw BigIntError("TypeError", "Cannot convert value to BigInt")
     };
+
+    // Single widens to Double exactly. Decimal must stay on its separate exact path.
+    private static TsValue IntegralFloatToBigInt(double value) =>
+        double.IsFinite(value) && value == Math.Truncate(value)
+            ? TsValue.FromBigInt(new BigInteger(value))
+            : throw BigIntError("RangeError", "Cannot convert a non-integer number to BigInt");
+
+    private static BigInteger ParseBigIntText(string text)
+    {
+        var token = TrimEcmaWhitespace(text).AsSpan();
+        if (token.IsEmpty)
+            return BigInteger.Zero;
+
+        bool hasSign = token[0] is '+' or '-';
+        bool negative = token[0] == '-';
+        int radix = 10;
+        if (!hasSign && token.Length >= 2 && token[0] == '0')
+        {
+            radix = token[1] switch
+            {
+                'x' or 'X' => 16,
+                'o' or 'O' => 8,
+                'b' or 'B' => 2,
+                _ => 10
+            };
+        }
+
+        var digits = token[(hasSign ? 1 : radix == 10 ? 0 : 2)..];
+        if (digits.IsEmpty)
+            throw BigIntError("SyntaxError", "Cannot convert string to BigInt");
+
+        // Validate the complete ASCII token before parsing; CLR parsing alone
+        // does not enforce the ECMAScript digit and trailing-NUL rules.
+        if (radix == 10)
+        {
+            foreach (char ch in digits)
+            {
+                if (ch is < '0' or > '9')
+                    throw BigIntError("SyntaxError", "Cannot convert string to BigInt");
+            }
+
+            var magnitude = BigInteger.Parse(digits, NumberStyles.None, CultureInfo.InvariantCulture);
+            return negative ? -magnitude : magnitude;
+        }
+
+        // Nondecimal forms are unsigned magnitudes, including 0xFF.
+        var result = BigInteger.Zero;
+        foreach (char ch in digits)
+        {
+            int digit = ch switch
+            {
+                >= '0' and <= '9' => ch - '0',
+                >= 'a' and <= 'f' => ch - 'a' + 10,
+                >= 'A' and <= 'F' => ch - 'A' + 10,
+                _ => -1
+            };
+            if (digit < 0 || digit >= radix)
+                throw BigIntError("SyntaxError", "Cannot convert string to BigInt");
+            result = result * radix + digit;
+        }
+        return result;
+    }
+
+    private static TsThrownException BigIntError(string name, string message)
+    {
+        var error = new TsObject(name);
+        error.SetField("name", TsValue.FromString(name));
+        error.SetField("message", TsValue.FromString(message));
+        return new TsThrownException(TsValue.FromObject(error));
+    }
 
     private static double StringEndsWithPosition(TsValue value)
     {
