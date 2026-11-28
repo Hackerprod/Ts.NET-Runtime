@@ -12,24 +12,28 @@ internal static class Uint8ArrayOperations
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
     private static readonly BigInteger MaxFixedIntegerKey = BigInteger.Pow(10, 21);
 
-    internal static TsUint8ArrayValue Range(TsUint8ArrayValue receiver, TsValue[] args, bool view)
+    // Supplied only by the active VM for its represented typed byte operations.
+    // Contextless callers never gain script callback dispatch.
+    internal delegate TsValue InvokeOwnMethod(TsFunctionValue method, TsValue receiver);
+
+    internal static TsUint8ArrayValue Range(TsUint8ArrayValue receiver, TsValue[] args, bool view, InvokeOwnMethod? invoke = null)
     {
-        int start = args.Length > 1 ? RelativeIndex(args[1], receiver.Length) : 0;
-        int end = args.Length > 2 && args[2] is not TsVoid ? RelativeIndex(args[2], receiver.Length) : receiver.Length;
+        int start = args.Length > 1 ? RelativeIndex(args[1], receiver.Length, invoke) : 0;
+        int end = args.Length > 2 && args[2] is not TsVoid ? RelativeIndex(args[2], receiver.Length, invoke) : receiver.Length;
         end = Math.Max(start, end);
         return view ? receiver.Subarray(start, end) : receiver.Slice(start, end);
     }
 
-    internal static TsValue Set(TsUint8ArrayValue target, TsValue[] args)
+    internal static TsValue Set(TsUint8ArrayValue target, TsValue[] args, InvokeOwnMethod? invoke = null)
     {
-        double offset = args.Length > 2 ? ToIntegerOrInfinity(args[2]) : 0;
+        double offset = args.Length > 2 ? ToIntegerOrInfinity(args[2], invoke) : 0;
         if (offset < 0)
             throw ScriptError("RangeError", SetRangeMessage);
         if (args.Length < 2 || args[1] is TsNull or TsVoid)
             throw ScriptError("TypeError", "Uint8Array.set requires a non-null source");
 
         var source = args[1];
-        double length = ArrayLikeLength(source);
+        double length = ArrayLikeLength(source, invoke);
         if (offset > target.Length || length > target.Length - offset)
             throw ScriptError("RangeError", SetRangeMessage);
 
@@ -43,12 +47,12 @@ internal static class Uint8ArrayOperations
             // Capacity was checked before coercing any source elements. A later
             // TypeError does not roll back successfully converted earlier bytes.
             for (int i = 0; i < (int)length; i++)
-                target.SetByte(start + i, ToUint8(ArrayLikeAt(source, i)));
+                target.SetByte(start + i, ToUint8(ArrayLikeAt(source, i), invoke));
         }
         return TsValue.Void;
     }
 
-    internal static TsUint8ArrayValue Construct(TsValue[] args)
+    internal static TsUint8ArrayValue Construct(TsValue[] args, InvokeOwnMethod? invoke = null)
     {
         var source = args.Length == 0 ? TsValue.Void : args[0];
         if (source is TsUint8ArrayValue typed)
@@ -58,7 +62,7 @@ internal static class Uint8ArrayOperations
         {
             var bytes = Allocate(set.Value.Count);
             for (int i = 0; i < bytes.Length; i++)
-                bytes[i] = ToUint8(set.Value.GetAt(i));
+                bytes[i] = ToUint8(set.Value.GetAt(i), invoke);
             return new TsUint8ArrayValue(bytes);
         }
 
@@ -77,18 +81,18 @@ internal static class Uint8ArrayOperations
 
         if (source is TsArrayValue or TsObjectValue)
         {
-            var bytes = Allocate(ArrayLikeLength(source));
+            var bytes = Allocate(ArrayLikeLength(source, invoke));
             for (int i = 0; i < bytes.Length; i++)
-                bytes[i] = ToUint8(ArrayLikeAt(source, i));
+                bytes[i] = ToUint8(ArrayLikeAt(source, i), invoke);
             return new TsUint8ArrayValue(bytes);
         }
 
-        return new TsUint8ArrayValue(Allocate(ToIntegerOrInfinity(source)));
+        return new TsUint8ArrayValue(Allocate(ToIntegerOrInfinity(source, invoke)));
     }
 
-    internal static TsValue ReadElement(TsUint8ArrayValue target, TsValue index)
+    internal static TsValue ReadElement(TsUint8ArrayValue target, TsValue index, InvokeOwnMethod? invoke = null)
     {
-        var key = ClassifyKey(index, target.Length, out int element);
+        var key = ClassifyKey(index, target.Length, invoke, out int element);
         return key switch
         {
             KeyKind.Element => TsValue.FromFloat64(target.Get(element)),
@@ -97,22 +101,24 @@ internal static class Uint8ArrayOperations
         };
     }
 
-    internal static void WriteElement(TsUint8ArrayValue target, TsValue index, TsValue value)
+    internal static void WriteElement(TsUint8ArrayValue target, TsValue index, TsValue value, InvokeOwnMethod? invoke = null)
     {
-        var key = ClassifyKey(index, target.Length, out int element);
+        var key = ClassifyKey(index, target.Length, invoke, out int element);
         if (key is KeyKind.Element or KeyKind.CanonicalInvalid)
         {
             // The RHS conversion precedes the bounds check for a canonical
             // numeric property key, even if no backing element can be written.
-            byte converted = ToUint8(value);
+            byte converted = ToUint8(value, invoke);
             if (key == KeyKind.Element)
                 target.SetByte(element, converted);
         }
     }
 
-    internal static byte ToUint8(TsValue value)
+    internal static byte ToUint8(TsValue value) => ToUint8(value, null);
+
+    private static byte ToUint8(TsValue value, InvokeOwnMethod? invoke)
     {
-        double number = ToNumber(value);
+        double number = ToNumber(value, invoke);
         if (!double.IsFinite(number) || number == 0)
             return 0;
 
@@ -127,12 +133,12 @@ internal static class Uint8ArrayOperations
         return new byte[(int)length];
     }
 
-    private static double ArrayLikeLength(TsValue source) => source switch
+    private static double ArrayLikeLength(TsValue source, InvokeOwnMethod? invoke) => source switch
     {
         TsUint8ArrayValue typed => typed.Length,
         TsArrayValue array => array.Value.Count,
         TsStringValue text => text.Value.Length,
-        TsObjectValue obj => Math.Clamp(ToIntegerOrInfinity(OwnField(obj.Value, "length")), 0, MaxArrayLikeLength),
+        TsObjectValue obj => Math.Clamp(ToIntegerOrInfinity(OwnField(obj.Value, "length"), invoke), 0, MaxArrayLikeLength),
         _ => 0
     };
 
@@ -147,17 +153,17 @@ internal static class Uint8ArrayOperations
     private static TsValue OwnField(TsObject obj, string name) =>
         obj.Fields.TryGetValue(name, out var value) ? value : TsValue.Void;
 
-    private static int RelativeIndex(TsValue value, int length)
+    private static int RelativeIndex(TsValue value, int length, InvokeOwnMethod? invoke)
     {
-        double index = ToIntegerOrInfinity(value);
+        double index = ToIntegerOrInfinity(value, invoke);
         if (index >= length) return length;
         if (index <= -length) return 0;
         return index < 0 ? length + (int)index : (int)index;
     }
 
-    private static double ToIntegerOrInfinity(TsValue value)
+    private static double ToIntegerOrInfinity(TsValue value, InvokeOwnMethod? invoke)
     {
-        double number = ToNumber(value);
+        double number = ToNumber(value, invoke);
         return double.IsNaN(number) ? 0 : Math.Truncate(number);
     }
 
@@ -175,8 +181,9 @@ internal static class Uint8ArrayOperations
         }
     }
 
-    private static double ToNumber(TsValue value)
+    private static double ToNumber(TsValue value, InvokeOwnMethod? invoke)
     {
+        value = ConvertOwnPrimitive(value, stringHint: false, invoke);
         if (TryPrimitiveNumber(value, out double number))
             return number;
 
@@ -200,6 +207,36 @@ internal static class Uint8ArrayOperations
             TsObjectValue obj => DefaultObjectNumber(obj),
             _ => double.NaN
         };
+    }
+
+    // Ordinary own methods only: no prototype lookup, generic conversion, or
+    // recursive callback inside Array/Map/native default conversion.
+    private static TsValue ConvertOwnPrimitive(TsValue value, bool stringHint, InvokeOwnMethod? invoke)
+    {
+        if (invoke is null || value is not TsObjectValue { Value: { TypeName: "Object" } plain })
+            return value;
+
+        bool HasCallable(string name) => plain.Fields.TryGetValue(name, out var method) && method is TsFunctionValue;
+        if (!HasCallable("valueOf") && !HasCallable("toString"))
+            return value;
+
+        TsValue? TrySlot(string name)
+        {
+            // Re-read actual presence when this slot is reached: the previous
+            // callback may replace or remove it. Own undefined is a shadow.
+            if (!plain.Fields.TryGetValue(name, out var field))
+                return name == "toString" ? TsValue.FromString("[object Object]") : null;
+            if (field is not TsFunctionValue method)
+                return null;
+            var result = invoke(method, value);
+            return result is TsVoid or TsNull or TsBoolValue or TsBigIntValue or TsStringValue ||
+                TryPrimitiveNumber(result, out _) ? result : null;
+        }
+
+        return (stringHint
+                ? TrySlot("toString") ?? TrySlot("valueOf")
+                : TrySlot("valueOf") ?? TrySlot("toString"))
+            ?? throw ScriptError("TypeError", "Cannot convert object to primitive value");
     }
 
     private static double DefaultObjectNumber(TsObjectValue obj)
@@ -282,8 +319,9 @@ internal static class Uint8ArrayOperations
 
     private enum KeyKind { Ordinary, CanonicalInvalid, Element, Length }
 
-    private static KeyKind ClassifyKey(TsValue key, int length, out int element)
+    private static KeyKind ClassifyKey(TsValue key, int length, InvokeOwnMethod? invoke, out int element)
     {
+        key = ConvertOwnPrimitive(key, stringHint: true, invoke);
         element = 0;
         TsValue? primitive = key is TsArrayValue or TsUint8ArrayValue ? JoinPrimitive(key) : key;
         if (primitive is null) return KeyKind.Ordinary;
