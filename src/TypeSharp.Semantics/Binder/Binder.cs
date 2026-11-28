@@ -3167,11 +3167,22 @@ public sealed class Binder
             DeleteExpressionSyntax deleteExpr => BindDelete(deleteExpr),
             SpreadExpressionSyntax spread => BindSpread(spread),
             RegexLiteralExpressionSyntax regex => BindRegexLiteral(regex),
-            TemplatePartSyntax templatePart => new BoundCastExpression(
-                BindExpression(templatePart.Expression), TsType.String),
+            TemplatePartSyntax templatePart => BindTemplatePart(templatePart),
             NonNullAssertionSyntax nonNull => BindNonNullAssertion(nonNull),
             _ => throw new InvalidOperationException($"Unexpected expression type: {expr.NodeType}")
         };
+    }
+
+    private BoundNode BindTemplatePart(TemplatePartSyntax part)
+    {
+        var value = new BoundCastExpression(BindExpression(part.Expression), TsType.String);
+
+        // Compound templates already stringify through their synthetic '+'.
+        // A standalone part needs one concat because bound casts are erased.
+        return part.IsStandalone
+            ? new BoundBinaryExpression(new BoundLiteralExpression("", TsType.String),
+                TokenKind.Plus, value, TsType.String)
+            : value;
     }
 
     private BoundLiteralExpression BindLiteral(LiteralExpressionSyntax lit)

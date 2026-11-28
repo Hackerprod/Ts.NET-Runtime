@@ -1387,6 +1387,8 @@ public sealed class NonNullAssertionSyntax : ExpressionSyntax
 public sealed class TemplatePartSyntax : ExpressionSyntax
 {
     public ExpressionSyntax Expression { get; }
+    // A sole interpolation has no synthetic concatenation to stringify it.
+    public bool IsStandalone { get; internal set; }
 
     public TemplatePartSyntax(ExpressionSyntax expression, SourceRange range)
         : base(SyntaxNodeType.LiteralExpression, range)

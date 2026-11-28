@@ -2398,6 +2398,9 @@ public sealed class Parser
             position = scan + 1;
         }
 
+        if (result is TemplatePartSyntax standalone)
+            standalone.IsStandalone = true;
+
         return result ?? TextPart("");
 
         ExpressionSyntax TextPart(string text) =>
