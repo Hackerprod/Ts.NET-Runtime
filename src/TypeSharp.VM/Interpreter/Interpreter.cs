@@ -1529,7 +1529,7 @@ public sealed class Interpreter
                         var args = new TsValue[argCount];
                         for (int i = argCount - 1; i >= 0; i--)
                             args[i] = frame.Pop();
-                        frame.Push(CreateUint8Array(args));
+                        frame.Push(Uint8ArrayOperations.Construct(args));
                         break;
                     }
 
@@ -1658,12 +1658,7 @@ public sealed class Interpreter
                     if (target is TsArrayValue arrVal)
                         frame.Push(arrVal.Value.Get(AsInt32(index)));
                     else if (target is TsUint8ArrayValue bytesVal)
-                    {
-                        int byteIdx = AsInt32(index);
-                        frame.Push(byteIdx >= 0 && byteIdx < bytesVal.Length
-                            ? TsValue.FromFloat64(bytesVal.Get(byteIdx))
-                            : TsValue.Null);
-                    }
+                        frame.Push(Uint8ArrayOperations.ReadElement(bytesVal, index));
                     else if (target is TsStringValue strTarget)
                     {
                         int chIdx = AsInt32(index);
@@ -1688,7 +1683,7 @@ public sealed class Interpreter
                     if (target is TsArrayValue arrVal)
                         arrVal.Value.Set(AsInt32(index), value);
                     else if (target is TsUint8ArrayValue bytesVal)
-                        bytesVal.Set(AsInt32(index), value);
+                        Uint8ArrayOperations.WriteElement(bytesVal, index, value);
                     else if (target is TsObjectValue objectTarget)
                         objectTarget.Value.SetField(ToPropertyKey(index), value);
                     else if (target is TsNull)
@@ -2450,7 +2445,7 @@ public sealed class Interpreter
         if (left is TsBoolValue lb && right is TsBoolValue rb) return lb.Value == rb.Value;
         if (left is TsObjectValue lo && right is TsObjectValue ro) return ReferenceEquals(lo.Value, ro.Value);
         if (left is TsArrayValue la && right is TsArrayValue ra) return ReferenceEquals(la.Value, ra.Value);
-        if (left is TsUint8ArrayValue lbv && right is TsUint8ArrayValue rbv) return ReferenceEquals(lbv.Value, rbv.Value);
+        if (left is TsUint8ArrayValue && right is TsUint8ArrayValue) return ReferenceEquals(left, right);
         if (IsBigIntValue(left) || IsBigIntValue(right)) return AsBigInteger(left) == AsBigInteger(right);
         if (IsNumericValue(left) && IsNumericValue(right)) return AsFloat64(left) == AsFloat64(right);
         // Ciclo 10 (W, W-11): el `==` no estricto entre una función y otra
@@ -2488,7 +2483,7 @@ public sealed class Interpreter
         if (left is TsBoolValue lb && right is TsBoolValue rb) return lb.Value == rb.Value;
         if (left is TsObjectValue lo && right is TsObjectValue ro) return ReferenceEquals(lo.Value, ro.Value);
         if (left is TsArrayValue la && right is TsArrayValue ra) return ReferenceEquals(la.Value, ra.Value);
-        if (left is TsUint8ArrayValue lbv && right is TsUint8ArrayValue rbv) return ReferenceEquals(lbv.Value, rbv.Value);
+        if (left is TsUint8ArrayValue && right is TsUint8ArrayValue) return ReferenceEquals(left, right);
         if (IsBigIntValue(left) || IsBigIntValue(right)) return IsBigIntValue(left) && IsBigIntValue(right) && AsBigInteger(left) == AsBigInteger(right);
         if (IsNumericValue(left) && IsNumericValue(right)) return AsFloat64(left) == AsFloat64(right);
         // Ciclo 10 (W, W-11): dos valores-función son iguales si tienen el
@@ -2506,34 +2501,6 @@ public sealed class Interpreter
 
     private static bool IsBigIntValue(TsValue value) =>
         value is TsInt64Value or TsUInt64Value or TsBigIntValue;
-
-    private static TsUint8ArrayValue CreateUint8Array(TsValue[] args)
-    {
-        if (args.Length == 0)
-            return new TsUint8ArrayValue(Array.Empty<byte>());
-
-        var source = args[0];
-        switch (source)
-        {
-            case TsUint8ArrayValue bytes:
-            {
-                var copy = new byte[bytes.Length];
-                Array.Copy(bytes.Value, copy, copy.Length);
-                return new TsUint8ArrayValue(copy);
-            }
-            case TsArrayValue array:
-            {
-                var bytes = new byte[array.Value.Count];
-                for (int i = 0; i < bytes.Length; i++)
-                    bytes[i] = ToByte(array.Value.Get(i));
-                return new TsUint8ArrayValue(bytes);
-            }
-            case TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue:
-                return new TsUint8ArrayValue(new byte[Math.Max(AsInt32(source), 0)]);
-            default:
-                return new TsUint8ArrayValue(Array.Empty<byte>());
-        }
-    }
 
     private const long DateMinUnixMilliseconds = -62135596800000;
     private const long DateMaxUnixMilliseconds = 253402300799999;
@@ -2655,19 +2622,6 @@ public sealed class Interpreter
         for (int i = 0; i < entries.Value.Count; i++)
             set.Add(entries.Value.Get(i));
     }
-
-    internal static byte ToByte(TsValue value) => value switch
-    {
-        TsInt32Value v => unchecked((byte)v.Value),
-        TsInt64Value v => unchecked((byte)v.Value),
-        TsUInt64Value v => unchecked((byte)v.Value),
-        TsBigIntValue v => unchecked((byte)v.Value),
-        TsFloat32Value v => unchecked((byte)v.Value),
-        TsFloat64Value v => unchecked((byte)v.Value),
-        TsDecimalValue v => unchecked((byte)v.Value),
-        TsBoolValue v => v.Value ? (byte)1 : (byte)0,
-        _ => 0
-    };
 
     private static bool UsesBigIntSemantics(TsValue left, TsValue right) =>
         left is TsBigIntValue || right is TsBigIntValue;

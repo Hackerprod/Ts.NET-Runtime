@@ -241,7 +241,8 @@ public static class Marshaller
             if (value is TsUint8ArrayValue bytesValue)
             {
                 var copy = new byte[bytesValue.Length];
-                Array.Copy(bytesValue.Value, copy, copy.Length);
+                for (int i = 0; i < copy.Length; i++)
+                    copy[i] = bytesValue.Get(i);
                 return copy;
             }
 

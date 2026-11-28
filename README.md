@@ -66,6 +66,19 @@ Internal VM lanes may use narrower numeric representations when required by the
 runtime, but application-facing declarations should prefer idiomatic TypeScript
 types.
 
+In script, `Uint8Array.subarray()` creates a live view of the selected bytes;
+`slice()`, `toReversed()`, and construction from an existing `Uint8Array` make
+independent copies. `reverse()` mutates only the receiver's visible bytes.
+
+At the host boundary, marshalling a `byte[]` into script or returning a
+`Uint8Array` as `byte[]` copies the visible bytes. The low-level
+`TsUint8ArrayValue(byte[])` constructor and `TsValue.FromUint8Array(byte[])` instead
+wrap the supplied array directly. A root wrapper's `Value` and `RawValue` expose
+that live array. A view's getters return a fresh snapshot of only its logical
+window, even for full-size or empty views; updating a snapshot does not write
+back to the view. The same root/view rule applies when returning the wrapper as
+a managed `object`. Standalone `ArrayBuffer` overloads are not implemented.
+
 ## Language Model
 
 TS.NET Runtime is not a full JavaScript engine and does not attempt to implement

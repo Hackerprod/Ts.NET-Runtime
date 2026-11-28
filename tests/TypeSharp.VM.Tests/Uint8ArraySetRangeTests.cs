@@ -25,7 +25,8 @@ public sealed class Uint8ArraySetRangeTests
         new("array-empty-beyond", "array", true, 4, "caught-RangeError", "10,20,30"),
         new("typed-fraction-to-zero", "typed", false, -0.5, "undefined", "90,91,30"),
         new("array-fraction-to-zero", "array", false, -0.5, "undefined", "90,91,30"),
-        new("unsupported-source", "unsupported", false, 4, "null", "10,20,30")
+        new("lengthless-primitive-end", "lengthless", false, 3, "undefined", "10,20,30"),
+        new("lengthless-primitive-beyond", "lengthless", false, 4, "caught-RangeError", "10,20,30")
     ];
 
     internal static Row[] NegativeRows() =>

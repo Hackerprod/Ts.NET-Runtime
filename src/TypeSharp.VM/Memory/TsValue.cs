@@ -140,47 +140,84 @@ public sealed class TsArrayValue : TsValue
 
 public sealed class TsUint8ArrayValue : TsValue
 {
-    public byte[] Value { get; }
+    private readonly byte[] _backing;
+    private readonly int _offset;
+    private readonly bool _isView;
+
+    /// <summary>
+    /// Returns the original live storage for a root, or a fresh copy of just
+    /// the logical bytes for a view (including full-size and empty views).
+    /// </summary>
+    public byte[] Value => _isView ? CopyBytes() : _backing;
     public override TsValueType ValueType => TsValueType.Uint8Array;
     public override object? RawValue => Value;
-    public int Length => Value.Length;
+    public int Length { get; }
 
+    /// <summary>Wraps the supplied bytes without copying.</summary>
     public TsUint8ArrayValue(byte[] value)
     {
-        Value = value ?? Array.Empty<byte>();
+        _backing = value ?? Array.Empty<byte>();
+        Length = _backing.Length;
     }
 
+    private TsUint8ArrayValue(byte[] backing, int offset, int length)
+    {
+        _backing = backing;
+        _offset = offset;
+        Length = length;
+        _isView = true;
+    }
+
+    private Span<byte> Window => _backing.AsSpan(_offset, Length);
+
     public byte Get(int index) =>
-        index >= 0 && index < Value.Length ? Value[index] : (byte)0;
+        index >= 0 && index < Length ? _backing[_offset + index] : (byte)0;
 
     public void Set(int index, TsValue value)
     {
-        if (index < 0 || index >= Value.Length) return;
-        Value[index] = ToByte(value);
+        if (index < 0 || index >= Length) return;
+        SetByte(index, Uint8ArrayOperations.ToUint8(value));
     }
+
+    internal void SetByte(int index, byte value) => _backing[_offset + index] = value;
 
     public TsUint8ArrayValue Slice(int start, int end)
     {
-        start = Math.Clamp(start, 0, Value.Length);
-        end = Math.Clamp(end, start, Value.Length);
+        start = Math.Clamp(start, 0, Length);
+        end = Math.Clamp(end, start, Length);
         var bytes = new byte[end - start];
-        Array.Copy(Value, start, bytes, 0, bytes.Length);
+        Window.Slice(start, bytes.Length).CopyTo(bytes);
         return new TsUint8ArrayValue(bytes);
     }
 
-    public override string ToString() => string.Join(",", Value);
+    internal TsUint8ArrayValue Subarray(int start, int end) =>
+        new(_backing, _offset + start, end - start);
 
-    private static byte ToByte(TsValue value) => value switch
+    internal byte[] CopyBytes()
     {
-        TsInt32Value v => (byte)v.Value,
-        TsInt64Value v => (byte)v.Value,
-        TsUInt64Value v => (byte)v.Value,
-        TsFloat32Value v => (byte)v.Value,
-        TsFloat64Value v => (byte)v.Value,
-        TsDecimalValue v => (byte)v.Value,
-        TsBoolValue v => v.Value ? (byte)1 : (byte)0,
-        _ => 0
-    };
+        // Span.ToArray can return a shared singleton for a zero-length view.
+        var bytes = new byte[Length];
+        Window.CopyTo(bytes);
+        return bytes;
+    }
+
+    internal void Reverse() => Window.Reverse();
+
+    internal void CopyTo(TsUint8ArrayValue target, int start) =>
+        Window.CopyTo(target.Window.Slice(start, Length)); // Overlap-safe in both directions.
+
+    public override string ToString()
+    {
+        if (Length == 0) return string.Empty;
+        var text = new System.Text.StringBuilder();
+        var bytes = Window;
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (i > 0) text.Append(',');
+            text.Append(bytes[i]);
+        }
+        return text.ToString();
+    }
 }
 
 // First-class function reference: names a function in the executing module.
@@ -751,6 +788,9 @@ internal sealed class TsValueMapKeyComparer : IEqualityComparer<TsValue>
         if (IsBigInt(obj))
             return HashCode.Combine("bigint", AsBigInt(obj));
 
+        // Uint8Array identity is the wrapper, not live storage or a view snapshot.
+        if (obj is TsUint8ArrayValue)
+            return HashCode.Combine("ref", RuntimeHelpers.GetHashCode(obj));
         return HashCode.Combine("ref", RuntimeHelpers.GetHashCode(obj.RawValue ?? obj));
     }
 

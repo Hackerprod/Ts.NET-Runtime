@@ -203,64 +203,21 @@ public static class Builtins
                 return new TsArrayValue(arr);
             },
             ["Array::isArray"] = args => Bool(args.Length > 0 && args[0] is TsArrayValue),
-            ["Uint8Array::slice"] = args =>
-            {
-                var bytes = Bytes(args[0]);
-                int start = args.Length > 1 ? Normalize(I(args[1]), bytes.Length) : 0;
-                int end = args.Length > 2 && args[2] is not TsVoid ? Normalize(I(args[2]), bytes.Length) : bytes.Length;
-                return bytes.Slice(start, end);
-            },
-            ["Uint8Array::subarray"] = args =>
-            {
-                var bytes = Bytes(args[0]);
-                int start = args.Length > 1 ? Normalize(I(args[1]), bytes.Length) : 0;
-                int end = args.Length > 2 && args[2] is not TsVoid ? Normalize(I(args[2]), bytes.Length) : bytes.Length;
-                return bytes.Slice(start, end);
-            },
+            ["Uint8Array::slice"] = args => Uint8ArrayOperations.Range(Bytes(args[0]), args, view: false),
+            ["Uint8Array::subarray"] = args => Uint8ArrayOperations.Range(Bytes(args[0]), args, view: true),
             ["Uint8Array::reverse"] = args =>
             {
-                System.Array.Reverse(Bytes(args[0]).Value);
-                return args[0];
+                var bytes = Bytes(args[0]);
+                bytes.Reverse();
+                return bytes;
             },
             ["Uint8Array::toReversed"] = args =>
             {
-                var clone = (byte[])Bytes(args[0]).Value.Clone();
-                System.Array.Reverse(clone);
-                return new TsUint8ArrayValue(clone);
+                var copy = new TsUint8ArrayValue(Bytes(args[0]).CopyBytes());
+                copy.Reverse();
+                return copy;
             },
-            ["Uint8Array::set"] = args =>
-            {
-                var target = Bytes(args[0]);
-                if (args.Length < 2) return TsValue.Null;
-                int offset = args.Length > 2 ? I(args[2]) : 0;
-
-                static void CheckRange(int start, int sourceLength, int targetLength)
-                {
-                    if (start < 0 || start > targetLength || sourceLength > targetLength - start)
-                    {
-                        var error = new TsObject("RangeError");
-                        error.SetField("name", TsValue.FromString("RangeError"));
-                        error.SetField("message", TsValue.FromString("Offset or source length is outside the destination Uint8Array bounds"));
-                        throw new TsThrownException(TsValue.FromObject(error));
-                    }
-                }
-
-                if (args[1] is TsUint8ArrayValue sourceBytes)
-                {
-                    CheckRange(offset, sourceBytes.Length, target.Length);
-                    for (int i = 0; i < sourceBytes.Length; i++)
-                        target.Value[offset + i] = sourceBytes.Get(i);
-                    return TsValue.Void;
-                }
-                else if (args[1] is TsArrayValue sourceArray)
-                {
-                    CheckRange(offset, sourceArray.Value.Count, target.Length);
-                    for (int i = 0; i < sourceArray.Value.Count; i++)
-                        target.Value[offset + i] = ToByte(sourceArray.Value.Get(i));
-                    return TsValue.Void;
-                }
-                return TsValue.Null;
-            },
+            ["Uint8Array::set"] = args => Uint8ArrayOperations.Set(Bytes(args[0]), args),
 
             // ── Map instance members (receiver = args[0]) ──
             ["Map::set"] = args =>
@@ -1423,7 +1380,7 @@ public static class Builtins
     }
 
     // ECMAScript WhiteSpace and LineTerminator; NEL is not included.
-    private static bool IsEcmaTrimWhitespace(char ch) =>
+    internal static bool IsEcmaTrimWhitespace(char ch) =>
         ch is '\t' or '\v' or '\f' or '\uFEFF' or '\r' or '\n' or '\u2028' or '\u2029' ||
         char.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator;
 
@@ -1694,6 +1651,17 @@ public static class Builtins
         throw new InvalidOperationException("Receiver is not a Date");
     }
 
+    internal static bool TryGetNativeDateTimestamp(TsObjectValue value, out double result)
+    {
+        if (value.Value.TypeName == "Date" && value.Value.GetField("__timestampMs") is TsFloat64Value timestamp)
+        {
+            result = timestamp.Value;
+            return true;
+        }
+        result = double.NaN;
+        return false;
+    }
+
     private static TsArrayValue CreateEntryPair(TsValue key, TsValue value)
     {
         var pair = new TsArray(2);
@@ -1857,19 +1825,6 @@ public static class Builtins
             ancestors.Remove(container);
         }
     }
-
-    private static byte ToByte(TsValue value) => value switch
-    {
-        TsInt32Value v => unchecked((byte)v.Value),
-        TsInt64Value v => unchecked((byte)v.Value),
-        TsUInt64Value v => unchecked((byte)v.Value),
-        TsBigIntValue v => unchecked((byte)v.Value),
-        TsFloat32Value v => unchecked((byte)v.Value),
-        TsFloat64Value v => unchecked((byte)v.Value),
-        TsDecimalValue v => unchecked((byte)v.Value),
-        TsBoolValue v => v.Value ? (byte)1 : (byte)0,
-        _ => 0
-    };
 
     private static string DescribeValue(TsValue value) => value switch
     {
