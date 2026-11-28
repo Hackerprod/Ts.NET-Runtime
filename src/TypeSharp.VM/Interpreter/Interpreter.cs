@@ -2418,6 +2418,15 @@ public sealed class Interpreter
         var arr = receiver.Value;
         var callback = args.Length > 1 ? args[1] : null;
 
+        // Array element callbacks have three positional arguments and an independent thisArg.
+        TsValue InvokeElement(TsValue value, int index)
+        {
+            var indexValue = TsValue.FromInt32(index);
+            return args.Length > 2
+                ? InvokeCallable(callback!, [value, indexValue, args[0]], module, ctx, frame, args[2])
+                : Invoke(callback!, value, indexValue, args[0]);
+        }
+
         switch (name)
         {
             case "Array::map":
@@ -2432,7 +2441,7 @@ public sealed class Interpreter
                     }
                     else
                     {
-                        mapped.Set(i, Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0]));
+                        mapped.Set(i, InvokeElement(arr.Get(i), i));
                     }
                 }
                 return new TsArrayValue(mapped);
@@ -2444,7 +2453,7 @@ public sealed class Interpreter
                 for (int i = 0; i < initialLength; i++)
                 {
                     if (arr.IsHole(i)) continue;
-                    var produced = Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0]);
+                    var produced = InvokeElement(arr.Get(i), i);
                     if (produced is TsArrayValue nested)
                     {
                         for (int j = 0; j < nested.Value.Count; j++)
@@ -2466,7 +2475,7 @@ public sealed class Interpreter
                 {
                     if (arr.IsHole(i)) continue;
                     var element = arr.Get(i);
-                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i), args[0])))
+                    if (AsBool(InvokeElement(element, i)))
                         filtered.Add(element);
                 }
                 return new TsArrayValue(filtered);
@@ -2477,7 +2486,7 @@ public sealed class Interpreter
                 for (int i = 0; i < initialLength; i++)
                 {
                     if (arr.IsHole(i)) continue;
-                    Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0]);
+                    InvokeElement(arr.Get(i), i);
                 }
                 return TsValue.Void;
             }
@@ -2523,7 +2532,7 @@ public sealed class Interpreter
                 for (int i = 0; i < initialCount; i++)
                 {
                     if (arr.IsHole(i)) continue;
-                    if (AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0])))
+                    if (AsBool(InvokeElement(arr.Get(i), i)))
                         return new TsBoolValue(true);
                 }
                 return new TsBoolValue(false);
@@ -2534,7 +2543,7 @@ public sealed class Interpreter
                 for (int i = 0; i < initialCount; i++)
                 {
                     if (arr.IsHole(i)) continue;
-                    if (!AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0])))
+                    if (!AsBool(InvokeElement(arr.Get(i), i)))
                         return new TsBoolValue(false);
                 }
                 return new TsBoolValue(true);
@@ -2545,7 +2554,7 @@ public sealed class Interpreter
                 for (int i = 0; i < initialLength; i++)
                 {
                     var element = arr.Get(i);
-                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i), args[0])))
+                    if (AsBool(InvokeElement(element, i)))
                         return element;
                 }
                 return TsValue.Void;
@@ -2558,7 +2567,7 @@ public sealed class Interpreter
                 for (int i = initialLength - 1; i >= 0; i--)
                 {
                     var element = arr.Get(i);
-                    if (AsBool(Invoke(callback!, element, TsValue.FromInt32(i), args[0])))
+                    if (AsBool(InvokeElement(element, i)))
                         return returnIndex ? TsValue.FromInt32(i) : element;
                 }
                 return returnIndex ? TsValue.FromInt32(-1) : TsValue.Void;
@@ -2567,7 +2576,7 @@ public sealed class Interpreter
             {
                 var initialLength = arr.Count;
                 for (int i = 0; i < initialLength; i++)
-                    if (AsBool(Invoke(callback!, arr.Get(i), TsValue.FromInt32(i), args[0])))
+                    if (AsBool(InvokeElement(arr.Get(i), i)))
                         return TsValue.FromInt32(i);
                 return TsValue.FromInt32(-1);
             }
@@ -2606,12 +2615,48 @@ public sealed class Interpreter
                     }
                 }
 
+                if (callback is TsFunctionValue comparator &&
+                    !comparator.FunctionName.EndsWith("::.ctor", StringComparison.Ordinal))
+                {
+                    var length = arr.Count;
+                    for (int i = 0; i < length; i++)
+                    {
+                        if (!arr.IsHole(i)) continue;
+
+                        // Snapshot present entries before comparison; holes are not undefined entries.
+                        var defined = new List<(TsValue Value, int Index)>();
+                        var undefined = new List<TsValue>();
+                        for (int j = 0; j < length; j++)
+                        {
+                            if (arr.IsHole(j)) continue;
+                            var value = arr.Get(j);
+                            if (value is TsVoid)
+                                undefined.Add(value);
+                            else
+                                defined.Add((value, j));
+                        }
+
+                        defined.Sort((a, b) =>
+                        {
+                            var result = AsFloat64(Invoke(comparator, a.Value, b.Value));
+                            var order = double.IsNaN(result) ? 0 : Math.Sign(result);
+                            return order != 0 ? order : a.Index.CompareTo(b.Index);
+                        });
+
+                        var target = 0;
+                        foreach (var item in defined) arr.Set(target++, item.Value);
+                        foreach (var item in undefined) arr.Set(target++, item);
+                        for (; target < length; target++) arr.DeleteAt(target);
+                        return receiver;
+                    }
+                }
+
                 var items = new TsValue[arr.Count];
                 var skipUndefinedComparison = callback is TsFunctionValue;
                 for (int i = 0; i < arr.Count; i++)
                 {
                     items[i] = arr.Get(i);
-                    // Holes read as void too; preserve the existing sparse comparator path.
+                    // Preserve the legacy behavior for comparator shapes not handled above.
                     if (skipUndefinedComparison && arr.IsHole(i))
                         skipUndefinedComparison = false;
                 }
