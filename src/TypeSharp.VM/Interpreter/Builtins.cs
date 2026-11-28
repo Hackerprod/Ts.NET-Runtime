@@ -687,8 +687,11 @@ public static class Builtins
             ["Array::slice"] = args =>
             {
                 var arr = Arr(args[0]);
-                int start = args.Length > 1 ? Normalize(I(args[1]), arr.Count) : 0;
-                int end = args.Length > 2 && args[2] is not TsVoid ? Normalize(I(args[2]), arr.Count) : arr.Count;
+                static int Bound(TsValue bound, int length) =>
+                    bound is TsStringValue text && TryGetBoundedHexPosition(text.Value, length, out int hexPosition)
+                        ? hexPosition : Normalize(I(bound), length);
+                int start = args.Length > 1 ? Bound(args[1], arr.Count) : 0;
+                int end = args.Length > 2 && args[2] is not TsVoid ? Bound(args[2], arr.Count) : arr.Count;
                 var result = new TsArray(Math.Max(end - start, 0));
                 for (int i = start; i < end; i++)
                 {
