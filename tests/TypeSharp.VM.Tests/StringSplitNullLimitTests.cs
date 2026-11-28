@@ -1,10 +1,14 @@
+using System.Buffers.Binary;
 using System.Text.Json;
 using TypeSharp.IR;
 using TypeSharp.Semantics.Binder;
+using TypeSharp.Semantics.Symbols;
+using TypeSharp.Semantics.TypeSystem;
 using TypeSharp.Syntax;
 using TypeSharp.VM.Bytecode;
 using TypeSharp.VM.Memory;
 using Xunit;
+using Binder = TypeSharp.Semantics.Binder.Binder;
 using ScriptParser = TypeSharp.Syntax.Parser.Parser;
 using Vm = TypeSharp.VM.Interpreter.Interpreter;
 
@@ -49,11 +53,24 @@ public sealed class StringSplitNullLimitTests
         yield return new("empty-receiver-undefined-null", "", TsValue.Void, TsValue.Null, []);
         yield return new("empty-receiver-empty-null", "", S(""), TsValue.Null, []);
         yield return new("no-separator", "a,b", null, null, ["a,b"]);
-        yield return new("null-separator", "anullb", TsValue.Null, TsValue.Null, ["a", "b"], VmOnly: true);
+        yield return new("null-separator", "anullb", TsValue.Null, TsValue.Null, []);
         yield return new("regex-separator", "a/,/b", TsValue.FromRegex(",", ""), TsValue.Null, ["a", "b"], VmOnly: true);
+        yield return new("null-cap-one", "anullbnullc", TsValue.Null, N(1), ["a"]);
+        yield return new("null-cap-two", "anullbnullc", TsValue.Null, N(2), ["a", "b"]);
+        yield return new("null-cap-zero", "anullbnullc", TsValue.Null, N(0), []);
+        yield return new("null-no-match-zero", "abc", TsValue.Null, N(0), []);
+        yield return new("null-bool-false", "anullbnullc", TsValue.Null, TsValue.FromBool(false), []);
+        yield return new("null-fraction", "anullnullc", TsValue.Null, TsValue.FromFloat64(2.9), ["a", ""]);
+        yield return new("null-wrap-zero", "anullbnullc", TsValue.Null, TsValue.FromUInt64(4294967296UL), []);
+        yield return new("null-limit-omitted", "anullbnullc", TsValue.Null, null, ["a", "b", "c"]);
+        yield return new("null-limit-undefined", "anullbnullc", TsValue.Null, TsValue.Void, ["a", "b", "c"]);
+        yield return new("null-negative", "anullbnullc", TsValue.Null, N(-1), ["a", "b", "c"]);
+        yield return new("null-no-match", "abc", TsValue.Null, N(1), ["abc"]);
+        yield return new("unset-cap-two", "anullbnullc", TsValue.Void, N(2), ["anullbnullc"]);
+        yield return new("null-text-one", "anullbnullc", TsValue.Null, S("1"), ["a", "b", "c"], VmOnly: true);
     }
 
-    internal static (string Evidence, string[] Items) Observe(Row row)
+    internal static (string Source, string Evidence, TsValue[] Arguments, string[] Items) Observe(Row row)
     {
         var inputs = new List<TsValue> { S(row.Text) };
         if (row.Separator is TsValue separator) inputs.Add(separator);
@@ -61,13 +78,28 @@ public sealed class StringSplitNullLimitTests
         int argc = inputs.Count;
         string parameters = argc switch { 1 => "text: string", 2 => "text: string, separator: any", _ => "text: string, separator: any, limit: any" };
         string splitInputs = argc switch { 1 => "", 2 => "separator", _ => "separator, limit" };
-        var tokens = new Lexer($"function main({parameters}): string[] {{ return text.split({splitInputs}); }}").Tokenize();
+        string source = $"function main({parameters}): string[] {{ return text.split({splitInputs}); }}";
+        var tokens = new Lexer(source).Tokenize();
         Assert.DoesNotContain(tokens, token => token.Kind == TokenKind.Error);
         var parser = new ScriptParser(tokens);
         var binder = new Binder();
         var bound = binder.Bind(parser.Parse());
         Assert.Empty(parser.Diagnostics);
         Assert.Empty(binder.Diagnostics.All);
+
+        var function = Assert.IsType<BoundFunctionDeclaration>(Assert.Single(bound.Members));
+        var body = Assert.IsType<BoundBlockStatement>(function.Body);
+        var ret = Assert.IsType<BoundReturnStatement>(Assert.Single(body.Statements));
+        var boundCall = Assert.IsType<BoundCallExpression>(ret.Value);
+        var member = Assert.IsType<BoundMemberAccessExpression>(boundCall.Callee);
+        Assert.Same(TsType.String, member.Object.Type);
+        var method = Assert.IsType<MethodSymbol>(member.Member);
+        Assert.Equal("split", method.Name);
+        Assert.Equal("String", method.DeclaringClassName);
+        Assert.Equal(argc - 1, boundCall.Arguments.Count);
+        var resultType = Assert.IsType<TsArrayType>(boundCall.Type);
+        Assert.Same(TsType.String, resultType.ElementType);
+        Assert.False(resultType.IsReadonly);
 
         var ir = new IRGenerator().Generate(bound);
         var main = Assert.Single(ir.Functions, function => function.Name == "main");
@@ -84,6 +116,24 @@ public sealed class StringSplitNullLimitTests
         Assert.Equal(Opcode.Return, instructions[argc + 1].Opcode);
         var bytecode = BytecodeCompiler.Compile(ir);
         BytecodeVerifier.Verify(bytecode);
+        var entry = bytecode.Functions[bytecode.FunctionIndex["main"]];
+        Assert.Equal(argc, entry.ParameterCount);
+        var code = entry.Instructions.AsSpan();
+        int ip = 0;
+        for (int i = 0; i < argc; i++)
+        {
+            Assert.Equal(Opcodes.LoadArg, code[ip++]);
+            Assert.Equal(i, BinaryPrimitives.ReadInt32LittleEndian(code.Slice(ip, sizeof(int))));
+            ip += sizeof(int);
+        }
+        Assert.Equal(Opcodes.Call, code[ip++]);
+        int targetIndex = BinaryPrimitives.ReadInt32LittleEndian(code.Slice(ip, sizeof(int)));
+        ip += sizeof(int);
+        Assert.Equal("String::split", entry.StringConstants[targetIndex]);
+        Assert.Equal(argc, BinaryPrimitives.ReadInt32LittleEndian(code.Slice(ip, sizeof(int))));
+        ip += sizeof(int);
+        Assert.Equal(Opcodes.Return, code[ip++]);
+        Assert.Equal(code.Length, ip);
         var vm = new Vm();
         var arguments = inputs.ToArray();
         var first = Assert.IsType<TsArrayValue>(vm.Execute(bytecode, "main", arguments));
@@ -99,7 +149,7 @@ public sealed class StringSplitNullLimitTests
             Assert.NotSame(first.Value, second.Value);
             shape = "zero-capacity-distinct";
         }
-        return ($"lexer=0 parser=0 binder=0 verified call=String::split/{argc} inputs={string.Join(",", inputs.Select(value => value.GetType().Name))} shape={shape}", items);
+        return (source, $"lexer=0 parser=0 binder=0 bound=string.split:string[] ir=String::split/{argc} verified-bytecode=String::split/{argc} shape={shape}", arguments, items);
     }
 
     private static string[] Elements(TsArrayValue wrapper)
@@ -118,15 +168,15 @@ public sealed class StringSplitNullLimitTests
     }
 
     [Fact]
-    public void Split_ExplicitNullLimitsUseFreshZeroLengthArraysOnSupportedSeparators()
+    public void Split_HonorsSupportedLimitsAndUsesFreshZeroLengthArrays()
     {
         var failures = new List<string>();
         foreach (var row in Rows())
         {
-            var (_, actual) = Observe(row);
+            var (_, _, _, actual) = Observe(row);
             if (!row.Expected.SequenceEqual(actual, StringComparer.Ordinal))
                 failures.Add($"{row.Id} expected={JsonSerializer.Serialize(row.Expected)} actual={JsonSerializer.Serialize(actual)}");
         }
-        Assert.True(failures.Count == 0, "C311_SPLIT " + string.Join("; ", failures));
+        Assert.True(failures.Count == 0, "C315_SPLIT " + string.Join("; ", failures));
     }
 }
