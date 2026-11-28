@@ -2287,16 +2287,68 @@ public sealed class Interpreter
                 result.Add(mapFn != null ? Invoke(mapFn, value, TsValue.FromInt32(index)) : value);
             }
 
-            // The array-like length is fixed, but the mapper can change later fields.
+            // Only the ordinary callable path reads mutable sources between mapper calls.
+            // Omitted and unsupported mappers retain the existing materialization and error behavior.
             if (mapFn is TsFunctionValue function &&
-                !function.FunctionName.EndsWith("::.ctor", StringComparison.Ordinal) &&
-                source is TsObjectValue objectValue &&
-                objectValue.Value.GetField("length") is var lengthValue and not TsNull and not TsVoid)
+                !function.FunctionName.EndsWith("::.ctor", StringComparison.Ordinal))
             {
-                int length = AsInt32(lengthValue);
-                for (int i = 0; i < length; i++)
-                    AddMapped(objectValue.Value.GetField(i.ToString(CultureInfo.InvariantCulture)), i);
-                return new TsArrayValue(result);
+                switch (source)
+                {
+                    case TsArrayValue arrayValue:
+                        for (int i = 0; i < arrayValue.Value.Count; i++)
+                            AddMapped(arrayValue.Value.Get(i), i);
+                        return new TsArrayValue(result);
+                    case TsUint8ArrayValue bytesValue:
+                        for (int i = 0; i < bytesValue.Length; i++)
+                            AddMapped(TsValue.FromInt32(bytesValue.Get(i)), i);
+                        return new TsArrayValue(result);
+                    case TsMapValue mapValue:
+                    {
+                        var map = mapValue.Value;
+                        var cursor = map.BeginForEach();
+                        try
+                        {
+                            int index = 0;
+                            while (map.TryReadForEachEntry(cursor, out var entry))
+                            {
+                                var pair = new TsArray(2);
+                                pair.Add(entry.Key);
+                                pair.Add(entry.Value);
+                                AddMapped(new TsArrayValue(pair), index++);
+                            }
+                            return new TsArrayValue(result);
+                        }
+                        finally
+                        {
+                            map.EndForEach(cursor);
+                        }
+                    }
+                    case TsSetValue setValue:
+                    {
+                        var set = setValue.Value;
+                        var cursor = set.BeginForEach();
+                        try
+                        {
+                            int index = 0;
+                            while (set.TryReadForEachValue(cursor, out var value))
+                                AddMapped(value, index++);
+                            return new TsArrayValue(result);
+                        }
+                        finally
+                        {
+                            set.EndForEach(cursor);
+                        }
+                    }
+                    // The array-like length is fixed, but the mapper can change later fields.
+                    case TsObjectValue objectValue
+                        when objectValue.Value.GetField("length") is var lengthValue and not TsNull and not TsVoid:
+                    {
+                        int length = AsInt32(lengthValue);
+                        for (int i = 0; i < length; i++)
+                            AddMapped(objectValue.Value.GetField(i.ToString(CultureInfo.InvariantCulture)), i);
+                        return new TsArrayValue(result);
+                    }
+                }
             }
 
             var values = MaterializeIterableValues(source);
