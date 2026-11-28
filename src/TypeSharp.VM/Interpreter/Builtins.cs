@@ -176,9 +176,9 @@ public static class Builtins
             ["Number"] = args => Num(args.Length == 0 ? 0d : NumberPrimitiveValue(NumberSlot(args))),
 
             // ── console ──
-            ["console::log"] = args => { Console.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Void; },
-            ["console::error"] = args => { Console.Error.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Void; },
-            ["console::warn"] = args => { Console.Error.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Void; },
+            ["console::log"] = args => { Console.WriteLine(string.Join(" ", args.Select(FormatConsoleArgument))); return TsValue.Void; },
+            ["console::error"] = args => { Console.Error.WriteLine(string.Join(" ", args.Select(FormatConsoleArgument))); return TsValue.Void; },
+            ["console::warn"] = args => { Console.Error.WriteLine(string.Join(" ", args.Select(FormatConsoleArgument))); return TsValue.Void; },
 
             ["JSON::stringify"] = args => args.Length == 0 || args[0] is TsVoid
                 ? TsValue.Void
@@ -1194,6 +1194,31 @@ public static class Builtins
         pair.Add(key);
         pair.Add(value);
         return new TsArrayValue(pair);
+    }
+
+    private static string FormatConsoleArgument(TsValue value)
+    {
+        return value switch
+        {
+            TsStringValue text => text.Value,
+            TsNull => "null",
+            TsVoid => "undefined",
+            TsBoolValue boolean => boolean.Value ? "true" : "false",
+            TsInt32Value integer => integer.Value.ToString(CultureInfo.InvariantCulture),
+            TsInt64Value integer => integer.Value.ToString(CultureInfo.InvariantCulture),
+            TsUInt64Value integer => integer.Value.ToString(CultureInfo.InvariantCulture),
+            TsDecimalValue number => number.Value.ToString(CultureInfo.InvariantCulture),
+            TsBigIntValue integer => integer.Value.ToString(CultureInfo.InvariantCulture) + "n",
+            // The shared Number formatter canonicalizes negative zero for String and keys.
+            TsFloat32Value number => FormatNumber(number.Value),
+            TsFloat64Value number => FormatNumber(number.Value),
+            _ => value.ToString()
+        };
+
+        static string FormatNumber(double number) =>
+            BitConverter.DoubleToInt64Bits(number) == long.MinValue
+                ? "-0"
+                : Uint8ArrayOperations.CanonicalNumberText(number);
     }
 
     private static TsValue Num(double value) => TsValue.FromFloat64(value);
