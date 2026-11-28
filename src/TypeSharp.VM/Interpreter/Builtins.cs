@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Specialized;
 using System.Globalization;
 using System.Text;
@@ -13,9 +14,10 @@ namespace TypeSharp.VM.Interpreter;
 public static class Builtins
 {
     private static readonly Dictionary<string, Func<TsValue[], TsValue>> Table = Build();
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private const int JsonCompositeDepthLimit = 1000;
+    private static readonly JsonSerializerOptions LegacyJsonDepthOptions = new()
     {
-        MaxDepth = 1001,
+        MaxDepth = JsonCompositeDepthLimit + 1,
         Converters = { new NativeDateJsonConverter() },
     };
 
@@ -179,9 +181,7 @@ public static class Builtins
 
             ["JSON::stringify"] = args => args.Length == 0 || args[0] is TsVoid
                 ? TsValue.Void
-                : TsValue.FromString(JsonSerializer.Serialize(
-                    ToJsonCompatible(args[0], new HashSet<object>(ReferenceEqualityComparer.Instance), 0),
-                    JsonOptions)),
+                : TsValue.FromString(JsonStringify(args[0])),
 
             // ── Array construction + statics ──
             ["Array::ctor"] = args =>
@@ -1602,6 +1602,118 @@ public static class Builtins
         _ => false,
     };
 
+    private static string JsonStringify(TsValue value)
+    {
+        // Project the entire graph first: a projection failure, including a cycle,
+        // always takes precedence over any independent backend depth failure.
+        var projected = ToJsonCompatible(value, new HashSet<object>(ReferenceEqualityComparer.Instance), 0);
+        var output = new StringBuilder();
+        bool needsLegacyDepthGuard = false;
+        WriteJsonValue(output, projected, 0, ref needsLegacyDepthGuard);
+        if (needsLegacyDepthGuard)
+            _ = JsonSerializer.Serialize(projected, LegacyJsonDepthOptions);
+        return output.ToString();
+    }
+
+    private static void WriteJsonValue(StringBuilder output, object? value, int depth, ref bool needsLegacyDepthGuard)
+    {
+        switch (value)
+        {
+            case null: output.Append("null"); break;
+            case bool boolean: output.Append(boolean ? "true" : "false"); break;
+            case byte number: output.Append(number.ToString(CultureInfo.InvariantCulture)); break;
+            case int number: output.Append(number.ToString(CultureInfo.InvariantCulture)); break;
+            case long number: output.Append(number.ToString(CultureInfo.InvariantCulture)); break;
+            case ulong number: output.Append(number.ToString(CultureInfo.InvariantCulture)); break;
+            case decimal number: output.Append(number.ToString(CultureInfo.InvariantCulture)); break;
+            case float number: output.Append(Uint8ArrayOperations.CanonicalNumberText((double)number)); break;
+            case double number: output.Append(Uint8ArrayOperations.CanonicalNumberText(number)); break;
+            case string text: WriteJsonString(output, text); break;
+            case NativeDateJson date: WriteJsonString(output, date.Iso); break;
+            case List<object?> elements:
+                output.Append('[');
+                for (int i = 0; i < elements.Count; i++)
+                {
+                    if (i > 0) output.Append(',');
+                    WriteJsonValue(output, elements[i], depth + 1, ref needsLegacyDepthGuard);
+                }
+                output.Append(']');
+                break;
+            case Dictionary<string, object?> properties:
+                output.Append('{');
+                bool first = true;
+                foreach (var (key, member) in properties)
+                    WriteJsonMember(output, key, member, depth, ref first, ref needsLegacyDepthGuard);
+                output.Append('}');
+                break;
+            case OrderedDictionary ordered:
+                // Only a Uint8Array can add an object beyond the guarded projection limit.
+                // An empty terminal object has no byte write at the backend limit. For a
+                // nonempty one, validate using the old backend so exception/path stay exact;
+                // its text is never returned.
+                if (depth == JsonCompositeDepthLimit && ordered.Count != 0)
+                    needsLegacyDepthGuard = true;
+                output.Append('{');
+                bool firstOrdered = true;
+                foreach (DictionaryEntry entry in ordered)
+                    WriteJsonMember(output, (string)entry.Key, entry.Value, depth, ref firstOrdered, ref needsLegacyDepthGuard);
+                output.Append('}');
+                break;
+            default:
+                throw new InvalidOperationException("Unexpected JSON projection");
+        }
+    }
+
+    private static void WriteJsonMember(StringBuilder output, string key, object? member, int depth,
+        ref bool first, ref bool needsLegacyDepthGuard)
+    {
+        if (!first) output.Append(',');
+        first = false;
+        WriteJsonString(output, key);
+        output.Append(':');
+        WriteJsonValue(output, member, depth + 1, ref needsLegacyDepthGuard);
+    }
+
+    private static void WriteJsonString(StringBuilder output, string text)
+    {
+        output.Append('"');
+        for (int index = 0; index < text.Length; index++)
+        {
+            char unit = text[index];
+            switch (unit)
+            {
+                case '"': output.Append("\\\""); break;
+                case '\\': output.Append("\\\\"); break;
+                case '\b': output.Append("\\b"); break;
+                case '\t': output.Append("\\t"); break;
+                case '\n': output.Append("\\n"); break;
+                case '\f': output.Append("\\f"); break;
+                case '\r': output.Append("\\r"); break;
+                default:
+                    if (char.IsHighSurrogate(unit) && index + 1 < text.Length && char.IsLowSurrogate(text[index + 1]))
+                    {
+                        output.Append(unit);
+                        output.Append(text[++index]);
+                    }
+                    else if (unit < '\u0020' || char.IsSurrogate(unit))
+                    {
+                        const string hex = "0123456789abcdef";
+                        output.Append("\\u");
+                        output.Append(hex[unit >> 12]);
+                        output.Append(hex[(unit >> 8) & 0xf]);
+                        output.Append(hex[(unit >> 4) & 0xf]);
+                        output.Append(hex[unit & 0xf]);
+                    }
+                    else
+                    {
+                        output.Append(unit);
+                    }
+                    break;
+            }
+        }
+        output.Append('"');
+    }
+
     private static object? ToJsonCompatible(TsValue value, HashSet<object> ancestors, int depth) => value switch
     {
         TsVoid => null,
@@ -1699,7 +1811,7 @@ public static class Builtins
     {
         if (ancestors.Contains(container))
             throw new InvalidOperationException("Converting circular structure to JSON");
-        if (depth >= 1000)
+        if (depth >= JsonCompositeDepthLimit)
             throw new InvalidOperationException("Maximum JSON serialization depth exceeded");
         ancestors.Add(container);
         try
