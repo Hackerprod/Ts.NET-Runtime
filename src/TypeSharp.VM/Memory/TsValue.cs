@@ -293,6 +293,9 @@ public sealed class TsRegexValue : TsValue
 {
     private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(100);
 
+    // The script cursor is not used by the host Regex, RawValue or Test API.
+    internal TsValue ScriptLastIndex { get; set; } = FromFloat64(0);
+
     public string Pattern { get; }
     public string Flags { get; }
     public Regex Regex { get; }

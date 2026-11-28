@@ -410,6 +410,8 @@ public sealed class Interpreter
                         ? objVal.Value.Fields.ContainsKey(fieldName)
                         : receiver is TsSetValue
                             ? NativeSet.HasProperty(fieldName)
+                            : receiver is TsRegexValue
+                                ? NativeRegex.HasProperty(fieldName)
                             : !StrictEquals(ReadFieldValue(receiver, fieldName), TsValue.Void);
                     frame.Push(new TsBoolValue(hasField));
                     break;
@@ -430,6 +432,8 @@ public sealed class Interpreter
                         throw NativeMap.TypeError(NativeMap.ReadonlySizeMessage);
                     else if (obj is TsSetValue && fieldName == "size")
                         throw NativeSet.TypeError(NativeSet.ReadonlySizeMessage);
+                    else if (obj is TsRegexValue regex && fieldName == "lastIndex")
+                        regex.ScriptLastIndex = value;
                     else if (obj is TsNull)
                         throw new InvalidOperationException("Cannot index a null value");
                     break;
@@ -1224,6 +1228,8 @@ public sealed class Interpreter
                     int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var fieldName = strings[fieldIdx];
                     var obj = frame.Pop();
+                    if (obj is TsRegexValue && fieldName == "lastIndex")
+                        throw NativeRegex.RejectCursorDeletion();
                     bool deleted = (obj is TsMapValue or TsSetValue) && fieldName == "size";
                     if (obj is TsObjectValue objVal)
                         deleted = objVal.Value.Fields.Remove(fieldName) || objVal.Value.NativeDateTimestamp.HasValue;
@@ -1234,6 +1240,8 @@ public sealed class Interpreter
                 {
                     var indexVal = frame.Pop();
                     var obj = frame.Pop();
+                    if (obj is TsRegexValue && NativeRegex.IsCursorKey(indexVal))
+                        throw NativeRegex.RejectCursorDeletion();
                     bool deleted = false;
                     if (obj is TsArrayValue arrVal && indexVal is TsInt32Value idx)
                     {
@@ -1361,14 +1369,24 @@ public sealed class Interpreter
 
                     var calleeName = strings[funcIdx];
 
-                    if (calleeName == NativeSet.InvokeMemberReference)
+                    if (calleeName == NativeRegex.ReadTypedTestReference)
+                    {
+                        if (argCount != 1)
+                            throw new InvalidOperationException("RegExp typed reference requires one operand");
+                        frame.Push(NativeRegex.ReadTypedReference(frame.Pop()));
+                    }
+                    else if (calleeName is NativeSet.InvokeMemberReference or NativeRegex.InvokeMemberReference)
                     {
                         if (argCount != 3)
-                            throw new InvalidOperationException("Set member-reference call requires three operands");
+                            throw new InvalidOperationException(calleeName == NativeSet.InvokeMemberReference
+                                ? "Set member-reference call requires three operands"
+                                : "RegExp member-reference call requires three operands");
                         var positional = ToArgumentArray(frame.Pop());
                         var callable = frame.Pop();
                         var receiver = frame.Pop();
-                        var invocationReceiver = receiver is TsSetValue && NativeSet.IsIntrinsicReference(callable)
+                        var invocationReceiver = (calleeName == NativeSet.InvokeMemberReference &&
+                            receiver is TsSetValue && NativeSet.IsIntrinsicReference(callable))
+                            || (receiver is TsRegexValue && NativeRegex.IsIntrinsicReference(callable))
                             ? receiver : null;
                         frame.Push(InvokeCallable(callable, positional, module, ctx, frame, invocationReceiver));
                     }
@@ -1500,6 +1518,14 @@ public sealed class Interpreter
                     for (int i = argCount - 1; i >= 0; i--)
                         callArgs[i] = frame.Pop();
                     var resolvedName = ResolveVirtualCalleeName(calleeName, callArgs);
+
+                    // Do not let a previously cached managed method at this bare
+                    // selector consume an actual native RegExp receiver.
+                    if (calleeName == "test" && callArgs.Length > 0 && callArgs[0] is TsRegexValue regex)
+                    {
+                        frame.Push(NativeRegex.Test(regex, callArgs.Length > 1 ? callArgs[1] : TsValue.Void));
+                        break;
+                    }
 
                     // A qualified Set operand selects the native method regardless of
                     // receiver; a bare selector does so only for an actual native Set.
@@ -1718,6 +1744,8 @@ public sealed class Interpreter
                         frame.Push(NativeMap.IsSizeKey(index) ? ReadFieldValue(map, "size") : map.Value.Get(index));
                     else if (target is TsSetValue set && index is TsStringValue name)
                         frame.Push(NativeSet.ReadProperty(set, name.Value));
+                    else if (target is TsRegexValue regex && index is TsStringValue regexKey)
+                        frame.Push(NativeRegex.ReadProperty(regex, regexKey.Value));
                     else if (target is TsObjectValue objectTarget)
                         frame.Push(ReadFieldValue(objectTarget, ToPropertyKey(index)));
                     else if (target is TsNull)
@@ -1744,6 +1772,8 @@ public sealed class Interpreter
                     }
                     else if (target is TsSetValue && NativeSet.IsSizeKey(index))
                         throw NativeSet.TypeError(NativeSet.ReadonlySizeMessage);
+                    else if (target is TsRegexValue regex && NativeRegex.IsCursorKey(index))
+                        regex.ScriptLastIndex = value;
                     else if (target is TsObjectValue objectTarget)
                         objectTarget.Value.SetField(ToPropertyKey(index), value);
                     else if (target is TsNull)
@@ -2570,6 +2600,7 @@ public sealed class Interpreter
         TsArrayValue arrVal when fieldName == "length" => TsValue.FromInt32(arrVal.Value.Count),
         TsMapValue mapVal when fieldName == "size" => TsValue.FromFloat64(mapVal.Value.Count),
         TsSetValue setVal => NativeSet.ReadProperty(setVal, fieldName),
+        TsRegexValue regex => NativeRegex.ReadProperty(regex, fieldName),
         TsUint8ArrayValue bytesVal when fieldName is "length" or "byteLength" => TsValue.FromFloat64(bytesVal.Length),
         TsStringValue strVal when fieldName == "length" => TsValue.FromInt32(strVal.Value.Length),
         _ => TsValue.Null,
@@ -2820,6 +2851,9 @@ public sealed class Interpreter
     {
         if (calleeValue is not TsFunctionValue fnValue)
             throw new InvalidOperationException($"Value '{calleeValue}' is not callable");
+
+        if (NativeRegex.IsIntrinsicReference(fnValue))
+            return NativeRegex.TestWithReceiver(invocationReceiver, args);
 
         // Ciclo 10 (W, W-10): una clase no se invoca sin `new`. `NewObject`
         // no pasa por aquí (construye el frame del ctor directamente), así

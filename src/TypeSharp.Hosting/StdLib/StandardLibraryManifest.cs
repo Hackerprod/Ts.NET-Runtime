@@ -51,17 +51,17 @@ public static class StandardLibraryManifest
             ["Date_GetTime_ReturnsUnixMilliseconds", "Date_SupportsUtcTimestampIsoAndInvalidSemantics", "GetUtcFullYear_ReturnsNativeUtcYearAndInvalidNaN", "GetUtcMonth_ReturnsZeroBasedUtcMonth", "GetUtcDate_ReturnsOneBasedUtcDayAndInvalidNaN", "GetUtcDay_ReturnsZeroBasedUtcWeekdayAndInvalidNaN", "GetUtcHours_ReturnsHourOfStoredUtcInstant", "GetUtcMinutes_ReturnsMinuteOfStoredUtcInstant", "GetUtcSeconds_ReturnsSecondOfStoredUtcInstant", "GetUtcMilliseconds_ReturnsMillisecondOfStoredUtcInstant"]),
         new(
             "ArrayStringMathNumberUint8ArrayRegExp",
-            "Existing declared methods only",
+            "Existing declared methods, plus literal-backed RegExp.test and lastIndex",
             StandardCapabilityStatus.Partial,
-            "The runtime exposes the currently bound members for these types, covered by their targeted tests.",
-            "This is not a full lib.es2020 implementation.",
-            ["Existing conformance tests"]),
+            "The runtime exposes the existing declared members for these types. RegExp literals support test and a per-value lastIndex; global and sticky tests advance or reset it. Host Regex and Test remain stateless.",
+            "This is not a full lib.es2020 implementation. RegExp construction, exec, metadata properties and full Unicode flag semantics are not supported.",
+            ["Existing conformance tests", "RegExpNativeSurfaceTests"]),
         new(
             "ObjectJsonErrorPromiseProxyReflectWeakIntl",
             "Not declared as a supported standard surface",
             StandardCapabilityStatus.Unsupported,
             "These APIs must not be treated as generally available until semantics, limits and tests are designed.",
-            "Promise microtasks, JSON host-object isolation, RegExp expansion, Proxy/Reflect/Weak collections and Intl remain outside the supported template.",
+            "Promise microtasks, JSON host-object isolation, RegExp beyond its literal test surface, Proxy/Reflect/Weak collections and Intl remain outside the supported template.",
             [])
     ];
 

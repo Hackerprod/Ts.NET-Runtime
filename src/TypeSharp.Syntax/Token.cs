@@ -169,6 +169,8 @@ public sealed class Token
     // Set only by the lexer for a bare Bang after intervening line terminator trivia.
     // Manually constructed tokens have no such source information.
     internal bool HasPrecedingLineTerminator { get; set; }
+    // Exact source trivia for the literal parser only. Manual tokens default to none.
+    internal int LeadingPlainSpaces { get; set; }
 
     // Sorted UTF-16 offsets in the cooked text, present only for lexer-escaped dollars.
     private readonly int[]? _escapedTemplateDollarOffsets;

@@ -2218,6 +2218,7 @@ public sealed class Parser
         while (!IsAtEnd())
         {
             var token = Advance();
+            pattern.Append(' ', token.LeadingPlainSpaces);
             if (token.Kind == TokenKind.OpenBracket) classDepth++;
             else if (token.Kind == TokenKind.CloseBracket && classDepth > 0) classDepth--;
             else if (token.Kind == TokenKind.Slash && classDepth == 0)

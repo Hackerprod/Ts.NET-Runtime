@@ -2073,7 +2073,12 @@ public sealed class IRGenerator
         }
         if (GetSetReferenceTarget(call, hasSpread) is { } setReferenceTarget)
         {
-            GenerateSetReferenceCall(call, setReferenceTarget);
+            GenerateMemberReferenceCall(call, setReferenceTarget);
+            return;
+        }
+        if (GetRegexReferenceTarget(call, hasSpread) is { } regexReferenceTarget)
+        {
+            GenerateMemberReferenceCall(call, regexReferenceTarget, InvokeRegexMemberReference);
             return;
         }
         if (call.IsNullConditional)
@@ -2213,6 +2218,8 @@ public sealed class IRGenerator
     // Existing qualified Call with [receiver, property value, positional array].
     // The spelling cannot be defined by TypeScript source or linked as a user function.
     private const string InvokeSetMemberReference = "Set::<invoke-member-reference>";
+    private const string InvokeRegexMemberReference = "RegExp::<invoke-member-reference>";
+    private const string ReadTypedRegexTestReference = "RegExp::<typed-test-reference>";
 
     private static bool IsNativeSetMethodName(string name) => name is
         "add" or "has" or "delete" or "clear" or "keys" or "values" or "entries" or "forEach";
@@ -2248,7 +2255,34 @@ public sealed class IRGenerator
         return null;
     }
 
-    private void GenerateSetReferenceCall(BoundCallExpression call, BoundNode target)
+    private static bool IsRegexInterface(TsType type) =>
+        type is TsInterfaceType { Name: "RegExp", IsStructural: true } shape &&
+        shape.Properties.TryGetValue("lastIndex", out var cursor) && !cursor.IsReadonly &&
+        cursor.Type.Equals(TsType.Number) &&
+        shape.Methods.TryGetValue("test", out var test) && test.ReturnType.Equals(TsType.Bool) &&
+        test.Parameters.Count == 1 &&
+        (test.Parameters[0].Type is TsAnyType or TsUnknownType or TsNullableType { ElementType: TsUnknownType });
+
+    private static bool IsStructuralRegexTest(BoundMemberAccessExpression access) =>
+        access.Member is MethodSymbol { Name: "test", DeclaringClassName: null } && IsRegexInterface(access.Object.Type);
+
+    private static BoundNode? GetRegexReferenceTarget(BoundCallExpression call, bool hasSpread)
+    {
+        if (call.Callee is BoundIndexExpression { IsMapStorage: false } index &&
+            (index.Object.Type is TsAnyType || IsRegexInterface(index.Object.Type)) &&
+            (index.Index is not BoundLiteralExpression literal || literal.Value is "test"))
+            return index.Object;
+
+        if ((hasSpread || call.IsNullConditional) &&
+            call.Callee is BoundMemberAccessExpression { Member.Name: "test" } member &&
+            (member.Object.Type is TsAnyType || IsStructuralRegexTest(member)))
+            return member.Object;
+
+        return null;
+    }
+
+    private void GenerateMemberReferenceCall(BoundCallExpression call, BoundNode target,
+        string helper = InvokeSetMemberReference)
     {
         // Keep the original receiver under the loaded value. Evaluate the key
         // (if any) and the property lookup before the argument expressions.
@@ -2263,7 +2297,7 @@ public sealed class IRGenerator
 
         if (!call.IsNullConditional)
         {
-            EmitSetReferenceInvocation(call.Arguments);
+            EmitMemberReferenceInvocation(call.Arguments, helper);
             return;
         }
 
@@ -2285,7 +2319,7 @@ public sealed class IRGenerator
 
         _currentBlock = invokeBlock;
         _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // duplicated callable
-        EmitSetReferenceInvocation(call.Arguments);
+        EmitMemberReferenceInvocation(call.Arguments, helper);
         EmitBranch(endBlock.Id);
 
         _currentBlock = endBlock;
@@ -2317,7 +2351,7 @@ public sealed class IRGenerator
             // The extra receiver produces the member value, leaving the
             // original receiver underneath for the existing Call adapter.
             _currentBlock.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, member.Member.Name));
-            EmitSetReferenceInvocation(call.Arguments);
+            EmitMemberReferenceInvocation(call.Arguments, InvokeSetMemberReference);
         }
         else
         {
@@ -2330,10 +2364,10 @@ public sealed class IRGenerator
         _currentBlock = endBlock;
     }
 
-    private void EmitSetReferenceInvocation(IReadOnlyList<BoundNode> arguments)
+    private void EmitMemberReferenceInvocation(IReadOnlyList<BoundNode> arguments, string helper)
     {
         GenerateArgumentArray(arguments);
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 3, InvokeSetMemberReference));
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 3, helper));
     }
 
     private void GenerateSpreadCall(BoundCallExpression call)
@@ -2743,6 +2777,15 @@ public sealed class IRGenerator
         }
 
         GenerateExpressionOrLoadCaptured(member.Object, objectSlot);
+
+        if (IsStructuralRegexTest(member))
+        {
+            // Structural shape only authorizes asking the VM. Only a nominal
+            // native receiver produces test; ordinary receivers keep the
+            // preexisting structural method-value result.
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 1, ReadTypedRegexTestReference));
+            return;
+        }
 
         if (member.Member is not (FieldSymbol or PropertySymbol) && !nativeSetMember)
             return;

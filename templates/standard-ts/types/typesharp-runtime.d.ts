@@ -12,7 +12,10 @@ interface IArguments extends ArrayLike<unknown> {}
 interface String {}
 interface Boolean {}
 interface Number {}
-interface RegExp {}
+interface RegExp {
+    lastIndex: number;
+    test(input?: unknown): boolean;
+}
 
 interface ArrayLike<T> {
     readonly length: number;

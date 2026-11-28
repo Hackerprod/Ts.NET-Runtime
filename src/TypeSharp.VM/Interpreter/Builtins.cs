@@ -329,9 +329,9 @@ public static class Builtins
             ["BigInt"] = args => args.Length > 0 ? ToBigInt(args[0]) : TsValue.FromBigInt(System.Numerics.BigInteger.Zero),
             ["RegExp::test"] = args =>
             {
-                if (args.Length < 2 || args[0] is not TsRegexValue regex)
+                if (args.Length == 0 || args[0] is not TsRegexValue regex)
                     throw new InvalidOperationException("RegExp.test requires a RegExp receiver and input");
-                return Bool(regex.Test(S(args[1])));
+                return NativeRegex.Test(regex, args.Length > 1 ? args[1] : TsValue.Void);
             },
             ["Generator::next"] = args =>
             {
@@ -1480,7 +1480,7 @@ public static class Builtins
         return negative && value == 0d ? Math.CopySign(0d, -1d) : value;
     }
 
-    private static string S(TsValue v) => v switch
+    internal static string S(TsValue v) => v switch
     {
         TsStringValue s => s.Value,
         TsBoolValue b => b.Value ? "true" : "false",
