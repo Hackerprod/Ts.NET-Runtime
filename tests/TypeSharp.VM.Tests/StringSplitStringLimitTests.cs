@@ -113,10 +113,10 @@ public sealed class StringSplitStringLimitTests(ITestOutputHelper output)
         var undefined = Assert.IsType<TsVoid>(TsValue.Void);
         Assert.Equal(TsValueType.Void, undefined.ValueType);
         Check("explicit-undefined", undefined, "undefined", all);
-        CheckText("text-radix", "0x1", all);
-        CheckText("text-exponent", "1e0", all);
-        CheckText("text-empty", "", all);
-        CheckText("text-trailing-nul", "1\0", all);
+        CheckText("text-radix", "0x1", first);
+        CheckText("text-exponent", "1e0", first);
+        CheckText("text-empty", "", []);
+        CheckText("text-trailing-nul", "1\0", []);
         CheckText("text-negative-decimal", "-1.9", all);
 
         var decimalText = CheckedString("1.9");

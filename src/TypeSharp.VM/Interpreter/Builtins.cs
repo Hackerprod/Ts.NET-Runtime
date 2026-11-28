@@ -310,7 +310,7 @@ public static class Builtins
             ["parseFloat"] = args => Num(ParseFloatPrefix(GlobalParseFloatText(NumberSlot(args)))),
             ["isNaN"] = args => Bool(double.IsNaN(MathNumber(NumberSlot(args)))),
             ["isFinite"] = args => Bool(double.IsFinite(MathNumber(NumberSlot(args)))),
-            ["String"] = args => TsValue.FromString(args.Length > 0 ? S(args[0]) : ""),
+            ["String"] = NativeString.ConvertValue,
             ["Boolean"] = args => Bool(args.Length > 0 && Interpreter.AsBool(args[0])),
             ["BigInt"] = args => ToBigInt(args.Length == 0 ? TsValue.Void : args[0]),
             ["RegExp::test"] = args =>
@@ -590,449 +590,32 @@ public static class Builtins
             },
 
             // ── String instance members (receiver = args[0]) ──
-            ["String::charAt"] = args =>
-            {
-                string s = S(args[0]);
-                int i = args.Length > 1 ? I(args[1]) : 0;
-                return TsValue.FromString(i >= 0 && i < s.Length ? s[i].ToString() : "");
-            },
-            ["String::charCodeAt"] = args =>
-            {
-                string s = S(args[0]);
-                int i = args.Length > 1 ? I(args[1]) : 0;
-                return i >= 0 && i < s.Length ? TsValue.FromInt32(s[i]) : TsValue.FromFloat64(double.NaN);
-            },
-            ["String::codePointAt"] = args =>
-            {
-                string s = S(args[0]);
-                int i = args.Length > 1 ? I(args[1]) : 0;
-                if (i < 0 || i >= s.Length)
-                    return TsValue.Void;
-
-                char unit = s[i];
-                if (char.IsHighSurrogate(unit) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
-                    return TsValue.FromInt32(char.ConvertToUtf32(unit, s[i + 1]));
-                return TsValue.FromInt32(unit);
-            },
-            ["String::at"] = args =>
-            {
-                string s = S(args[0]);
-                double index = args.Length <= 1 ? 0
-                    : args[1] is TsStringValue text && TryGetBoundedHexPosition(text.Value, s.Length, out int hexPosition)
-                        ? hexPosition : D(args[1]);
-                if (double.IsNaN(index))
-                    index = 0;
-                if (!double.IsFinite(index))
-                    return TsValue.Void;
-
-                index = Math.Truncate(index);
-                if (index < 0)
-                    index += s.Length;
-
-                return index >= 0 && index < s.Length
-                    ? TsValue.FromString(s[(int)index].ToString())
-                    : TsValue.Void;
-            },
-            ["String::toUpperCase"] = args => TsValue.FromString(StringUppercaseExpansions.Uppercase(S(args[0]))),
-            ["String::toLowerCase"] = args => TsValue.FromString(Lowercase(S(args[0]))),
-            ["String::trim"] = args => TsValue.FromString(TrimEcmaWhitespace(S(args[0]))),
-            ["String::trimStart"] = args => TsValue.FromString(TrimStartEcmaWhitespace(S(args[0]))),
-            ["String::trimEnd"] = args => TsValue.FromString(TrimEndEcmaWhitespace(S(args[0]))),
-            ["String::substring"] = args =>
-            {
-                string s = S(args[0]);
-                static int Bound(TsValue bound, int length) =>
-                    bound is TsStringValue text && TryGetBoundedHexPosition(text.Value, length, out int hexPosition)
-                        ? hexPosition : I(bound);
-                int start = Math.Clamp(args.Length > 1 ? Bound(args[1], s.Length) : 0, 0, s.Length);
-                int end = Math.Clamp(args.Length > 2 && args[2] is not TsVoid ? Bound(args[2], s.Length) : s.Length, 0, s.Length);
-                if (start > end) (start, end) = (end, start);
-                return TsValue.FromString(s[start..end]);
-            },
-            ["String::slice"] = args =>
-            {
-                string s = S(args[0]);
-                static int Bound(TsValue bound, int length) =>
-                    bound is TsStringValue text && TryGetBoundedHexPosition(text.Value, length, out int hexPosition)
-                        ? hexPosition : Normalize(I(bound), length);
-                int start = args.Length > 1 ? Bound(args[1], s.Length) : 0;
-                int end = args.Length > 2 && args[2] is not TsVoid ? Bound(args[2], s.Length) : s.Length;
-                return TsValue.FromString(start < end ? s[start..end] : "");
-            },
-            ["String::repeat"] = args =>
-            {
-                var text = S(args[0]);
-                if (args.Length > 1 && IsNegativeRepeatCount(args[1]))
-                {
-                    var error = new TsObject("RangeError");
-                    error.SetField("name", TsValue.FromString("RangeError"));
-                    error.SetField("message", TsValue.FromString("String.repeat count must not be negative"));
-                    throw new TsThrownException(TsValue.FromObject(error));
-                }
-                return TsValue.FromString(string.Concat(Enumerable.Repeat(text, Math.Max(args.Length > 1 ? I(args[1]) : 0, 0))));
-            },
-            ["String::concat"] = args => TsValue.FromString(string.Concat(args.Select(a => a switch
-            {
-                TsStringValue sv => sv.Value,
-                TsBoolValue or TsVoid => S(a),
-                TsFloat32Value f32 when f32.Value == 0f => "0",
-                TsFloat64Value f64 when f64.Value == 0d => "0",
-                _ => a.ToString()
-            }))),
-            ["String::includes"] = args =>
-            {
-                var text = S(args[0]);
-                var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
-                double position = args.Length <= 2 ? 0.0
-                    : args[2] is TsStringValue positionText
-                        && TryGetBoundedHexPosition(positionText.Value, text.Length, out int hexPosition)
-                        ? hexPosition
-                        : D(args[2]);
-                var start = double.IsNaN(position) || position <= 0
-                    ? 0
-                    : position >= text.Length ? text.Length : (int)Math.Truncate(position);
-                return Bool(needle.Length == 0 || text.IndexOf(needle, start, StringComparison.Ordinal) >= 0);
-            },
-            ["String::startsWith"] = args =>
-            {
-                var text = S(args[0]);
-                var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
-                double position = args.Length <= 2 ? 0.0
-                    : args[2] is TsStringValue positionText
-                        && TryGetBoundedHexPosition(positionText.Value, text.Length, out int hexPosition)
-                        ? hexPosition
-                        : D(args[2]);
-                int start = double.IsNaN(position) || position <= 0 ? 0
-                    : position >= text.Length ? text.Length : (int)Math.Truncate(position);
-                return Bool(text.AsSpan(start).StartsWith(needle.AsSpan(), StringComparison.Ordinal));
-            },
-            ["String::endsWith"] = args =>
-            {
-                var text = S(args[0]);
-                var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
-                int end = text.Length;
-                if (args.Length > 2 && args[2] is not TsVoid)
-                {
-                    double position = args[2] is TsStringValue positionText
-                        && TryGetBoundedHexPosition(positionText.Value, text.Length, out int hexPosition)
-                        ? hexPosition
-                        : StringEndsWithPosition(args[2]);
-                    end = double.IsNaN(position) || position <= 0
-                        ? 0
-                        : position >= text.Length ? text.Length : (int)Math.Truncate(position);
-                }
-                return Bool(text.AsSpan(0, end).EndsWith(needle.AsSpan(), StringComparison.Ordinal));
-            },
-            ["String::indexOf"] = args =>
-            {
-                var text = S(args[0]);
-                var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
-                double position = args.Length <= 2 ? 0.0 : args[2] is TsStringValue positionText && TryGetBoundedHexPosition(positionText.Value, text.Length, out int hexPosition) ? hexPosition : D(args[2]);
-                var start = double.IsNaN(position) || position <= 0
-                    ? 0
-                    : position >= text.Length ? text.Length : (int)Math.Truncate(position);
-                return TsValue.FromInt32(needle.Length == 0 ? start : text.IndexOf(needle, start, StringComparison.Ordinal));
-            },
-            ["String::lastIndexOf"] = args =>
-            {
-                var text = S(args[0]);
-                var needle = S(args.Length > 1 ? args[1] : TsValue.Void);
-                var maxStart = text.Length - needle.Length;
-                if (maxStart < 0) return TsValue.FromInt32(-1);
-
-                var position = args.Length < 3 ? double.NaN : args[2] is TsNull ? 0.0 : args[2] is TsStringValue positionText && TryGetBoundedHexPosition(positionText.Value, text.Length, out int hexPosition) ? hexPosition : D(args[2]);
-                var start = double.IsNaN(position) || position >= maxStart
-                    ? maxStart
-                    : position <= 0 ? 0 : (int)Math.Truncate(position);
-                if (needle.Length == 0) return TsValue.FromInt32(start);
-
-                // Position limits the start of the match, not its final character.
-                return TsValue.FromInt32(text.AsSpan(0, start + needle.Length).LastIndexOf(needle.AsSpan()));
-            },
-            ["String::replace"] = args =>
-            {
-                string s = S(args[0]);
-                string find = S(args[1]);
-                int idx = s.IndexOf(find, StringComparison.Ordinal);
-                if (idx < 0) return TsValue.FromString(s);
-
-                string template = S(args.Length > 2 ? args[2] : TsValue.Void);
-                int tail = idx + find.Length;
-                var prefix = s.AsSpan(0, idx);
-                var suffix = s.AsSpan(tail);
-                StringBuilder? result = null;
-                int literalStart = 0;
-                for (int i = 0; i < template.Length - 1; i++)
-                {
-                    if (template[i] != '$') continue;
-                    char token = template[i + 1];
-                    if (token is not ('$' or '&' or '`' or '\'')) continue;
-
-                    // Scan only the template; inserted source text is never rescanned.
-                    result ??= new StringBuilder().Append(prefix);
-                    result.Append(template.AsSpan(literalStart, i - literalStart));
-                    switch (token)
-                    {
-                        case '$': result.Append('$'); break;
-                        case '&': result.Append(s.AsSpan(idx, find.Length)); break;
-                        case '`': result.Append(prefix); break;
-                        case '\'': result.Append(suffix); break;
-                    }
-                    literalStart = i + 2;
-                    i++;
-                }
-
-                return TsValue.FromString(result is null
-                    ? string.Concat(prefix, template.AsSpan(), suffix)
-                    : result.Append(template.AsSpan(literalStart)).Append(suffix).ToString());
-            },
-            ["String::replaceAll"] = args =>
-            {
-                string s = S(args[0]);
-                string find = S(args[1]);
-                if (args.Length == 2 && args[0] is TsStringValue &&
-                    args[1] is TsStringValue && find.Length != 0)
-                    return TsValue.FromString(s.Replace(find, S(TsValue.Void)));
-                bool emptyPrimitiveWithUndefinedReplacement = find.Length == 0 &&
-                    args[0] is TsStringValue && args[1] is TsStringValue &&
-                    (args.Length == 2 || args[2] is TsVoid);
-                string template = emptyPrimitiveWithUndefinedReplacement ? S(TsValue.Void) : S(args[2]);
-                if (!emptyPrimitiveWithUndefinedReplacement && (args[0] is not TsStringValue ||
-                    args[1] is not (TsStringValue or TsBoolValue or TsInt32Value or TsFloat64Value) || args[2] is not TsStringValue))
-                    return TsValue.FromString(s.Replace(find, template));
-
-                static bool IsToken(char c) => c is '$' or '&' or '`' or '\'';
-
-                static void ExpandTemplate(string s, string template, int match, int length, int tail,
-                    int firstToken, StringBuilder result)
-                {
-                    int literalStart = 0;
-                    // Only scan the template. Both context tokens refer to the original source.
-                    for (int i = firstToken; i < template.Length - 1; i++)
-                    {
-                        if (template[i] != '$') continue;
-                        char token = template[i + 1];
-                        if (!IsToken(token)) continue;
-
-                        result.Append(template.AsSpan(literalStart, i - literalStart));
-                        switch (token)
-                        {
-                            case '$': result.Append('$'); break;
-                            case '&': result.Append(s.AsSpan(match, length)); break;
-                            case '`': result.Append(s.AsSpan(0, match)); break;
-                            case '\'': result.Append(s.AsSpan(tail)); break;
-                        }
-                        literalStart = i + 2;
-                        i++;
-                    }
-                    result.Append(template.AsSpan(literalStart));
-                }
-
-                int firstToken = 0;
-                while (firstToken < template.Length - 1 &&
-                    (template[firstToken] != '$' || !IsToken(template[firstToken + 1])))
-                    firstToken++;
-                bool hasToken = firstToken < template.Length - 1;
-                if (find.Length == 0)
-                {
-                    if (template.Length == 0) return TsValue.FromString(s);
-
-                    var inserted = new StringBuilder();
-                    // Insert at every UTF-16 code-unit boundary, including both ends.
-                    for (int boundary = 0; ; boundary++)
-                    {
-                        if (hasToken)
-                            ExpandTemplate(s, template, boundary, 0, boundary, firstToken, inserted);
-                        else
-                            inserted.Append(template);
-
-                        if (boundary == s.Length) break;
-                        inserted.Append(s[boundary]);
-                    }
-                    return TsValue.FromString(inserted.ToString());
-                }
-
-                if (!hasToken)
-                    return TsValue.FromString(s.Replace(find, template));
-
-                int match = s.IndexOf(find, StringComparison.Ordinal);
-                if (match < 0) return TsValue.FromString(s);
-
-                var result = new StringBuilder();
-                int consumed = 0;
-                do
-                {
-                    result.Append(s.AsSpan(consumed, match - consumed));
-                    int tail = match + find.Length;
-                    ExpandTemplate(s, template, match, find.Length, tail, firstToken, result);
-                    consumed = tail;
-                    match = s.IndexOf(find, consumed, StringComparison.Ordinal);
-                } while (match >= 0);
-
-                return TsValue.FromString(result.Append(s.AsSpan(consumed)).ToString());
-            },
-            ["String::padStart"] = args =>
-            {
-                string text = S(args[0]);
-                if (args.Length == 1) return TsValue.FromString(text);
-                double numericWidth = D(args[1]);
-                if (IsNegativeStringPaddingWidth(args[1], numericWidth)) return TsValue.FromString(text);
-                int width = (int)numericWidth;
-                if (width < 0) return TsValue.FromString(text.PadLeft(width));
-                if (width <= text.Length) return TsValue.FromString(text);
-
-                string fill = args.Length > 2 && args[2] is not TsVoid ? S(args[2]) : " ";
-                if (fill.Length == 0) return TsValue.FromString(text);
-                if (fill.Length == 1) return TsValue.FromString(text.PadLeft(width, fill[0]));
-
-                return TsValue.FromString(string.Create(width, (text, fill), static (destination, state) =>
-                {
-                    var prefix = destination[..(destination.Length - state.text.Length)];
-                    var pattern = state.fill.AsSpan();
-                    for (int offset = 0; offset < prefix.Length;)
-                    {
-                        int count = Math.Min(pattern.Length, prefix.Length - offset);
-                        pattern[..count].CopyTo(prefix[offset..]);
-                        offset += count;
-                    }
-                    state.text.AsSpan().CopyTo(destination[prefix.Length..]);
-                }));
-            },
-            ["String::padEnd"] = args =>
-            {
-                string text = S(args[0]);
-                if (args.Length == 1) return TsValue.FromString(text);
-                double numericWidth = D(args[1]);
-                int width = (int)numericWidth;
-                string fill = args.Length > 2 && args[2] is not TsVoid ? S(args[2]) : " ";
-                if (IsNegativeStringPaddingWidth(args[1], numericWidth)) return TsValue.FromString(text);
-                if (width < 0) return TsValue.FromString(text.PadRight(width));
-                if (width <= text.Length || fill.Length == 0) return TsValue.FromString(text);
-                if (fill.Length == 1) return TsValue.FromString(text.PadRight(width, fill[0]));
-
-                return TsValue.FromString(string.Create(width, (text, fill), static (destination, state) =>
-                {
-                    state.text.AsSpan().CopyTo(destination);
-                    var suffix = destination[state.text.Length..];
-                    var pattern = state.fill.AsSpan();
-                    for (int offset = 0; offset < suffix.Length;)
-                    {
-                        int count = Math.Min(pattern.Length, suffix.Length - offset);
-                        pattern[..count].CopyTo(suffix[offset..]);
-                        offset += count;
-                    }
-                }));
-            },
-            ["String::split"] = args =>
-            {
-                string s = S(args[0]);
-                if (args.Length == 1 || args[1] is TsVoid)
-                {
-                    if (args.Length > 2 &&
-                        (args[2] is TsNull ||
-                            (((args[2] is TsInt32Value or TsInt64Value or TsUInt64Value or
-                                TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) ||
-                                (args[2] is TsStringValue undefinedTextLimit && IsStringSplitDecimalTextLimit(undefinedTextLimit.Value))) &&
-                                StringSplitLimit(D(args[2])) == 0)))
-                        return new TsArrayValue(new TsArray(0));
-
-                    var whole = new TsArray(1);
-                    whole.Add(TsValue.FromString(s));
-                    return new TsArrayValue(whole);
-                }
-
-                string sep = S(args[1]);
-                if ((args[1] is TsNull or TsStringValue or TsInt32Value or TsInt64Value or TsUInt64Value or
-                        TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) && args.Length > 2 &&
-                    ((args[2] is TsNull or TsInt32Value or TsInt64Value or TsUInt64Value or
-                        TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBoolValue) ||
-                        (args[1] is TsStringValue && args[2] is TsStringValue textLimit &&
-                            IsStringSplitDecimalTextLimit(textLimit.Value))))
-                {
-                    uint limit = args[2] is TsNull ? 0u : StringSplitLimit(D(args[2]));
-                    if (limit == 0)
-                        return new TsArrayValue(new TsArray(0));
-
-                    long maxParts = sep.Length == 0 ? s.Length : (long)s.Length / sep.Length + 1;
-                    if (limit < maxParts)
-                    {
-                        if (sep.Length == 0)
-                        {
-                            // Below s.Length, so the limit fits in an int.
-                            int count = (int)limit;
-                            var units = new TsArray(count);
-                            for (int i = 0; i < count; i++)
-                                units.Add(TsValue.FromString(s[i].ToString()));
-                            return new TsArrayValue(units);
-                        }
-
-                        var limited = new TsArray((int)Math.Min(4u, limit));
-                        int start = 0;
-                        while (true)
-                        {
-                            int match = s.IndexOf(sep, start, StringComparison.Ordinal);
-                            if (match < 0)
-                            {
-                                limited.Add(TsValue.FromString(s.Substring(start)));
-                                break;
-                            }
-
-                            limited.Add(TsValue.FromString(s.Substring(start, match - start)));
-                            if ((long)limited.Count == limit)
-                                break;
-                            start = match + sep.Length;
-                        }
-                        return new TsArrayValue(limited);
-                    }
-                }
-
-                var parts = sep.Length == 0
-                    ? s.Select(ch => ch.ToString()).ToArray()
-                    : s.Split(sep);
-                var result = new TsArray(parts.Length);
-                foreach (var part in parts) result.Add(TsValue.FromString(part));
-                return new TsArrayValue(result);
-            },
+            [NativeString.InvokeMemberReference] = NativeString.RejectUnscopedMemberReference,
+            ["String::charAt"] = NativeString.CharAt,
+            ["String::charCodeAt"] = NativeString.CharCodeAt,
+            ["String::codePointAt"] = NativeString.CodePointAt,
+            ["String::at"] = NativeString.At,
+            ["String::toUpperCase"] = args => TsValue.FromString(StringUppercaseExpansions.Uppercase(NativeString.Receiver(args))),
+            ["String::toLowerCase"] = args => TsValue.FromString(Lowercase(NativeString.Receiver(args))),
+            ["String::trim"] = args => TsValue.FromString(TrimEcmaWhitespace(NativeString.Receiver(args))),
+            ["String::trimStart"] = args => TsValue.FromString(TrimStartEcmaWhitespace(NativeString.Receiver(args))),
+            ["String::trimEnd"] = args => TsValue.FromString(TrimEndEcmaWhitespace(NativeString.Receiver(args))),
+            ["String::substring"] = NativeString.Substring,
+            ["String::slice"] = NativeString.Slice,
+            ["String::repeat"] = NativeString.Repeat,
+            ["String::concat"] = NativeString.Concat,
+            ["String::includes"] = args => NativeString.Search(args, NativeString.SearchKind.Includes),
+            ["String::startsWith"] = args => NativeString.Search(args, NativeString.SearchKind.Starts),
+            ["String::endsWith"] = args => NativeString.Search(args, NativeString.SearchKind.Ends),
+            ["String::indexOf"] = args => NativeString.Search(args, NativeString.SearchKind.IndexOf),
+            ["String::lastIndexOf"] = args => NativeString.Search(args, NativeString.SearchKind.LastIndexOf),
+            ["String::replace"] = args => NativeString.Replace(args, all: false),
+            ["String::replaceAll"] = args => NativeString.Replace(args, all: true),
+            ["String::padStart"] = args => NativeString.Pad(args, before: true),
+            ["String::padEnd"] = args => NativeString.Pad(args, before: false),
+            ["String::split"] = NativeString.Split,
         };
         return t;
-    }
-
-    private static bool IsNegativeStringPaddingWidth(TsValue widthArg, double numericWidth) =>
-        numericWidth < 0 &&
-        ((widthArg is TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or TsFloat64Value or TsDecimalValue) ||
-         (widthArg is TsStringValue && double.IsFinite(numericWidth)));
-
-    // Accept only whole fixed-point ASCII decimal text for this split limit.
-    private static bool IsStringSplitDecimalTextLimit(string text)
-    {
-        int index = 0;
-        if (index < text.Length && text[index] is '+' or '-')
-            index++;
-
-        int start = index;
-        while (index < text.Length && text[index] is >= '0' and <= '9')
-            index++;
-        if (index == start)
-            return false;
-        if (index == text.Length)
-            return true;
-        if (text[index++] != '.')
-            return false;
-
-        start = index;
-        while (index < text.Length && text[index] is >= '0' and <= '9')
-            index++;
-        return index > start && index == text.Length;
-    }
-
-    private static uint StringSplitLimit(double value)
-    {
-        if (!double.IsFinite(value))
-            return 0;
-
-        const double modulus = 4294967296d;
-        double remainder = Math.Truncate(value) % modulus;
-        return (uint)(remainder < 0 ? remainder + modulus : remainder);
     }
 
     private static int CountLeadingZeroBits32(double value) =>
@@ -1185,16 +768,6 @@ public static class Builtins
         return Math.Truncate(depth);
     }
 
-    private static bool IsNegativeRepeatCount(TsValue count) => count switch
-    {
-        TsInt32Value i => i.Value < 0,
-        TsFloat32Value f => f.Value <= -1f,
-        TsFloat64Value f => f.Value <= -1d,
-        TsDecimalValue d => decimal.Truncate(d.Value) is >= int.MinValue and <= -1m,
-        TsStringValue s => Math.Truncate(D(s)) is >= int.MinValue and <= -1d,
-        _ => false
-    };
-
     private static int I(TsValue v) => (int)D(v);
 
     private static TsValue ToBigInt(TsValue value) => value switch
@@ -1283,19 +856,6 @@ public static class Builtins
         return new TsThrownException(TsValue.FromObject(error));
     }
 
-    private static double StringEndsWithPosition(TsValue value)
-    {
-        if (value is TsStringValue text && text.Value.Contains('\u0085'))
-        {
-            var trimmed = TrimEcmaWhitespace(text.Value);
-            // The shared conversion uses .NET Trim, which would discard boundary NEL.
-            if (trimmed.Length > 0 && (trimmed[0] == '\u0085' || trimmed[^1] == '\u0085'))
-                return double.NaN;
-        }
-
-        return D(value);
-    }
-
     // ECMAScript WhiteSpace and LineTerminator; NEL is not included.
     internal static bool IsEcmaTrimWhitespace(char ch) =>
         ch is '\t' or '\v' or '\f' or '\uFEFF' or '\r' or '\n' or '\u2028' or '\u2029' ||
@@ -1335,17 +895,8 @@ public static class Builtins
         for (int i = text.IndexOf(capitalSigma); i >= 0 && i < text.Length;
              i = text.IndexOf(capitalSigma, i + 1))
         {
-            // A bounded Final_Sigma proof, not full Unicode context detection.
-            // Only acute is known ignorable here; unsupported units cannot prove a match.
-            int left = i - 1;
-            while (left >= 0 && text[left] == '\u0301') left--;
-            if (left < 0 || text[left] is not (>= '\u0391' and <= '\u03A1' or
-                >= '\u03A3' and <= '\u03A9' or >= '\u03B1' and <= '\u03C9'))
+            if (!StringFinalSigma.IsFinal(text, i))
                 continue;
-
-            int right = i + 1;
-            while (right < text.Length && text[right] == '\u0301') right++;
-            if (right < text.Length && text[right] != ' ') continue;
 
             // Both scans use the original text, including adjacent capital sigmas.
             rewritten ??= text.ToCharArray();

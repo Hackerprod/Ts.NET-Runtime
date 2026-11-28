@@ -401,7 +401,8 @@ public sealed class Interpreter
                 {
                     int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var fieldName = strings[fieldIdx];
-                    frame.Push(ReadFieldValue(frame.Pop(), fieldName));
+                    var receiver = frame.Pop();
+                    frame.Push(receiver is TsStringValue text ? NativeString.Read(text, fieldName) : ReadFieldValue(receiver, fieldName));
                     break;
                 }
 
@@ -1381,18 +1382,21 @@ public sealed class Interpreter
                             throw new InvalidOperationException("RegExp typed reference requires one operand");
                         frame.Push(NativeRegex.ReadTypedReference(frame.Pop()));
                     }
-                    else if (calleeName is NativeSet.InvokeMemberReference or NativeRegex.InvokeMemberReference)
+                    else if (calleeName is NativeSet.InvokeMemberReference or NativeRegex.InvokeMemberReference or NativeString.InvokeMemberReference)
                     {
                         if (argCount != 3)
-                            throw new InvalidOperationException(calleeName == NativeSet.InvokeMemberReference
-                                ? "Set member-reference call requires three operands"
-                                : "RegExp member-reference call requires three operands");
+                            throw new InvalidOperationException(calleeName switch
+                            {
+                                NativeSet.InvokeMemberReference => "Set member-reference call requires three operands",
+                                NativeRegex.InvokeMemberReference => "RegExp member-reference call requires three operands",
+                                _ => "String member-reference call requires three operands",
+                            });
                         var positional = ToArgumentArray(frame.Pop());
                         var callable = frame.Pop();
                         var receiver = frame.Pop();
-                        var invocationReceiver = (calleeName == NativeSet.InvokeMemberReference &&
-                            receiver is TsSetValue && NativeSet.IsIntrinsicReference(callable))
-                            || (receiver is TsRegexValue && NativeRegex.IsIntrinsicReference(callable))
+                        var invocationReceiver = (receiver is TsStringValue && NativeString.IsIntrinsicReference(callable))
+                            || (calleeName == NativeSet.InvokeMemberReference && receiver is TsSetValue && NativeSet.IsIntrinsicReference(callable))
+                            || (calleeName != NativeString.InvokeMemberReference && receiver is TsRegexValue && NativeRegex.IsIntrinsicReference(callable))
                             || (calleeName == NativeSet.InvokeMemberReference && receiver is TsGeneratorValue g
                                 && g.Frame?.Function.IsAsync != true && TryGeneratorReference(callable, out _))
                             ? receiver : null;
@@ -1449,7 +1453,7 @@ public sealed class Interpreter
                 {
                     int nameIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var name = strings[nameIdx];
-                    frame.Push(NativeSet.GetReference(name) ?? new TsFunctionValue(name));
+                    frame.Push(NativeSet.GetReference(name) ?? NativeString.GetReference(name) ?? new TsFunctionValue(name));
                     break;
                 }
 
@@ -1575,6 +1579,15 @@ public sealed class Interpreter
                     for (int i = argCount - 1; i >= 0; i--)
                         callArgs[i] = frame.Pop();
                     var resolvedName = ResolveVirtualCalleeName(calleeName, callArgs);
+
+                    // Native String selection must not be consumed by a warmed managed site.
+                    if ((NativeString.IsMethod(calleeName) ||
+                        (callArgs.Length > 0 && callArgs[0] is TsStringValue && NativeString.IsMethod(resolvedName))) &&
+                        Builtins.TryGet(resolvedName, out var stringMethod))
+                    {
+                        frame.Push(stringMethod(callArgs));
+                        break;
+                    }
 
                     // Do not let a previously cached managed method at this bare
                     // selector consume an actual native RegExp receiver.
@@ -1790,12 +1803,7 @@ public sealed class Interpreter
                     else if (target is TsUint8ArrayValue bytesVal)
                         frame.Push(Uint8ArrayOperations.ReadElement(bytesVal, index));
                     else if (target is TsStringValue strTarget)
-                    {
-                        int chIdx = AsInt32(index);
-                        frame.Push(chIdx >= 0 && chIdx < strTarget.Value.Length
-                            ? TsValue.FromString(strTarget.Value[chIdx].ToString())
-                            : TsValue.Null);
-                    }
+                        frame.Push(NativeString.Read(strTarget, index));
                     else if (target is TsMapValue map)
                         frame.Push(NativeMap.IsSizeKey(index) ? ReadFieldValue(map, "size") : map.Value.Get(index));
                     else if (target is TsSetValue set && index is TsStringValue name)
@@ -2696,7 +2704,8 @@ public sealed class Interpreter
         // pasa captured: null -> el singleton Array.Empty compartido, así
         // que dos cargas del mismo nombre son iguales; MakeClosure pasa un
         // array nuevo por evaluación, así que dos lambdas distintas no lo son.
-        if (TryGeneratorReference(left, out _) || TryGeneratorReference(right, out _))
+        if (TryGeneratorReference(left, out _) || TryGeneratorReference(right, out _) ||
+            NativeString.IsIntrinsicReference(left) || NativeString.IsIntrinsicReference(right))
             return false; // intrinsic identity equality was handled above
         if (left is TsFunctionValue lf && right is TsFunctionValue rf)
             return lf.FunctionName == rf.FunctionName && ReferenceEquals(lf.Captured, rf.Captured);
@@ -2929,6 +2938,9 @@ public sealed class Interpreter
 
         if (NativeRegex.IsIntrinsicReference(fnValue))
             return NativeRegex.TestWithReceiver(invocationReceiver, args);
+
+        if (NativeString.IsMethod(fnValue.FunctionName))
+            return NativeString.InvokeReference(fnValue, invocationReceiver, args);
 
         // Ciclo 10 (W, W-10): una clase no se invoca sin `new`. `NewObject`
         // no pasa por aquí (construye el frame del ctor directamente), así

@@ -36,7 +36,7 @@ public sealed class StringSplitNullLimitTests
             yield return new(id + "-one", "a,b", separator, N(1), first);
             yield return new(id + "-text-zero", "a,b", separator, S("0"), []);
             yield return new(id + "-text-one", "a,b", separator, S("1"), first);
-            yield return new(id + "-text-null", "a,b", separator, S("null"), all, VmOnly: true);
+            yield return new(id + "-text-null", "a,b", separator, S("null"), [], VmOnly: true);
         }
         foreach (var (id, receiver, separator) in new (string, string, TsValue)[]
         {
@@ -47,7 +47,7 @@ public sealed class StringSplitNullLimitTests
             yield return new(id + "-null", receiver, separator, TsValue.Null, []);
             yield return new(id + "-zero", receiver, separator, N(0), []);
             yield return new(id + "-one", receiver, separator, N(1), ["a"]);
-            yield return new(id + "-text-one", receiver, separator, S("1"), ["a", "b"], VmOnly: true);
+            yield return new(id + "-text-one", receiver, separator, S("1"), ["a"], VmOnly: true);
         }
         yield return new("empty-receiver-comma-null", "", S(","), TsValue.Null, []);
         yield return new("empty-receiver-undefined-null", "", TsValue.Void, TsValue.Null, []);
@@ -67,7 +67,7 @@ public sealed class StringSplitNullLimitTests
         yield return new("null-negative", "anullbnullc", TsValue.Null, N(-1), ["a", "b", "c"]);
         yield return new("null-no-match", "abc", TsValue.Null, N(1), ["abc"]);
         yield return new("unset-cap-two", "anullbnullc", TsValue.Void, N(2), ["anullbnullc"]);
-        yield return new("null-text-one", "anullbnullc", TsValue.Null, S("1"), ["a", "b", "c"], VmOnly: true);
+        yield return new("null-text-one", "anullbnullc", TsValue.Null, S("1"), ["a"], VmOnly: true);
     }
 
     internal static (string Source, string Evidence, TsValue[] Arguments, string[] Items) Observe(Row row)

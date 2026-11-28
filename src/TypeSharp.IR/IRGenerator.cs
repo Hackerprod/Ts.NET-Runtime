@@ -2104,6 +2104,23 @@ public sealed partial class IRGenerator
             GenerateMemberReferenceCall(call, regexReferenceTarget, InvokeRegexMemberReference);
             return;
         }
+        if (call.Callee is BoundMemberAccessExpression { IsNullConditional: true } optionalString
+            && IsStringMemberCandidate(optionalString) && !call.IsNullConditional && !hasSpread)
+        {
+            GenerateOptionalStringDotCall(call, optionalString);
+            return;
+        }
+        if (GetStringReferenceTarget(call, hasSpread) is { } stringReferenceTarget)
+        {
+            GenerateMemberReferenceCall(call, stringReferenceTarget, InvokeStringMemberReference,
+                guardStringReceiver: call.Callee switch
+                {
+                    BoundMemberAccessExpression member => member.IsNullConditional,
+                    BoundIndexExpression index => index.IsNullConditional,
+                    _ => false,
+                });
+            return;
+        }
         if (call.IsNullConditional)
         {
             GenerateOptionalCall(call);
@@ -2240,6 +2257,7 @@ public sealed partial class IRGenerator
 
     // Existing qualified Call with [receiver, property value, positional array].
     // The spelling cannot be defined by TypeScript source or linked as a user function.
+    private const string InvokeStringMemberReference = "String::<invoke-member-reference>";
     private const string InvokeSetMemberReference = "Set::<invoke-member-reference>";
     private const string InvokeRegexMemberReference = "RegExp::<invoke-member-reference>";
     private const string ReadTypedRegexTestReference = "RegExp::<typed-test-reference>";
@@ -2316,14 +2334,96 @@ public sealed partial class IRGenerator
         return null;
     }
 
+    private static bool IsStringMethodName(string name) => name is
+        "charAt" or "charCodeAt" or "codePointAt" or "at" or "toUpperCase" or "toLowerCase" or
+        "trim" or "trimStart" or "trimEnd" or "substring" or "slice" or "repeat" or "concat" or
+        "includes" or "startsWith" or "endsWith" or "indexOf" or "lastIndexOf" or "replace" or
+        "replaceAll" or "padStart" or "padEnd" or "split";
+
+    private static bool IsStringReceiver(TsType type)
+    {
+        while (type is TsNullableType nullable) type = nullable.ElementType;
+        return type is TsPrimitiveType { Name: "string" } ||
+            (type is TsUnionType union &&
+                union.Types.Any(t => t is TsPrimitiveType { Name: "string" }) &&
+                union.Types.All(t => t is TsNullType or TsUndefinedType or TsPrimitiveType { Name: "string" }));
+    }
+
+    private static bool IsStringMemberCandidate(BoundMemberAccessExpression member) =>
+        IsStringMethodName(member.Member.Name) &&
+        (IsStringReceiver(member.Object.Type) || member.Object.Type is TsAnyType);
+
+    private static BoundNode? GetStringReferenceTarget(BoundCallExpression call, bool hasSpread) => call.Callee switch
+    {
+        BoundMemberAccessExpression member when IsStringMemberCandidate(member) && (hasSpread || call.IsNullConditional)
+            => member.Object,
+        BoundIndexExpression { IsMapStorage: false } index when IsStringReceiver(index.Object.Type)
+            => index.Object,
+        BoundIndexExpression { IsMapStorage: false, Object.Type: TsAnyType, Index: BoundLiteralExpression { Value: string key } } index
+            when IsStringMethodName(key) => index.Object,
+        _ => null,
+    };
+
+    private void GenerateOptionalStringDotCall(BoundCallExpression call, BoundMemberAccessExpression member)
+    {
+        // Preserve the existing managed/erased dot fallback on a live receiver.
+        // Only the syntactic receiver guard for a represented String selector is new.
+        GenerateExpression(member.Object);
+        var func = _currentFunction!;
+        var skip = func.CreateBlock();
+        var invoke = func.CreateBlock();
+        var end = func.CreateBlock();
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.NullCheck));
+        EmitBranchTrue(skip.Id);
+        EmitBranch(invoke.Id);
+        _currentBlock = skip;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+        EmitBranch(end.Id);
+        _currentBlock = invoke;
+        foreach (var argument in call.Arguments) GenerateExpression(argument);
+        var qualified = member.Member is MethodSymbol { DeclaringClassName: "String" };
+        _currentBlock.Instructions.Add(new Instruction(qualified ? Opcode.Call : Opcode.CallVirt,
+            0, call.Arguments.Count + 1, qualified ? $"String::{member.Member.Name}" : member.Member.Name));
+        EmitBranch(end.Id);
+        _currentBlock = end;
+    }
+
     private void GenerateMemberReferenceCall(BoundCallExpression call, BoundNode target,
-        string? helper = InvokeSetMemberReference)
+        string? helper = InvokeSetMemberReference, bool guardStringReceiver = false)
     {
         // Keep the original receiver under the loaded value. Evaluate the key
         // (if any) and the property lookup before the argument expressions.
         int receiverSlot = _tempCounter++;
         GenerateExpression(target);
         EmitStoreLocal(receiverSlot);
+        if (!guardStringReceiver)
+        {
+            GenerateMemberReferenceFromSlot(call, helper, receiverSlot);
+            return;
+        }
+
+        EmitLoadLocal(receiverSlot);
+        var func = _currentFunction!;
+        var skip = func.CreateBlock();
+        var load = func.CreateBlock();
+        var end = func.CreateBlock();
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.NullCheck));
+        EmitBranchTrue(skip.Id);
+        EmitBranch(load.Id);
+        _currentBlock = skip;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+        EmitBranch(end.Id);
+        _currentBlock = load;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        GenerateMemberReferenceFromSlot(call, helper, receiverSlot);
+        EmitBranch(end.Id);
+        _currentBlock = end;
+    }
+
+    private void GenerateMemberReferenceFromSlot(BoundCallExpression call, string? helper, int receiverSlot)
+    {
         EmitLoadLocal(receiverSlot);
         if (call.Callee is BoundIndexExpression index)
             GenerateIndex(index, receiverSlot);
@@ -2781,8 +2881,10 @@ public sealed partial class IRGenerator
         // Consecuencia: `C?.f` como valor deja el valor-clase (W-7) en vez
         // del método; arreglar ese caso es otro ciclo.
         bool nativeSetMember = IsNativeSetMember(member);
+        bool nativeStringMember = member.Member is MethodSymbol { DeclaringClassName: "String" } &&
+            IsStringReceiver(member.Object.Type);
         if (member.Member is MethodSymbol methodSym && methodSym.DeclaringClassName != null
-            && !member.IsNullConditional && !nativeSetMember)
+            && !member.IsNullConditional && !nativeSetMember && !nativeStringMember)
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0,
                 $"{methodSym.DeclaringClassName}::{methodSym.RuntimeName ?? methodSym.Name}"));
@@ -2824,7 +2926,7 @@ public sealed partial class IRGenerator
             return;
         }
 
-        if (member.Member is not (FieldSymbol or PropertySymbol) && !nativeSetMember)
+        if (member.Member is not (FieldSymbol or PropertySymbol) && !nativeSetMember && !nativeStringMember)
             return;
 
         if (member.IsNullConditional)
