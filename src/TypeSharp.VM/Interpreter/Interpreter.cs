@@ -1445,7 +1445,7 @@ public sealed class Interpreter
                         var builtinArgs = new TsValue[argCount];
                         for (int i = argCount - 1; i >= 0; i--)
                             builtinArgs[i] = frame.Pop();
-                        frame.Push(builtin(builtinArgs));
+                        frame.Push(InvokeSelectedBuiltin(calleeName, builtin, builtinArgs, module, ctx, frame));
                     }
                     else if (TryGetHostFunction(calleeName, out var hostFunc))
                     {
@@ -1623,7 +1623,8 @@ public sealed class Interpreter
                     // selector consume an actual native RegExp receiver.
                     if (calleeName == "test" && callArgs.Length > 0 && callArgs[0] is TsRegexValue regex)
                     {
-                        frame.Push(NativeRegex.Test(regex, callArgs.Length > 1 ? callArgs[1] : TsValue.Void));
+                        frame.Push(NativeRegex.Test(regex, callArgs.Length > 1 ? callArgs[1] : TsValue.Void,
+                            RegexOwnCall(module, ctx, frame)));
                         break;
                     }
 
@@ -1668,7 +1669,7 @@ public sealed class Interpreter
                     else if (!NativeSet.IsMethod(resolvedName) && (Builtins.TryGet(resolvedName, out var builtin)
                         || (resolvedName == calleeName && Builtins.TryGet(calleeName, out builtin))))
                     {
-                        frame.Push(builtin(callArgs));
+                        frame.Push(InvokeSelectedBuiltin(resolvedName, builtin, callArgs, module, ctx, frame));
                     }
                     else if (TryGetHostFunction(resolvedName, out var hostFunc)
                         || (resolvedName == calleeName && TryGetHostFunction(calleeName, out hostFunc)))
@@ -1828,7 +1829,9 @@ public sealed class Interpreter
                 {
                     var index = frame.Pop();
                     var target = frame.Pop();
-                    frame.Push(ReadElementValue(target, index));
+                    frame.Push(target is TsRegexValue regex
+                        ? NativeRegex.ReadProperty(regex, NativeRegex.PropertyKey(index, RegexOwnCall(module, ctx, frame)))
+                        : ReadElementValue(target, index));
                     break;
                 }
 
@@ -1849,8 +1852,11 @@ public sealed class Interpreter
                     }
                     else if (target is TsSetValue && NativeSet.IsSizeKey(index))
                         throw NativeSet.TypeError(NativeSet.ReadonlySizeMessage);
-                    else if (target is TsRegexValue regex && NativeRegex.IsCursorKey(index))
-                        regex.ScriptLastIndex = value;
+                    else if (target is TsRegexValue regex)
+                    {
+                        if (NativeRegex.PropertyKey(index, RegexOwnCall(module, ctx, frame)) == "lastIndex")
+                            regex.ScriptLastIndex = value;
+                    }
                     else if (target is TsObjectValue objectTarget)
                         objectTarget.Value.SetField(ToPropertyKey(index), value);
                     else if (target is TsNull)
@@ -3202,6 +3208,15 @@ public sealed class Interpreter
         return frame;
     }
 
+    private NativeRegex.InvokeOwnMethod RegexOwnCall(BytecodeModule module, ExecutionContext context, CallFrame caller) =>
+        (method, receiver) => InvokeCallable(method, [], module, context, caller, receiver);
+
+    // Only an already-selected builtin receives special handling. This preserves
+    // the separate canonical reference, managed virtual, and host selection order.
+    private TsValue InvokeSelectedBuiltin(string name, Func<TsValue[], TsValue> builtin, TsValue[] args,
+        BytecodeModule module, ExecutionContext context, CallFrame caller) =>
+        name == NativeRegex.TestName ? NativeRegex.TestBuiltin(args, RegexOwnCall(module, context, caller)) : builtin(args);
+
     // Invokes any callable value (module function, closure, builtin, host
     // function). Shared by CALL_DYNAMIC and the higher-order array intrinsics.
     internal TsValue InvokeCallable(TsValue calleeValue, TsValue[] args, BytecodeModule module,
@@ -3215,7 +3230,7 @@ public sealed class Interpreter
                 module, ctx, caller);
 
         if (NativeRegex.IsIntrinsicReference(fnValue))
-            return NativeRegex.TestWithReceiver(invocationReceiver, args);
+            return NativeRegex.TestWithReceiver(invocationReceiver, args, RegexOwnCall(module, ctx, caller));
 
         if (NativeString.IsMethod(fnValue.FunctionName))
             return NativeString.InvokeReference(fnValue, invocationReceiver, args);
@@ -3246,7 +3261,7 @@ public sealed class Interpreter
         }
 
         if (Builtins.TryGet(fnValue.FunctionName, out var builtin))
-            return builtin(args);
+            return InvokeSelectedBuiltin(fnValue.FunctionName, builtin, args, module, ctx, caller);
 
         if (module.FunctionIndex.TryGetValue(fnValue.FunctionName, out int fnIdx))
         {

@@ -78,7 +78,11 @@ internal static class NativeString
     private static TsValue Slot(TsValue[] args, int index) => index < args.Length ? args[index] : TsValue.Void;
 
     internal static TsValue ConvertValue(TsValue[] args) =>
-        TsValue.FromString(args.Length == 0 ? "" : Text(args[0]));
+        TsValue.FromString(args.Length == 0 ? "" : args[0] is TsRegexValue regex ? NativeRegex.ScriptText(regex) : Text(args[0]));
+
+    // RegExp-local default conversion reuses the established primitive/array
+    // formatting without opt-in for any existing callers (including recursion).
+    internal static string RegExpDefaultText(TsValue value) => Text(value);
 
     private static string Text(TsValue value) => value switch
     {

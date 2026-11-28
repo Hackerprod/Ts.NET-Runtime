@@ -295,6 +295,8 @@ public sealed class TsRegexValue : TsValue
 
     // The script cursor is not used by the host Regex, RawValue or Test API.
     internal TsValue ScriptLastIndex { get; set; } = FromFloat64(0);
+    private Regex? _scriptMatcher;
+    internal Regex ScriptMatcher => _scriptMatcher ??= global::TypeSharp.VM.Interpreter.NativeRegex.CreateScriptMatcher(this);
 
     public string Pattern { get; }
     public string Flags { get; }

@@ -328,12 +328,7 @@ public static class Builtins
             ["String"] = NativeString.ConvertValue,
             ["Boolean"] = args => Bool(args.Length > 0 && Interpreter.AsBool(args[0])),
             ["BigInt"] = args => ToBigInt(args.Length == 0 ? TsValue.Void : args[0]),
-            ["RegExp::test"] = args =>
-            {
-                if (args.Length == 0 || args[0] is not TsRegexValue regex)
-                    throw new InvalidOperationException("RegExp.test requires a RegExp receiver and input");
-                return NativeRegex.Test(regex, args.Length > 1 ? args[1] : TsValue.Void);
-            },
+            [NativeRegex.TestName] = args => NativeRegex.TestBuiltin(args),
             ["Generator::next"] = args =>
             {
                 if (args.Length < 1 || args[0] is not TsGeneratorValue generator)

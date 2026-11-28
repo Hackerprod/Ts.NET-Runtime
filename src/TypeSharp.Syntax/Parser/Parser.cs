@@ -2214,14 +2214,25 @@ public sealed class Parser
         var slash = Advance();
         var pattern = new System.Text.StringBuilder();
         int classDepth = 0;
+        bool oddBackslashes = false;
+        Token? previousBackslash = null;
 
         while (!IsAtEnd())
         {
             var token = Advance();
             pattern.Append(' ', token.LeadingPlainSpaces);
-            if (token.Kind == TokenKind.OpenBracket) classDepth++;
-            else if (token.Kind == TokenKind.CloseBracket && classDepth > 0) classDepth--;
-            else if (token.Kind == TokenKind.Slash && classDepth == 0)
+            // These particular lexer tokens have a raw one-character spelling.
+            // A cooked token or discarded trivia cannot extend an escape run.
+            bool adjacent = previousBackslash is not null
+                && string.Equals(previousBackslash.Location.Source, token.Location.Source, StringComparison.Ordinal)
+                && previousBackslash.Location.Offset + 1 == token.Location.Offset;
+            bool escaped = adjacent && oddBackslashes;
+            bool backslash = token.Kind == TokenKind.Error && token.Text == "\\";
+            previousBackslash = backslash ? token : null;
+            oddBackslashes = backslash && !escaped;
+            if (!escaped && token.Kind == TokenKind.OpenBracket) classDepth++;
+            else if (!escaped && token.Kind == TokenKind.CloseBracket && classDepth > 0) classDepth--;
+            else if (!escaped && token.Kind == TokenKind.Slash && classDepth == 0)
             {
                 var flags = "";
                 if (Check(TokenKind.Identifier))
