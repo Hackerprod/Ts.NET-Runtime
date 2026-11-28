@@ -281,52 +281,29 @@ public static class Builtins
             ["Date::getUTCSeconds"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Seconds),
             ["Date::getUTCMilliseconds"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Milliseconds),
 
-            // Set instance members (receiver = args[0]).
+            // Set instance members use the historical receiver-prefixed Call ABI.
             ["Set::add"] = args =>
             {
-                var set = Set(args[0]);
-                if (args.Length < 2)
-                    throw new InvalidOperationException("Set.add requires a value argument");
-                set.Add(args[1]);
-                return args[0];
+                var receiver = NativeSet.RequireReceiver(args);
+                receiver.Value.Add(NativeSet.ArgOrVoid(args, 1));
+                return receiver;
             },
             ["Set::has"] = args =>
-            {
-                var set = Set(args[0]);
-                if (args.Length < 2)
-                    throw new InvalidOperationException("Set.has requires a value argument");
-                return Bool(set.Contains(args[1]));
-            },
+                Bool(NativeSet.RequireReceiver(args).Value.Contains(NativeSet.ArgOrVoid(args, 1))),
             ["Set::delete"] = args =>
-            {
-                var set = Set(args[0]);
-                if (args.Length < 2)
-                    throw new InvalidOperationException("Set.delete requires a value argument");
-                return Bool(set.Remove(args[1]));
-            },
+                Bool(NativeSet.RequireReceiver(args).Value.Remove(NativeSet.ArgOrVoid(args, 1))),
             ["Set::clear"] = args =>
             {
-                Set(args[0]).Clear();
+                NativeSet.RequireReceiver(args).Value.Clear();
                 return TsValue.Void;
             },
-            ["Set::values"] = args =>
-            {
-                var result = new TsArray();
-                foreach (var value in Set(args[0]).Entries)
-                    result.Add(value);
-                return new TsArrayValue(result);
-            },
-            ["Set::keys"] = args =>
-            {
-                var result = new TsArray();
-                foreach (var value in Set(args[0]).Entries)
-                    result.Add(value);
-                return new TsArrayValue(result);
-            },
+            ["Set::values"] = SnapshotSetValues,
+            ["Set::keys"] = SnapshotSetValues,
             ["Set::entries"] = args =>
             {
+                var receiver = NativeSet.RequireReceiver(args);
                 var result = new TsArray();
-                foreach (var value in Set(args[0]).Entries)
+                foreach (var value in receiver.Value.Entries)
                     result.Add(CreateEntryPair(value, value));
                 return new TsArrayValue(result);
             },
@@ -1521,9 +1498,14 @@ public static class Builtins
         ? b
         : throw new InvalidOperationException("Receiver is not a Uint8Array");
 
-    private static TsSet Set(TsValue v) => v is TsSetValue set
-        ? set.Value
-        : throw new InvalidOperationException("Receiver is not a Set");
+    private static TsValue SnapshotSetValues(TsValue[] args)
+    {
+        var receiver = NativeSet.RequireReceiver(args);
+        var result = new TsArray();
+        foreach (var value in receiver.Value.Entries)
+            result.Add(value);
+        return new TsArrayValue(result);
+    }
 
     internal static bool TryGetNativeDateTimestamp(TsObjectValue value, out double result) =>
         NativeDate.TryGetTimestamp(value, out result);

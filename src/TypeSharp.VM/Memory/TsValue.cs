@@ -654,7 +654,14 @@ public sealed class TsMap
 public sealed class TsSet
 {
     private readonly List<TsValue> _entries = new();
-    private readonly TsValueMapKeyComparer _comparer = TsValueMapKeyComparer.Instance;
+    private readonly IEqualityComparer<TsValue> _comparer;
+
+    // Public host Sets keep their historical comparator. Only native NewObject
+    // chooses the Number/BigInt profile, for the lifetime of that instance.
+    public TsSet() : this(false) { }
+
+    internal TsSet(bool useInterpretedMembership) =>
+        _comparer = useInterpretedMembership ? TsSetKeyComparer.Instance : TsValueMapKeyComparer.Instance;
 
     private ForEachCursor? _activeForEach;
 
@@ -745,9 +752,64 @@ public sealed class TsSet
     }
 }
 
+internal sealed class TsSetKeyComparer : IEqualityComparer<TsValue>
+{
+    internal static TsSetKeyComparer Instance { get; } = new();
+
+    private enum Domain { Other, IntegerNumber, FloatingNumber, BigInt }
+
+    private readonly record struct Key(Domain Kind, BigInteger Integer, double Float)
+    {
+        internal static Key Number(BigInteger value) => new(Domain.IntegerNumber, value, default);
+
+        internal static Key Number(double value) =>
+            double.IsFinite(value) && Math.Truncate(value) == value
+                ? Number(new BigInteger(value))
+                : new(Domain.FloatingNumber, default, value);
+    }
+
+    private static Key Classify(TsValue value) => value switch
+    {
+        TsInt32Value v => Key.Number(new BigInteger(v.Value)),
+        TsInt64Value v => Key.Number(new BigInteger(v.Value)),
+        TsUInt64Value v => Key.Number(new BigInteger(v.Value)),
+        TsFloat32Value v => Key.Number((double)v.Value),
+        TsFloat64Value v => Key.Number(v.Value),
+        TsDecimalValue v => Key.Number((double)v.Value),
+        TsBigIntValue v => new(Domain.BigInt, v.Value, default),
+        _ => default,
+    };
+
+    public bool Equals(TsValue? x, TsValue? y)
+    {
+        if (ReferenceEquals(x, y)) return true;
+        if (x is null || y is null) return false;
+        var a = Classify(x);
+        var b = Classify(y);
+        if (a.Kind != b.Kind) return false;
+        return a.Kind switch
+        {
+            Domain.Other => TsValueMapKeyComparer.Instance.Equals(x, y),
+            Domain.FloatingNumber => a.Float.Equals(b.Float), // Includes every NaN.
+            _ => a.Integer == b.Integer,
+        };
+    }
+
+    public int GetHashCode(TsValue value)
+    {
+        var key = Classify(value);
+        return key.Kind switch
+        {
+            Domain.Other => TsValueMapKeyComparer.Instance.GetHashCode(value),
+            Domain.FloatingNumber => HashCode.Combine(key.Kind, double.IsNaN(key.Float) ? double.NaN : key.Float),
+            _ => HashCode.Combine(key.Kind, key.Integer),
+        };
+    }
+}
+
 // Map's Number keys compare exact integer payloads across input widths,
 // without conflating rounded doubles with neighboring exact host ints.
-// Set retains its existing comparer and scripting numeric types stay intact.
+// Public host Sets retain their historical comparer; scripting numeric types stay intact.
 internal sealed class TsMapKeyComparer : IEqualityComparer<TsValue>
 {
     internal static TsMapKeyComparer Instance { get; } = new();
@@ -1047,11 +1109,15 @@ public sealed class TsHeap
         return new TsMap();
     }
 
-    public TsSet AllocateSet()
+    public TsSet AllocateSet() => AllocateSet(useInterpretedMembership: false);
+
+    internal TsSet AllocateInterpretedSet() => AllocateSet(useInterpretedMembership: true);
+
+    private TsSet AllocateSet(bool useInterpretedMembership)
     {
         Interlocked.Add(ref _logicalBytes, 64);
         Interlocked.Increment(ref _mapsCreated);
-        return new TsSet();
+        return new TsSet(useInterpretedMembership);
     }
 
     public bool IsOverLimit() => Interlocked.Read(ref _logicalBytes) > _maxBytes;

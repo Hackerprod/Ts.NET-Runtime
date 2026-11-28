@@ -5888,6 +5888,7 @@ public sealed class Binder
             {
                 var forEach = new MethodSymbol("forEach", TsType.Void, range) { DeclaringClassName = "Set" };
                 forEach.Parameters.Add(new ParameterSymbol("callback", TsType.Any, range));
+                forEach.Parameters.Add(new ParameterSymbol("thisArg", TsType.Any, range) { HasDefault = true });
                 return forEach;
             }
             default:

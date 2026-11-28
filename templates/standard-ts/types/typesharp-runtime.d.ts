@@ -186,10 +186,14 @@ interface Set<T> {
     keys(): T[];
     values(): T[];
     entries(): [T, T][];
-    forEach(callback: (value: T, key: T, set: Set<T>) => void): void;
+    forEach(callback: (value: T, key: T, set: Set<T>) => void, thisArg?: any): void;
 }
+/** Native Set also accepts the runtime's own generator values. */
 interface SetConstructor {
-    new <T>(values?: readonly T[] | null): Set<T>;
+    new (values: string): Set<string>;
+    new (values: Uint8Array): Set<number>;
+    new <K, V>(values: Map<K, V>): Set<[K, V]>;
+    new <T>(values?: readonly T[] | Set<T> | null): Set<T>;
 }
 declare const Set: SetConstructor;
 

@@ -27,7 +27,7 @@ public sealed class SetCopyConstructorTests(ITestOutputHelper output)
             source.add(append);
         }
         function makeMap(): Map<any, any> { return new Map<any, any>(); }
-        function rejectMap(source: Map<any, any>): Set<any> { return new Set<any>(source); }
+        function copyMap(source: Map<any, any>): Set<any> { return new Set<any>(source); }
         function omitted(): Set<int32> { return new Set<int32>(); }
         function nullInput(): Set<int32> { return new Set<int32>(null); }
         function undefinedInput(): Set<int32> { return new Set<int32>(undefined); }
@@ -101,9 +101,9 @@ public sealed class SetCopyConstructorTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public void ExistingConstructorInputsAndMapRejectionAreUnchanged()
+    public void ExistingConstructorInputsAndNativeMapCopy()
     {
-        var module = Compile("rejectMap");
+        var module = Compile("copyMap");
         var vm = new Vm();
         foreach (string route in new[] { "omitted", "nullInput", "undefinedInput" })
             Snapshot(vm, module, Set(vm.Execute(module, route)));
@@ -112,11 +112,49 @@ public sealed class SetCopyConstructorTests(ITestOutputHelper output)
         Assert.Equal(new[] { "b", "a", "n" }, strings.Select(entry => Assert.IsType<TsStringValue>(entry).Value).ToArray());
         var map = Assert.IsType<TsMapValue>(vm.Execute(module, "makeMap"));
         Assert.Equal(TsValueType.Map, map.ValueType);
-        bool rejected = false;
-        try { vm.Execute(module, "rejectMap", [map]); }
-        catch (InvalidOperationException error) when (IsNativeRejection(error)) { rejected = true; }
-        Assert.True(rejected, "Native Map input must still be rejected by PopulateSet");
-        output.WriteLine("RESULT controls omitted/null/undefined=empty array=3,1,2 string=b,a,n Map=PopulateSet rejection");
+        var key = Assert.IsType<TsObjectValue>(vm.Execute(module, "makeMember"));
+        var value = Assert.IsType<TsObjectValue>(vm.Execute(module, "makeMember"));
+        var secondKey = TsValue.FromString("second");
+        var secondValue = new TsInt32Value(2);
+        map.Value.Set(key, value);
+        map.Value.Set(secondKey, secondValue);
+
+        var first = Set(vm.Execute(module, "copyMap", [map]));
+        var second = Set(vm.Execute(module, "copyMap", [map]));
+        Assert.NotSame(first.Value, second.Value);
+        Assert.Equal(2, first.Value.Count);
+        Assert.Equal(2, second.Value.Count);
+        var firstPair = Assert.IsType<TsArrayValue>(first.Value.GetAt(0));
+        var secondPair = Assert.IsType<TsArrayValue>(second.Value.GetAt(0));
+        Assert.NotSame(firstPair.Value, secondPair.Value);
+        Assert.Collection(new[] { firstPair.Value, secondPair.Value }, CheckFirst, CheckFirst);
+        foreach (var set in new[] { first, second })
+        {
+            var pair = Assert.IsType<TsArrayValue>(set.Value.GetAt(1)).Value;
+            Assert.Equal(2, pair.Count);
+            Assert.Same(secondKey, pair.Get(0));
+            Assert.Same(secondValue, pair.Get(1));
+        }
+        firstPair.Value.Set(1, new TsInt32Value(11));
+        Assert.Same(value, map.Value.Get(key));
+        Assert.Same(value, secondPair.Value.Get(1));
+        Assert.True(first.Value.Contains(firstPair));
+        Assert.False(first.Value.Contains(secondPair));
+        var replacement = new TsInt32Value(9);
+        map.Value.Set(key, replacement);
+        Assert.Same(replacement, map.Value.Get(key));
+        Assert.Same(value, secondPair.Value.Get(1));
+        Assert.True(first.Value.Remove(firstPair));
+        Assert.Equal(2, second.Value.Count);
+        Assert.Equal(2, map.Value.Count);
+        output.WriteLine("RESULT controls omitted/null/undefined=empty array=3,1,2 string=b,a,n Map=ordered independent shallow pairs");
+
+        void CheckFirst(TsArray pair)
+        {
+            Assert.Equal(2, pair.Count);
+            Assert.Same(key, pair.Get(0));
+            Assert.Same(value, pair.Get(1));
+        }
     }
 
     private static bool IsNativeRejection(InvalidOperationException error) =>
@@ -173,7 +211,7 @@ public sealed class SetCopyConstructorTests(ITestOutputHelper output)
         var fn = syntax.Members.OfType<FunctionDeclarationSyntax>().Single(f => f.Name == route);
         var parameter = Assert.Single(fn.Parameters);
         Assert.Equal("source", parameter.Name);
-        Assert.Equal(route == "rejectMap" ? "Map" : "Set", Assert.IsType<NamedTypeSyntax>(parameter.TypeAnnotation).Name);
+        Assert.Equal(route == "copyMap" ? "Map" : "Set", Assert.IsType<NamedTypeSyntax>(parameter.TypeAnnotation).Name);
         var result = Assert.IsType<NamedTypeSyntax>(fn.ReturnType);
         Assert.Equal("Set", result.Name);
         Assert.Single(result.TypeArguments);
@@ -192,7 +230,7 @@ public sealed class SetCopyConstructorTests(ITestOutputHelper output)
         var constructor = Assert.IsType<BoundNewExpression>(boundReturn.Value);
         Assert.IsType<TsSetType>(constructor.ConstructedType);
         var argument = Assert.IsType<BoundVariableExpression>(Assert.Single(constructor.Arguments));
-        if (route == "rejectMap") Assert.IsType<TsMapType>(argument.Type);
+        if (route == "copyMap") Assert.IsType<TsMapType>(argument.Type);
         else Assert.IsType<TsSetType>(argument.Type);
         var ir = new IRGenerator().Generate(bound);
         var ops = ir.Functions.Single(f => f.Name == route).Blocks.SelectMany(block => block.Instructions).ToArray();

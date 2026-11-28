@@ -2064,12 +2064,24 @@ public sealed class IRGenerator
 
     private void GenerateCall(BoundCallExpression call)
     {
+        bool hasSpread = call.Arguments.Any(arg => arg is BoundSpreadExpression);
+        if (!call.IsNullConditional && call.Callee is BoundMemberAccessExpression { IsNullConditional: true } optionalSet
+            && IsNativeSetMember(optionalSet))
+        {
+            GenerateOptionalSetReceiverCall(call, optionalSet, hasSpread);
+            return;
+        }
+        if (GetSetReferenceTarget(call, hasSpread) is { } setReferenceTarget)
+        {
+            GenerateSetReferenceCall(call, setReferenceTarget);
+            return;
+        }
         if (call.IsNullConditional)
         {
             GenerateOptionalCall(call);
             return;
         }
-        if (call.Arguments.Any(arg => arg is BoundSpreadExpression))
+        if (hasSpread)
         {
             GenerateSpreadCall(call);
             return;
@@ -2196,6 +2208,132 @@ public sealed class IRGenerator
 
             _currentBlock!.Instructions.Add(new Instruction(Opcode.CallDynamic, call.Arguments.Count));
         }
+    }
+
+    // Existing qualified Call with [receiver, property value, positional array].
+    // The spelling cannot be defined by TypeScript source or linked as a user function.
+    private const string InvokeSetMemberReference = "Set::<invoke-member-reference>";
+
+    private static bool IsNativeSetMethodName(string name) => name is
+        "add" or "has" or "delete" or "clear" or "keys" or "values" or "entries" or "forEach";
+
+    private static bool IsNativeSetReceiver(TsType type)
+    {
+        while (type is TsNullableType nullable)
+            type = nullable.ElementType;
+        return type is TsSetType || (type is TsUnionType union
+            && union.Types.Count(t => t is not (TsNullType or TsUndefinedType)) == 1
+            && union.Types.Any(t => t is TsSetType));
+    }
+
+    private static bool IsNativeSetMember(BoundMemberAccessExpression member) =>
+        member.Member is MethodSymbol { DeclaringClassName: "Set" } method
+        && IsNativeSetReceiver(member.Object.Type) && IsNativeSetMethodName(method.Name);
+
+    private static BoundNode? GetSetReferenceTarget(BoundCallExpression call, bool hasSpread)
+    {
+        if (call.Callee is BoundIndexExpression { IsMapStorage: false, IsNullConditional: false } index
+            && (index.Object.Type is TsAnyType || IsNativeSetReceiver(index.Object.Type)))
+        {
+            // Known unrelated literals keep the original CallDynamic route.
+            // Only an evaluated key can need the runtime reference check.
+            if (index.Index is not BoundLiteralExpression literal ||
+                (literal.Value is string name && IsNativeSetMethodName(name)))
+                return index.Object;
+        }
+        if ((hasSpread || call.IsNullConditional) && call.Callee is BoundMemberAccessExpression member
+            && (IsNativeSetMember(member) ||
+                (member.Object.Type is TsAnyType && IsNativeSetMethodName(member.Member.Name))))
+            return member.Object;
+        return null;
+    }
+
+    private void GenerateSetReferenceCall(BoundCallExpression call, BoundNode target)
+    {
+        // Keep the original receiver under the loaded value. Evaluate the key
+        // (if any) and the property lookup before the argument expressions.
+        int receiverSlot = _tempCounter++;
+        GenerateExpression(target);
+        EmitStoreLocal(receiverSlot);
+        EmitLoadLocal(receiverSlot);
+        if (call.Callee is BoundIndexExpression index)
+            GenerateIndex(index, receiverSlot);
+        else
+            GenerateMemberAccess((BoundMemberAccessExpression)call.Callee, receiverSlot);
+
+        if (!call.IsNullConditional)
+        {
+            EmitSetReferenceInvocation(call.Arguments);
+            return;
+        }
+
+        var function = _currentFunction!;
+        var nullBlock = function.CreateBlock();
+        var invokeBlock = function.CreateBlock();
+        var endBlock = function.CreateBlock();
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.NullCheck));
+        EmitBranchTrue(nullBlock.Id);
+        EmitBranch(invokeBlock.Id);
+
+        _currentBlock = nullBlock;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // duplicated callable
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // callable
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // receiver
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+        EmitBranch(endBlock.Id);
+
+        _currentBlock = invokeBlock;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop)); // duplicated callable
+        EmitSetReferenceInvocation(call.Arguments);
+        EmitBranch(endBlock.Id);
+
+        _currentBlock = endBlock;
+    }
+
+    private void GenerateOptionalSetReceiverCall(BoundCallExpression call, BoundMemberAccessExpression member, bool hasSpread)
+    {
+        // s?.method(args): test the actual typed Set receiver before evaluating
+        // args. Do not alter generic erased/managed optional chaining.
+        GenerateExpression(member.Object);
+        var function = _currentFunction!;
+        var nullBlock = function.CreateBlock();
+        var invokeBlock = function.CreateBlock();
+        var endBlock = function.CreateBlock();
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Dup));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.NullCheck));
+        EmitBranchTrue(nullBlock.Id);
+        EmitBranch(invokeBlock.Id);
+
+        _currentBlock = nullBlock;
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+        EmitBranch(endBlock.Id);
+
+        _currentBlock = invokeBlock;
+        if (hasSpread)
+        {
+            // The extra receiver produces the member value, leaving the
+            // original receiver underneath for the existing Call adapter.
+            _currentBlock.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, member.Member.Name));
+            EmitSetReferenceInvocation(call.Arguments);
+        }
+        else
+        {
+            _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+            foreach (var argument in call.Arguments)
+                GenerateExpression(argument);
+            _currentBlock.Instructions.Add(new Instruction(Opcode.Call, 0, call.Arguments.Count + 1, $"Set::{member.Member.Name}"));
+        }
+        EmitBranch(endBlock.Id);
+        _currentBlock = endBlock;
+    }
+
+    private void EmitSetReferenceInvocation(IReadOnlyList<BoundNode> arguments)
+    {
+        GenerateArgumentArray(arguments);
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 3, InvokeSetMemberReference));
     }
 
     private void GenerateSpreadCall(BoundCallExpression call)
@@ -2571,8 +2709,9 @@ public sealed class IRGenerator
         // opcionales: este atajo no se aplica a accesos con `?.`.
         // Consecuencia: `C?.f` como valor deja el valor-clase (W-7) en vez
         // del método; arreglar ese caso es otro ciclo.
+        bool nativeSetMember = IsNativeSetMember(member);
         if (member.Member is MethodSymbol methodSym && methodSym.DeclaringClassName != null
-            && !member.IsNullConditional)
+            && !member.IsNullConditional && !nativeSetMember)
         {
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadFunc, 0, 0,
                 $"{methodSym.DeclaringClassName}::{methodSym.RuntimeName ?? methodSym.Name}"));
@@ -2605,7 +2744,7 @@ public sealed class IRGenerator
 
         GenerateExpressionOrLoadCaptured(member.Object, objectSlot);
 
-        if (member.Member is not (FieldSymbol or PropertySymbol))
+        if (member.Member is not (FieldSymbol or PropertySymbol) && !nativeSetMember)
             return;
 
         if (member.IsNullConditional)

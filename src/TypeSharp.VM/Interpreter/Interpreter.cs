@@ -408,7 +408,9 @@ public sealed class Interpreter
                     // result for other receivers.
                     bool hasField = receiver is TsObjectValue objVal
                         ? objVal.Value.Fields.ContainsKey(fieldName)
-                        : !StrictEquals(ReadFieldValue(receiver, fieldName), TsValue.Void);
+                        : receiver is TsSetValue
+                            ? NativeSet.HasProperty(fieldName)
+                            : !StrictEquals(ReadFieldValue(receiver, fieldName), TsValue.Void);
                     frame.Push(new TsBoolValue(hasField));
                     break;
                 }
@@ -426,6 +428,8 @@ public sealed class Interpreter
                     // no-objeto conservan el no-op silencioso de hoy.
                     else if (obj is TsMapValue && fieldName == "size")
                         throw NativeMap.TypeError(NativeMap.ReadonlySizeMessage);
+                    else if (obj is TsSetValue && fieldName == "size")
+                        throw NativeSet.TypeError(NativeSet.ReadonlySizeMessage);
                     else if (obj is TsNull)
                         throw new InvalidOperationException("Cannot index a null value");
                     break;
@@ -1220,7 +1224,7 @@ public sealed class Interpreter
                     int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var fieldName = strings[fieldIdx];
                     var obj = frame.Pop();
-                    bool deleted = obj is TsMapValue && fieldName == "size";
+                    bool deleted = (obj is TsMapValue or TsSetValue) && fieldName == "size";
                     if (obj is TsObjectValue objVal)
                         deleted = objVal.Value.Fields.Remove(fieldName) || objVal.Value.NativeDateTimestamp.HasValue;
                     frame.Push(new TsBoolValue(deleted));
@@ -1248,6 +1252,10 @@ public sealed class Interpreter
                     else if (obj is TsMapValue mapVal)
                     {
                         deleted = NativeMap.IsSizeKey(indexVal) || mapVal.Value.Remove(indexVal);
+                    }
+                    else if (obj is TsSetValue)
+                    {
+                        deleted = NativeSet.IsSizeKey(indexVal);
                     }
                     frame.Push(new TsBoolValue(deleted));
                     break;
@@ -1353,7 +1361,18 @@ public sealed class Interpreter
 
                     var calleeName = strings[funcIdx];
 
-                    if (HigherOrderIntrinsics.Contains(calleeName))
+                    if (calleeName == NativeSet.InvokeMemberReference)
+                    {
+                        if (argCount != 3)
+                            throw new InvalidOperationException("Set member-reference call requires three operands");
+                        var positional = ToArgumentArray(frame.Pop());
+                        var callable = frame.Pop();
+                        var receiver = frame.Pop();
+                        var invocationReceiver = receiver is TsSetValue && NativeSet.IsIntrinsicReference(callable)
+                            ? receiver : null;
+                        frame.Push(InvokeCallable(callable, positional, module, ctx, frame, invocationReceiver));
+                    }
+                    else if (HigherOrderIntrinsics.Contains(calleeName))
                     {
                         var intrinsicArgs = new TsValue[argCount];
                         for (int i = argCount - 1; i >= 0; i--)
@@ -1402,7 +1421,8 @@ public sealed class Interpreter
                 case Opcodes.LoadFunc: // LOAD_FUNC
                 {
                     int nameIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
-                    frame.Push(new TsFunctionValue(strings[nameIdx]));
+                    var name = strings[nameIdx];
+                    frame.Push(NativeSet.GetReference(name) ?? new TsFunctionValue(name));
                     break;
                 }
 
@@ -1481,7 +1501,14 @@ public sealed class Interpreter
                         callArgs[i] = frame.Pop();
                     var resolvedName = ResolveVirtualCalleeName(calleeName, callArgs);
 
-                    if (TryGetVirtualFieldCallable(calleeName, callArgs, out var fieldCallable, out var fieldArgs))
+                    // A qualified Set operand selects the native method regardless of
+                    // receiver; a bare selector does so only for an actual native Set.
+                    if (NativeSet.IsMethod(calleeName) ||
+                        (callArgs.Length > 0 && callArgs[0] is TsSetValue && NativeSet.IsMethod(resolvedName)))
+                    {
+                        frame.Push(InvokeNativeSet(resolvedName, callArgs, module, ctx, frame));
+                    }
+                    else if (TryGetVirtualFieldCallable(calleeName, callArgs, out var fieldCallable, out var fieldArgs))
                     {
                         frame.Push(InvokeCallable(fieldCallable, fieldArgs, module, ctx, frame));
                     }
@@ -1508,13 +1535,13 @@ public sealed class Interpreter
                         }
                         frame.Push(ExecuteManagedFrame(calleeFunc, newFrame, module, ctx));
                     }
-                    else if (HigherOrderIntrinsics.Contains(resolvedName)
-                        || (resolvedName == calleeName && HigherOrderIntrinsics.Contains(calleeName)))
+                    else if (!NativeSet.IsMethod(resolvedName) && (HigherOrderIntrinsics.Contains(resolvedName)
+                        || (resolvedName == calleeName && HigherOrderIntrinsics.Contains(calleeName))))
                     {
                         frame.Push(ExecuteHigherOrderIntrinsic(resolvedName, callArgs, module, ctx, frame));
                     }
-                    else if (Builtins.TryGet(resolvedName, out var builtin)
-                        || (resolvedName == calleeName && Builtins.TryGet(calleeName, out builtin)))
+                    else if (!NativeSet.IsMethod(resolvedName) && (Builtins.TryGet(resolvedName, out var builtin)
+                        || (resolvedName == calleeName && Builtins.TryGet(calleeName, out builtin))))
                     {
                         frame.Push(builtin(callArgs));
                     }
@@ -1579,8 +1606,8 @@ public sealed class Interpreter
                         var args = new TsValue[argCount];
                         for (int i = argCount - 1; i >= 0; i--)
                             args[i] = frame.Pop();
-                        var set = ctx.Heap.AllocateSet();
-                        PopulateSet(set, args);
+                        var set = ctx.Heap.AllocateInterpretedSet();
+                        PopulateSet(set, args, module, ctx, frame);
                         frame.Push(new TsSetValue(set));
                         break;
                     }
@@ -1689,6 +1716,8 @@ public sealed class Interpreter
                     }
                     else if (target is TsMapValue map)
                         frame.Push(NativeMap.IsSizeKey(index) ? ReadFieldValue(map, "size") : map.Value.Get(index));
+                    else if (target is TsSetValue set && index is TsStringValue name)
+                        frame.Push(NativeSet.ReadProperty(set, name.Value));
                     else if (target is TsObjectValue objectTarget)
                         frame.Push(ReadFieldValue(objectTarget, ToPropertyKey(index)));
                     else if (target is TsNull)
@@ -1713,6 +1742,8 @@ public sealed class Interpreter
                             throw NativeMap.TypeError(NativeMap.ReadonlySizeMessage);
                         map.Value.Set(index, value);
                     }
+                    else if (target is TsSetValue && NativeSet.IsSizeKey(index))
+                        throw NativeSet.TypeError(NativeSet.ReadonlySizeMessage);
                     else if (target is TsObjectValue objectTarget)
                         objectTarget.Value.SetField(ToPropertyKey(index), value);
                     else if (target is TsNull)
@@ -2116,6 +2147,30 @@ public sealed class Interpreter
         throw new InvalidOperationException($"Unregistered native Map method '{name}'");
     }
 
+    private TsValue InvokeNativeSet(string name, TsValue[] args, BytecodeModule module,
+        ExecutionContext ctx, CallFrame frame)
+    {
+        if (name == NativeSet.ForEach)
+            return ExecuteHigherOrderIntrinsic(name, args, module, ctx, frame);
+        if (Builtins.TryGet(name, out var builtin))
+            return builtin(args);
+        throw new InvalidOperationException($"Unregistered native Set method '{name}'");
+    }
+
+    private enum SetCallbackKind { Invalid, ClassReference, Callable }
+
+    // Classification follows InvokeCallable without running a callback or
+    // accepting an unrelated higher-order selector as a function value.
+    private SetCallbackKind ClassifySetCallback(TsFunctionValue callback, BytecodeModule module)
+    {
+        var name = callback.FunctionName;
+        if (name.EndsWith("::.ctor", StringComparison.Ordinal))
+            return SetCallbackKind.ClassReference;
+        return NativeSet.IsMethod(name) || NativeMap.IsMethod(name) || Builtins.TryGet(name, out _)
+            || module.FunctionIndex.ContainsKey(name) || TryGetHostFunction(name, out _)
+            ? SetCallbackKind.Callable : SetCallbackKind.Invalid;
+    }
+
     // Array members that take callbacks execute here, where the interpreter
     // can re-enter script functions for each element.
     private TsValue ExecuteHigherOrderIntrinsic(string name, TsValue[] args, BytecodeModule module,
@@ -2179,18 +2234,26 @@ public sealed class Interpreter
             return TsValue.Void;
         }
 
-        if (name == "Set::forEach")
+        if (name == NativeSet.ForEach)
         {
-            if (args.Length < 2 || args[0] is not TsSetValue setReceiver)
-                throw new InvalidOperationException("'Set::forEach' requires a set receiver and callback");
+            var setReceiver = NativeSet.RequireReceiver(args);
+            if (NativeSet.ArgOrVoid(args, 1) is not TsFunctionValue setCallback)
+                throw NativeSet.TypeError("Set.forEach callback is not callable");
+            var callbackKind = ClassifySetCallback(setCallback, module);
+            if (callbackKind == SetCallbackKind.Invalid)
+                throw NativeSet.TypeError("Set.forEach callback is not callable");
 
-            var callbackValue = args[1];
+            var thisArg = NativeSet.ArgOrVoid(args, 2);
             var set = setReceiver.Value;
             var cursor = set.BeginForEach();
             try
             {
                 while (set.TryReadForEachValue(cursor, out var value))
-                    Invoke(callbackValue, value, value, args[0]);
+                {
+                    if (callbackKind == SetCallbackKind.ClassReference)
+                        throw NativeSet.TypeError("Class constructor cannot be invoked without 'new'");
+                    InvokeCallable(setCallback, [value, value, setReceiver], module, ctx, frame, thisArg);
+                }
             }
             finally
             {
@@ -2506,7 +2569,7 @@ public sealed class Interpreter
         TsObjectValue objVal => objVal.Value.GetField(fieldName),
         TsArrayValue arrVal when fieldName == "length" => TsValue.FromInt32(arrVal.Value.Count),
         TsMapValue mapVal when fieldName == "size" => TsValue.FromFloat64(mapVal.Value.Count),
-        TsSetValue setVal when fieldName == "size" => TsValue.FromFloat64(setVal.Value.Count),
+        TsSetValue setVal => NativeSet.ReadProperty(setVal, fieldName),
         TsUint8ArrayValue bytesVal when fieldName is "length" or "byteLength" => TsValue.FromFloat64(bytesVal.Length),
         TsStringValue strVal when fieldName == "length" => TsValue.FromInt32(strVal.Value.Length),
         _ => TsValue.Null,
@@ -2617,31 +2680,58 @@ public sealed class Interpreter
         }
     }
 
-    private static void PopulateSet(TsSet set, TsValue[] args)
+    private void PopulateSet(TsSet set, TsValue[] args, BytecodeModule module, ExecutionContext ctx, CallFrame caller)
     {
-        if (args.Length == 0 || args[0] is TsNull or TsVoid)
+        if (args.Length == 0)
             return;
 
-        if (args[0] is TsStringValue stringValue)
+        switch (args[0])
         {
-            var values = MaterializeIterableValues(stringValue);
-            for (int i = 0; i < values.Count; i++)
-                set.Add(values.Get(i));
-            return;
+            case TsNull or TsVoid:
+                return;
+            case TsArrayValue array:
+                for (int i = 0; i < array.Value.Count; i++)
+                    set.Add(array.Value.Get(i));
+                return;
+            case TsStringValue text:
+                var values = MaterializeIterableValues(text);
+                for (int i = 0; i < values.Count; i++)
+                    set.Add(values.Get(i));
+                return;
+            case TsSetValue source:
+                foreach (var value in source.Value.Entries)
+                    set.Add(value);
+                return;
+            case TsUint8ArrayValue bytes:
+                for (int i = 0; i < bytes.Length; i++)
+                    set.Add(TsValue.FromInt32(bytes.Get(i)));
+                return;
+            case TsMapValue map:
+                foreach (var entry in map.Value.Entries)
+                {
+                    var pair = new TsArray(2);
+                    pair.Add(entry.Key);
+                    pair.Add(entry.Value);
+                    set.Add(new TsArrayValue(pair));
+                }
+                return;
+            case TsGeneratorValue generator:
+                while (true)
+                {
+                    // Charge every attempt, including legacy resumes that bypass
+                    // ExecuteFrameCore and the terminal done:true attempt.
+                    ctx.IncrementInstruction();
+                    ctx.CheckRecursionDepth();
+                    ctx.CheckMemory();
+                    ctx.CheckCancellation();
+                    var step = (TsObjectValue)ResumeGenerator(generator, module, ctx, caller, null, isThrow: false);
+                    if (step.Value.GetField("done") is TsBoolValue { Value: true })
+                        return;
+                    set.Add(step.Value.GetField("value"));
+                }
+            default:
+                throw NativeSet.TypeError("Set constructor requires an iterable");
         }
-
-        if (args[0] is TsSetValue source)
-        {
-            foreach (var entry in source.Value.Entries)
-                set.Add(entry);
-            return;
-        }
-
-        if (args[0] is not TsArrayValue entries)
-            throw new InvalidOperationException("Set constructor expects an array of values");
-
-        for (int i = 0; i < entries.Value.Count; i++)
-            set.Add(entries.Value.Get(i));
     }
 
     private static bool UsesBigIntSemantics(TsValue left, TsValue right) =>
@@ -2738,8 +2828,16 @@ public sealed class Interpreter
             throw new InvalidOperationException(
                 $"Class constructor '{fnValue.FunctionName[..^7]}' cannot be invoked without 'new'");
 
-        // Only Map native values opt into receiver-prefixed extraction. A
-        // positional value may never stand in for an omitted receiver.
+        // Native Set/Map use a separate receiver channel. A positional value
+        // may never stand in for a receiver omitted by a detached invocation.
+        if (NativeSet.IsMethod(fnValue.FunctionName))
+        {
+            var nativeArgs = new TsValue[args.Length + 1];
+            nativeArgs[0] = invocationReceiver ?? TsValue.Void;
+            Array.Copy(args, 0, nativeArgs, 1, args.Length);
+            return InvokeNativeSet(fnValue.FunctionName, nativeArgs, module, ctx, caller);
+        }
+
         if (NativeMap.IsMethod(fnValue.FunctionName))
         {
             var nativeArgs = new TsValue[args.Length + 1];
