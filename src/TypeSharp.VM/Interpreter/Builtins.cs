@@ -29,17 +29,17 @@ public static class Builtins
         var t = new Dictionary<string, Func<TsValue[], TsValue>>(StringComparer.Ordinal)
         {
             // ── Math ──
-            ["Math::abs"] = args => Num(Math.Abs(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::floor"] = args => Num(Math.Floor(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::ceil"] = args => Num(Math.Ceiling(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::round"] = args => Num(RoundJsNumber(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::trunc"] = args => args[0] is TsNull ? Num(0d) : Num(Math.Truncate(D(args[0]))),
-            ["Math::sqrt"] = args => Num(Math.Sqrt(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::cbrt"] = args => Num(Math.Cbrt(args[0] is TsNull ? 0d : D(args[0]))),
+            ["Math::abs"] = args => Num(Math.Abs(MathArgument(args))),
+            ["Math::floor"] = args => Num(Math.Floor(MathArgument(args))),
+            ["Math::ceil"] = args => Num(Math.Ceiling(MathArgument(args))),
+            ["Math::round"] = args => Num(RoundJsNumber(MathArgument(args))),
+            ["Math::trunc"] = args => Num(Math.Truncate(MathArgument(args))),
+            ["Math::sqrt"] = args => Num(Math.Sqrt(MathArgument(args))),
+            ["Math::cbrt"] = args => Num(Math.Cbrt(MathArgument(args))),
             ["Math::pow"] = args =>
             {
-                var @base = D(args[0]);
-                var exponent = D(args[1]);
+                var @base = MathArgument(args);
+                var exponent = MathArgument(args, 1);
                 // ECMAScript differs from Math.Pow for these five input combinations.
                 if ((@base == 1.0 && double.IsNaN(exponent)) ||
                     ((@base == 1.0 || @base == -1.0) && double.IsInfinity(exponent)))
@@ -47,66 +47,61 @@ public static class Builtins
 
                 return Num(Math.Pow(@base, exponent));
             },
-            ["Math::log"] = args => Num(Math.Log(
-                args.Length == 1 && args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0
-                    ? 0.0
-                    : args.Length == 1 && args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::log2"] = args => Num(Math.Log2(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::log10"] = args => Num(Math.Log10(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::exp"] = args => Num(Math.Exp(args[0] is TsNull ? 0d : D(args[0]))),
+            ["Math::log"] = args => Num(Math.Log(MathArgument(args))),
+            ["Math::log2"] = args => Num(Math.Log2(MathArgument(args))),
+            ["Math::log10"] = args => Num(Math.Log10(MathArgument(args))),
+            ["Math::exp"] = args => Num(Math.Exp(MathArgument(args))),
             ["Math::sign"] = args =>
             {
-                var n = args[0] is TsNull ? 0d : D(args[0]);
+                var n = MathArgument(args);
                 return Num(double.IsNaN(n) || n == 0.0 ? n : n < 0.0 ? -1.0 : 1.0);
             },
             ["Math::sin"] = args =>
             {
-                if (args.Length == 0) return Num(double.NaN);
-                var n = D(args[0]);
+                var n = MathArgument(args);
                 return Num(n == 0.0 ? n : System.Math.Sin(n));
             },
-            ["Math::cos"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Cos(args[0] is TsNull ? 0d : D(args[0]))),
-            ["Math::fround"] = args => Num(args.Length == 0 ? double.NaN :
-                args[0] is TsNull ? 0d : (double)(float)D(args[0])),
-            ["Math::clz32"] = args => Num(CountLeadingZeroBits32(D(args[0]))),
-            ["Math::imul"] = args => Num(unchecked((int)(ToUInt32(D(args[0])) * ToUInt32(D(args[1]))))),
-            ["Math::acos"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Acos(D(args[0]))),
-            ["Math::acosh"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Acosh(D(args[0]))),
+            ["Math::cos"] = args => Num(System.Math.Cos(MathArgument(args))),
+            ["Math::fround"] = args => Num((double)(float)MathArgument(args)),
+            ["Math::clz32"] = args => Num(CountLeadingZeroBits32(MathArgument(args))),
+            ["Math::imul"] = args =>
+            {
+                double left = MathArgument(args);
+                double right = MathArgument(args, 1);
+                return Num(unchecked((int)(ToUInt32(left) * ToUInt32(right))));
+            },
+            ["Math::acos"] = args => Num(System.Math.Acos(MathArgument(args))),
+            ["Math::acosh"] = args => Num(System.Math.Acosh(MathArgument(args))),
             ["Math::asin"] = args =>
             {
-                if (args.Length == 0) return Num(double.NaN);
-                var n = args[0] is TsNull ? 0d : D(args[0]);
+                var n = MathArgument(args);
                 return Num(n == 0.0 ? n : System.Math.Asin(n));
             },
             ["Math::asinh"] = args =>
             {
-                if (args.Length == 0) return Num(double.NaN);
-                var n = D(args[0]);
+                var n = MathArgument(args);
                 return Num(n == 0.0 ? n : System.Math.Asinh(n));
             },
-            ["Math::cosh"] = args => Num(args.Length == 0 ? double.NaN : System.Math.Cosh(D(args[0]))),
+            ["Math::cosh"] = args => Num(System.Math.Cosh(MathArgument(args))),
             ["Math::sinh"] = args =>
             {
-                if (args.Length == 0) return Num(double.NaN);
-                var n = D(args[0]);
+                var n = MathArgument(args);
                 return Num(n == 0.0 ? n : System.Math.Sinh(n));
             },
             ["Math::tan"] = args =>
             {
-                if (args.Length == 0) return Num(double.NaN);
-                var n = args[0] is TsNull ? 0d : D(args[0]);
+                var n = MathArgument(args);
                 return Num(n == 0.0 ? n : System.Math.Tan(n));
             },
             ["Math::atan"] = args =>
             {
-                if (args.Length == 0) return Num(double.NaN);
-                var n = args[0] is TsNull ? 0d : D(args[0]);
+                var n = MathArgument(args);
                 return Num(n == 0.0 ? n : System.Math.Atan(n));
             },
             ["Math::atan2"] = args =>
             {
-                if (args.Length < 2) return Num(double.NaN);
-                double y = D(args[0]), x = D(args[1]);
+                double y = MathArgument(args);
+                double x = MathArgument(args, 1);
                 if (double.IsNaN(y) || double.IsNaN(x)) return Num(double.NaN);
                 if (double.IsInfinity(y))
                 {
@@ -124,14 +119,12 @@ public static class Builtins
             },
             ["Math::atanh"] = args =>
             {
-                if (args.Length == 0) return Num(double.NaN);
-                var n = D(args[0]);
+                var n = MathArgument(args);
                 return Num(n == 0.0 ? n : System.Math.Atanh(n));
             },
             ["Math::tanh"] = args =>
             {
-                if (args.Length == 0) return Num(double.NaN);
-                var n = D(args[0]);
+                var n = MathArgument(args);
                 return Num(n == 0.0 ? n : System.Math.Tanh(n));
             },
             ["Math::random"] = _ => Num(Random.Shared.NextDouble()),
@@ -1083,74 +1076,68 @@ public static class Builtins
         return truncated == 0.0 ? Math.CopySign(0.0, value) : truncated;
     }
 
-    private static TsValue Min(TsValue[] args)
+    // This policy is local to Math: fixed methods read their actual argument
+    // slots in order, and an absent slot is the same as explicit undefined.
+    private static double MathArgument(TsValue[] args, int index = 0) =>
+        MathNumber(index < args.Length ? args[index] : TsValue.Void);
+
+    private static double MathNumber(TsValue value) => value switch
     {
-        // Keep the legacy coercion path for the whole call unless every
-        // argument is native numeric, even when an earlier argument is NaN.
-        foreach (var arg in args)
-        {
-            if (arg is not (TsInt32Value or TsInt64Value or TsUInt64Value or
-                TsFloat32Value or TsFloat64Value or TsDecimalValue))
-                return Num(args.Select(D).Min());
-        }
+        TsNull => 0d,
+        TsStringValue text => EcmaNumberText.Parse(text.Value),
+        TsBigIntValue => throw MathBigIntTypeError(),
+        TsInt32Value or TsInt64Value or TsUInt64Value or TsFloat32Value or
+            TsFloat64Value or TsDecimalValue or TsBoolValue => D(value),
+        _ => double.NaN
+    };
 
-        double best = double.PositiveInfinity;
-        foreach (var arg in args)
-        {
-            double value = D(arg);
-            if (double.IsNaN(value))
-                return Num(value);
-
-            if (value < best || (value == 0.0 && best == 0.0 &&
-                BitConverter.DoubleToInt64Bits(value) < 0 &&
-                BitConverter.DoubleToInt64Bits(best) == 0))
-                best = value;
-        }
-
-        return Num(best);
+    private static TsThrownException MathBigIntTypeError()
+    {
+        var error = new TsObject("TypeError");
+        error.SetField("name", TsValue.FromString("TypeError"));
+        error.SetField("message", TsValue.FromString("Cannot convert a BigInt value to a number"));
+        return new TsThrownException(TsValue.FromObject(error));
     }
 
-    private static TsValue Max(TsValue[] args)
+    private static TsValue Min(TsValue[] args) => Extremum(args, minimum: true);
+
+    private static TsValue Max(TsValue[] args) => Extremum(args, minimum: false);
+
+    private static TsValue Extremum(TsValue[] args, bool minimum)
     {
-        // Keep the legacy coercion path for the whole call unless every
-        // argument is native numeric, even when an earlier argument is NaN.
+        double best = minimum ? double.PositiveInfinity : double.NegativeInfinity;
+        bool hasNaN = false;
         foreach (var arg in args)
         {
-            if (arg is not (TsInt32Value or TsInt64Value or TsUInt64Value or
-                TsFloat32Value or TsFloat64Value or TsDecimalValue))
-                return Num(args.Select(D).Max());
-        }
-
-        double best = double.NegativeInfinity;
-        foreach (var arg in args)
-        {
-            double value = D(arg);
+            // A NaN determines the result but does not skip later coercion.
+            double value = MathNumber(arg);
             if (double.IsNaN(value))
-                return Num(value);
+            {
+                hasNaN = true;
+                continue;
+            }
 
-            if (value > best || (value == 0.0 && best == 0.0 &&
-                BitConverter.DoubleToInt64Bits(value) == 0 &&
-                BitConverter.DoubleToInt64Bits(best) < 0))
+            if (minimum ? value < best : value > best)
+                best = value;
+            else if (value == 0d && best == 0d && double.IsNegative(value) == minimum)
                 best = value;
         }
 
-        return Num(best);
+        return Num(hasNaN ? double.NaN : best);
     }
 
     private static TsValue Hypot(TsValue[] args)
     {
-        double max = 0.0;
+        Span<double> magnitudes = args.Length <= 16
+            ? stackalloc double[args.Length]
+            : new double[args.Length];
+        double max = 0d;
         bool hasInfinity = false;
         bool hasNaN = false;
-        foreach (var arg in args)
+        for (int i = 0; i < args.Length; i++)
         {
-            // Preserve the original coercion path for the entire call if any
-            // argument is neither a native numeric value nor undefined.
-            if (arg is not (TsInt32Value or TsInt64Value or TsUInt64Value or
-                TsFloat32Value or TsFloat64Value or TsDecimalValue or TsVoid))
-                return Num(Math.Sqrt(args.Select(D).Sum(v => v * v)));
-
-            double magnitude = Math.Abs(D(arg));
+            double magnitude = Math.Abs(MathNumber(args[i]));
+            magnitudes[i] = magnitude;
             if (double.IsInfinity(magnitude))
                 hasInfinity = true;
             else if (double.IsNaN(magnitude))
@@ -1159,20 +1146,16 @@ public static class Builtins
                 max = magnitude;
         }
 
-        if (hasInfinity)
-            return Num(double.PositiveInfinity);
-        if (hasNaN)
-            return Num(double.NaN);
-        if (max == 0.0)
-            return Num(0.0);
+        if (hasInfinity) return Num(double.PositiveInfinity);
+        if (hasNaN) return Num(double.NaN);
+        if (max == 0d) return Num(0d);
 
-        double sum = 0.0;
-        double compensation = 0.0;
-        foreach (var arg in args)
+        double sum = 0d;
+        double compensation = 0d;
+        foreach (double magnitude in magnitudes)
         {
-            // Divide directly, including when the scale is subnormal.
-            double scaled = Math.Abs(D(arg)) / max;
-            // Kahan summation retains small contributions to the norm.
+            // Direct division also works when the scale is subnormal.
+            double scaled = magnitude / max;
             double term = scaled * scaled - compensation;
             double next = sum + term;
             compensation = (next - sum) - term;

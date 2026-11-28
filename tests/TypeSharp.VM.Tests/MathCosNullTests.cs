@@ -118,7 +118,7 @@ public sealed class MathCosNullTests(ITestOutputHelper output)
         Assert.Equal(OneBits, observations[4].Bits);
         Assert.True(double.IsFinite(observations[5].Value));
         Assert.True(Math.Abs(observations[5].Value - 0.5403023058681398) <= 1e-15);
-        Assert.Equal(NaN, observations[6].Observed);
+        Assert.Equal(0L, observations[6].Bits);
 
         bool fixedNull = observations[0].Bits == OneBits;
         Assert.True(fixedNull || observations[0].Observed == NaN,
