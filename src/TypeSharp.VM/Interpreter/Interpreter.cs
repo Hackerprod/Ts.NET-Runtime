@@ -2141,7 +2141,7 @@ public sealed class Interpreter
     };
 
     // JS truthiness: 0, NaN, "" and null/undefined are falsy.
-    private static bool AsBool(TsValue value) => value switch
+    internal static bool AsBool(TsValue value) => value switch
     {
         TsBoolValue v => v.Value,
         TsInt32Value v => v.Value != 0,

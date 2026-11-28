@@ -311,16 +311,7 @@ public static class Builtins
             ["isNaN"] = args => Bool(double.IsNaN(MathNumber(NumberSlot(args)))),
             ["isFinite"] = args => Bool(double.IsFinite(MathNumber(NumberSlot(args)))),
             ["String"] = args => TsValue.FromString(args.Length > 0 ? S(args[0]) : ""),
-            ["Boolean"] = args => Bool(args.Length > 0 && args[0] switch
-            {
-                TsBoolValue b => b.Value,
-                TsNull => false,
-                TsStringValue s => s.Value.Length > 0,
-                TsArrayValue => true,
-                TsObjectValue => true,
-                TsMapValue or TsSetValue => true,
-                _ => D(args[0]) != 0 && !double.IsNaN(D(args[0]))
-            }),
+            ["Boolean"] = args => Bool(args.Length > 0 && Interpreter.AsBool(args[0])),
             ["BigInt"] = args => ToBigInt(args.Length == 0 ? TsValue.Void : args[0]),
             ["RegExp::test"] = args =>
             {
