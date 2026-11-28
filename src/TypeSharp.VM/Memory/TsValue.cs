@@ -358,8 +358,9 @@ public sealed class TsGeneratorValue : TsValue
         if (_legacyValues == null)
             return false;
 
-        if (_legacyIndex >= _legacyValues.Count)
+        if (Done || _legacyIndex >= _legacyValues.Count)
         {
+            Done = true;
             done = true;
             return true;
         }
@@ -550,7 +551,7 @@ public sealed class TsArray
 public sealed class TsMap
 {
     private readonly List<KeyValuePair<TsValue, TsValue>> _entries = new();
-    private readonly TsValueMapKeyComparer _comparer = TsValueMapKeyComparer.Instance;
+    private readonly TsMapKeyComparer _comparer = TsMapKeyComparer.Instance;
     private ForEachCursor? _activeForEach;
 
     internal sealed class ForEachCursor(ForEachCursor? previous)
@@ -744,6 +745,69 @@ public sealed class TsSet
     }
 }
 
+// Map's Number keys compare exact integer payloads across input widths,
+// without conflating rounded doubles with neighboring exact host ints.
+// Set retains its existing comparer and scripting numeric types stay intact.
+internal sealed class TsMapKeyComparer : IEqualityComparer<TsValue>
+{
+    internal static TsMapKeyComparer Instance { get; } = new();
+
+    private enum Domain { Other, IntegerNumber, FloatingNumber, BigInt }
+
+    private readonly record struct Key(Domain Kind, BigInteger Integer, double Floating)
+    {
+        internal static Key IntegerNumber(BigInteger value) => new(Domain.IntegerNumber, value, 0);
+
+        internal static Key Number(double value) =>
+            double.IsFinite(value) && Math.Truncate(value) == value
+                ? IntegerNumber(new BigInteger(value))
+                : new Key(Domain.FloatingNumber, default, value);
+    }
+
+    private static Key Normalize(TsValue value) => value switch
+    {
+        TsInt32Value v => Key.IntegerNumber(v.Value),
+        TsInt64Value v => Key.IntegerNumber(v.Value),
+        TsUInt64Value v => Key.IntegerNumber(v.Value),
+        TsFloat32Value v => Key.Number(v.Value),
+        TsFloat64Value v => Key.Number(v.Value),
+        TsDecimalValue v => Key.Number((double)v.Value),
+        TsBigIntValue v => new Key(Domain.BigInt, v.Value, 0),
+        _ => default,
+    };
+
+    public bool Equals(TsValue? x, TsValue? y)
+    {
+        if (ReferenceEquals(x, y))
+            return true;
+        if (x == null || y == null)
+            return false;
+        var a = Normalize(x);
+        var b = Normalize(y);
+        if (a.Kind != b.Kind)
+            return false;
+
+        return a.Kind switch
+        {
+            Domain.Other => TsValueMapKeyComparer.Instance.Equals(x, y),
+            Domain.FloatingNumber => a.Floating.Equals(b.Floating), // Includes one NaN class.
+            _ => a.Integer == b.Integer,
+        };
+    }
+
+    public int GetHashCode(TsValue value)
+    {
+        var key = Normalize(value);
+        return key.Kind switch
+        {
+            Domain.Other => TsValueMapKeyComparer.Instance.GetHashCode(value),
+            Domain.FloatingNumber => HashCode.Combine(key.Kind,
+                double.IsNaN(key.Floating) ? double.NaN : key.Floating),
+            _ => HashCode.Combine(key.Kind, key.Integer),
+        };
+    }
+}
+
 internal sealed class TsValueMapKeyComparer : IEqualityComparer<TsValue>
 {
     public static TsValueMapKeyComparer Instance { get; } = new();
@@ -855,6 +919,9 @@ public sealed class CallFrame
     private const int InitialStackSlots = 256;
     private const int MaxStackSlots = 1_048_576;
     private TsValue[] _stack;
+
+    // Separate from public arguments and the legacy class phantom slot.
+    internal TsValue InvocationReceiver { get; init; } = TsValue.Void;
 
     public BytecodeFunction Function { get; }
     public TsValue[] Locals { get; }

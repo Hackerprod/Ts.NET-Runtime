@@ -387,6 +387,10 @@ public sealed class Interpreter
                     frame.Push(frame.Locals[0]);
                     break;
 
+                case Opcodes.LoadInvocationReceiver:
+                    frame.Push(frame.InvocationReceiver);
+                    break;
+
                 case Opcodes.LoadField: // LOAD_FIELD
                 {
                     int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
@@ -420,6 +424,8 @@ public sealed class Interpreter
                     // AI: la escritura por punto sobre `null` lanza, como el
                     // camino de índice (`StoreElement`); los demás receptores
                     // no-objeto conservan el no-op silencioso de hoy.
+                    else if (obj is TsMapValue && fieldName == "size")
+                        throw NativeMap.TypeError(NativeMap.ReadonlySizeMessage);
                     else if (obj is TsNull)
                         throw new InvalidOperationException("Cannot index a null value");
                     break;
@@ -1214,7 +1220,7 @@ public sealed class Interpreter
                     int fieldIdx = ReadInt32(bytecode, ref frame.InstructionPointer);
                     var fieldName = strings[fieldIdx];
                     var obj = frame.Pop();
-                    bool deleted = false;
+                    bool deleted = obj is TsMapValue && fieldName == "size";
                     if (obj is TsObjectValue objVal)
                         deleted = objVal.Value.Fields.Remove(fieldName) || objVal.Value.NativeDateTimestamp.HasValue;
                     frame.Push(new TsBoolValue(deleted));
@@ -1241,7 +1247,7 @@ public sealed class Interpreter
                     }
                     else if (obj is TsMapValue mapVal)
                     {
-                        deleted = mapVal.Value.Remove(indexVal);
+                        deleted = NativeMap.IsSizeKey(indexVal) || mapVal.Value.Remove(indexVal);
                     }
                     frame.Push(new TsBoolValue(deleted));
                     break;
@@ -1484,6 +1490,11 @@ public sealed class Interpreter
                     {
                         frame.Push(generatorResult);
                     }
+                    // A polymorphic site's cached managed method must not steal a genuine Map call.
+                    else if (callArgs.Length > 0 && callArgs[0] is TsMapValue && NativeMap.IsMethod(resolvedName))
+                    {
+                        frame.Push(InvokeNativeMap(resolvedName, callArgs, module, ctx, frame));
+                    }
                     else if (TryResolveCachedCallee(frame.Function, instructionOffset, resolvedName, module, out int calleeIdx)
                         || (resolvedName == calleeName && TryResolveCachedCallee(frame.Function, instructionOffset, calleeName, module, out calleeIdx)))
                     {
@@ -1558,7 +1569,7 @@ public sealed class Interpreter
                         for (int i = argCount - 1; i >= 0; i--)
                             args[i] = frame.Pop();
                         var map = ctx.Heap.AllocateMap();
-                        PopulateMap(map, args);
+                        PopulateMap(map, args, module, ctx, frame);
                         frame.Push(new TsMapValue(map));
                         break;
                     }
@@ -1676,6 +1687,8 @@ public sealed class Interpreter
                             ? TsValue.FromString(strTarget.Value[chIdx].ToString())
                             : TsValue.Null);
                     }
+                    else if (target is TsMapValue map)
+                        frame.Push(NativeMap.IsSizeKey(index) ? ReadFieldValue(map, "size") : map.Value.Get(index));
                     else if (target is TsObjectValue objectTarget)
                         frame.Push(ReadFieldValue(objectTarget, ToPropertyKey(index)));
                     else if (target is TsNull)
@@ -1694,6 +1707,12 @@ public sealed class Interpreter
                         arrVal.Value.Set(AsInt32(index), value);
                     else if (target is TsUint8ArrayValue bytesVal)
                         Uint8ArrayOperations.WriteElement(bytesVal, index, value);
+                    else if (target is TsMapValue map)
+                    {
+                        if (NativeMap.IsSizeKey(index))
+                            throw NativeMap.TypeError(NativeMap.ReadonlySizeMessage);
+                        map.Value.Set(index, value);
+                    }
                     else if (target is TsObjectValue objectTarget)
                         objectTarget.Value.SetField(ToPropertyKey(index), value);
                     else if (target is TsNull)
@@ -2087,6 +2106,16 @@ public sealed class Interpreter
         "Array::sort", "Array::flatMap", "Array::from", "Map::forEach", "Set::forEach"
     };
 
+    private TsValue InvokeNativeMap(string name, TsValue[] args, BytecodeModule module,
+        ExecutionContext ctx, CallFrame frame)
+    {
+        if (name == "Map::forEach")
+            return ExecuteHigherOrderIntrinsic(name, args, module, ctx, frame);
+        if (Builtins.TryGet(name, out var builtin))
+            return builtin(args);
+        throw new InvalidOperationException($"Unregistered native Map method '{name}'");
+    }
+
     // Array members that take callbacks execute here, where the interpreter
     // can re-enter script functions for each element.
     private TsValue ExecuteHigherOrderIntrinsic(string name, TsValue[] args, BytecodeModule module,
@@ -2127,16 +2156,21 @@ public sealed class Interpreter
 
         if (name == "Map::forEach")
         {
-            if (args.Length < 2 || args[0] is not TsMapValue mapReceiver)
-                throw new InvalidOperationException("'Map::forEach' requires a map receiver and callback");
+            var mapReceiver = NativeMap.RequireReceiver(args);
+            if (NativeMap.ArgOrVoid(args, 1) is not TsFunctionValue mapCallback)
+                throw NativeMap.TypeError("Map.forEach callback is not callable");
 
-            var callbackValue = args[1];
+            var thisArg = NativeMap.ArgOrVoid(args, 2);
             var map = mapReceiver.Value;
             var cursor = map.BeginForEach();
             try
             {
                 while (map.TryReadForEachEntry(cursor, out var entry))
-                    Invoke(callbackValue, entry.Value, entry.Key, args[0]);
+                {
+                    if (mapCallback.FunctionName.EndsWith("::.ctor", StringComparison.Ordinal))
+                        throw NativeMap.TypeError("Class constructor cannot be invoked without 'new'");
+                    InvokeCallable(mapCallback, [entry.Value, entry.Key, mapReceiver], module, ctx, frame, thisArg);
+                }
             }
             finally
             {
@@ -2514,20 +2548,72 @@ public sealed class Interpreter
     private static bool IsBigIntValue(TsValue value) =>
         value is TsInt64Value or TsUInt64Value or TsBigIntValue;
 
-    private static void PopulateMap(TsMap map, TsValue[] args)
+    private void PopulateMap(TsMap map, TsValue[] args, BytecodeModule module, ExecutionContext ctx, CallFrame caller)
     {
         if (args.Length == 0 || args[0] is TsNull or TsVoid)
             return;
 
-        if (args[0] is not TsArrayValue entries)
-            throw new InvalidOperationException("Map constructor expects an array of [key, value] entries");
-
-        for (int i = 0; i < entries.Value.Count; i++)
+        void AddEntry(TsValue value, TsGeneratorValue? source = null)
         {
-            if (entries.Value.Get(i) is not TsArrayValue pair || pair.Value.Count < 2)
-                throw new InvalidOperationException("Map constructor entry must be a [key, value] array");
+            switch (value)
+            {
+                case TsArrayValue pair:
+                    map.Set(pair.Value.Get(0), pair.Value.Get(1));
+                    return;
+                case TsUint8ArrayValue bytes:
+                    map.Set(Uint8ArrayOperations.ReadElement(bytes, TsValue.FromInt32(0)),
+                        Uint8ArrayOperations.ReadElement(bytes, TsValue.FromInt32(1)));
+                    return;
+                case TsObjectValue obj:
+                    var fields = obj.Value.Fields;
+                    map.Set(fields.TryGetValue("0", out var key) ? key : TsValue.Void,
+                        fields.TryGetValue("1", out var item) ? item : TsValue.Void);
+                    return;
+                case TsMapValue or TsSetValue or TsRegexValue or TsGeneratorValue or TsPromiseValue or TsFunctionValue:
+                    // Native reference values have no indexed fields on this runtime.
+                    map.Set(TsValue.Void, TsValue.Void);
+                    return;
+                default:
+                    // Close only an invalid yielded entry, never mask a generator's
+                    // own throw or resume it to fetch any later entries.
+                    if (source != null)
+                        CompleteGenerator(source, TsValue.Void);
+                    throw NativeMap.TypeError("Map constructor entry must be an object");
+            }
+        }
 
-            map.Set(pair.Value.Get(0), pair.Value.Get(1));
+        switch (args[0])
+        {
+            case TsArrayValue array:
+                for (int i = 0; i < array.Value.Count; i++)
+                    AddEntry(array.Value.Get(i));
+                return;
+            case TsMapValue other:
+                foreach (var entry in other.Value.Entries)
+                    map.Set(entry.Key, entry.Value);
+                return;
+            case TsSetValue set:
+                foreach (var entry in set.Value.Entries)
+                    AddEntry(entry);
+                return;
+            case TsStringValue text:
+                if (text.Value.Length > 0)
+                    AddEntry(TsValue.FromString(text.Value[..1]));
+                return;
+            case TsUint8ArrayValue bytes:
+                if (bytes.Length > 0)
+                    AddEntry(TsValue.FromInt32(bytes.Get(0)));
+                return;
+            case TsGeneratorValue generator:
+                while (true)
+                {
+                    var yielded = (TsObjectValue)ResumeGenerator(generator, module, ctx, caller, null, isThrow: false);
+                    if (yielded.Value.GetField("done") is TsBoolValue { Value: true })
+                        return;
+                    AddEntry(yielded.Value.GetField("value"), generator);
+                }
+            default:
+                throw NativeMap.TypeError("Map constructor requires an iterable");
         }
     }
 
@@ -2588,9 +2674,17 @@ public sealed class Interpreter
         name.StartsWith("\uE000private:", StringComparison.Ordinal);
 
     private static CallFrame CreateCallFrame(BytecodeFunction function, CallFrame? caller,
-        IReadOnlyList<TsValue> args, ExecutionContext ctx, IReadOnlyList<TsValue>? captured = null)
+        IReadOnlyList<TsValue> args, ExecutionContext ctx, IReadOnlyList<TsValue>? captured = null,
+        TsValue? invocationReceiver = null)
     {
-        var frame = new CallFrame(function, caller);
+        // Existing qualified script methods receive the phantom arg 0. A
+        // Map callback can override only the independent invocation receiver.
+        var frame = new CallFrame(function, caller)
+        {
+            InvocationReceiver = invocationReceiver ??
+                (args.Count > 0 && function.ParameterCount > 0 && function.Name.Contains("::", StringComparison.Ordinal)
+                    ? args[0] : TsValue.Void),
+        };
         int restIndex = function.RestParameterIndex;
 
         if (restIndex >= 0)
@@ -2632,7 +2726,7 @@ public sealed class Interpreter
     // Invokes any callable value (module function, closure, builtin, host
     // function). Shared by CALL_DYNAMIC and the higher-order array intrinsics.
     internal TsValue InvokeCallable(TsValue calleeValue, TsValue[] args, BytecodeModule module,
-        ExecutionContext ctx, CallFrame caller)
+        ExecutionContext ctx, CallFrame caller, TsValue? invocationReceiver = null)
     {
         if (calleeValue is not TsFunctionValue fnValue)
             throw new InvalidOperationException($"Value '{calleeValue}' is not callable");
@@ -2643,6 +2737,16 @@ public sealed class Interpreter
         if (fnValue.FunctionName.EndsWith("::.ctor", StringComparison.Ordinal))
             throw new InvalidOperationException(
                 $"Class constructor '{fnValue.FunctionName[..^7]}' cannot be invoked without 'new'");
+
+        // Only Map native values opt into receiver-prefixed extraction. A
+        // positional value may never stand in for an omitted receiver.
+        if (NativeMap.IsMethod(fnValue.FunctionName))
+        {
+            var nativeArgs = new TsValue[args.Length + 1];
+            nativeArgs[0] = invocationReceiver ?? TsValue.Void;
+            Array.Copy(args, 0, nativeArgs, 1, args.Length);
+            return InvokeNativeMap(fnValue.FunctionName, nativeArgs, module, ctx, caller);
+        }
 
         if (Builtins.TryGet(fnValue.FunctionName, out var builtin))
             return builtin(args);
@@ -2672,7 +2776,7 @@ public sealed class Interpreter
                 && calleeFunc.ParameterCount > 0
                 ? new[] { TsValue.Void }.Concat(args).ToArray()
                 : args;
-            var newFrame = CreateCallFrame(calleeFunc, caller, callArgs, ctx, fnValue.Captured);
+            var newFrame = CreateCallFrame(calleeFunc, caller, callArgs, ctx, fnValue.Captured, invocationReceiver);
             if (calleeFunc.IsGenerator)
                 return new TsGeneratorValue(module, newFrame);
 
@@ -2708,12 +2812,12 @@ public sealed class Interpreter
     private TsValue ResumeGenerator(TsGeneratorValue generator, BytecodeModule module, ExecutionContext ctx,
         CallFrame caller, TsValue? abruptValue, bool isThrow)
     {
-        if (generator.TryNextLegacy(out var legacyValue, out var legacyDone))
-            return CreateIteratorResult(legacyValue, legacyDone);
         if (generator.Done)
             return isThrow
                 ? throw new TsThrownException(abruptValue ?? TsValue.Void)
                 : CreateIteratorResult(TsValue.Void, done: true);
+        if (generator.TryNextLegacy(out var legacyValue, out var legacyDone))
+            return CreateIteratorResult(legacyValue, legacyDone);
         if (generator.Running)
             throw new InvalidOperationException("Generator is already running");
         if (generator.Frame == null || generator.Module == null)

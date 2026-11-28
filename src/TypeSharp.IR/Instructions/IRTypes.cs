@@ -134,6 +134,9 @@ public enum Opcode
     TypeCheck,
     NullCheck,
     HasFieldLiteral,
+
+    // Appended to preserve public Opcode enum values.
+    LoadInvocationReceiver,
 }
 
 public sealed class Instruction

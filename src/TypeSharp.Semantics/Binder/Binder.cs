@@ -30,7 +30,30 @@ public sealed class Binder
     private readonly Dictionary<string, Symbol> _exports = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Symbol> _moduleSymbols = new(StringComparer.Ordinal);
     private TsClassType? _currentClassType;
-    private ParameterSymbol? _currentThisSymbol;
+    private BoundReceiver? _currentReceiver;
+    private int _receiverCounter;
+    private static readonly BoundReceiver AbsentReceiver = new(BoundReceiverKind.Absent);
+    private static readonly BoundReceiver ForbiddenStaticReceiver = new(BoundReceiverKind.ForbiddenStaticField);
+
+    private BoundReceiver NewReceiver(BoundReceiverKind kind, TsType type, SourceRange range, int depth)
+    {
+        // The name is only a private IR closure key, never a symbol-table name.
+        var symbol = new ParameterSymbol($"\uE000receiver:{_receiverCounter++}", type, range);
+        _symbolFunctionDepth[symbol] = depth;
+        return new BoundReceiver(kind, symbol);
+    }
+
+    private (BoundReceiver? Receiver, bool Constructor, bool StaticInitializer) EnterReceiver(BoundReceiver? receiver)
+    {
+        var previous = (_currentReceiver, _inConstructor, _inStaticInitializer);
+        _currentReceiver = receiver;
+        _inConstructor = false;
+        _inStaticInitializer = false;
+        return previous;
+    }
+
+    private void RestoreReceiver((BoundReceiver? Receiver, bool Constructor, bool StaticInitializer) previous) =>
+        (_currentReceiver, _inConstructor, _inStaticInitializer) = previous;
     private TsType? _currentFunctionReturnType;
     private bool _currentFunctionIsAsync;
     private bool _currentFunctionIsGenerator;
@@ -629,6 +652,10 @@ public sealed class Binder
         var collector = new List<Symbol>();
         _captureCollectors.Add((_functionDepth, collector));
 
+        var ownedReceiver = NewReceiver(
+            BoundReceiverKind.OrdinaryInvocation, TsType.Any, func.Range, _functionDepth);
+        var previousReceiver = EnterReceiver(ownedReceiver);
+
         foreach (var p in sym.Parameters)
             DefineWithDepth(p);
         BindParameterDefaultValues(func.Parameters, sym.Parameters);
@@ -644,12 +671,13 @@ public sealed class Binder
         _currentFunctionIsAsync = prevIsAsync;
         _currentFunctionIsGenerator = prevIsGenerator;
 
+        RestoreReceiver(previousReceiver);
         _captureCollectors.RemoveAt(_captureCollectors.Count - 1);
         _functionDepth--;
         _symbolTable.PopScope();
         PopTypeParameters();
 
-        var declaration = new BoundFunctionDeclaration(sym, body!);
+        var declaration = new BoundFunctionDeclaration(sym, body!) { Receiver = ownedReceiver };
         declaration.CapturedVariables.AddRange(collector);
         return declaration;
     }
@@ -714,6 +742,10 @@ public sealed class Binder
         var collector = new List<Symbol>();
         _captureCollectors.Add((_functionDepth, collector));
 
+        var ownedReceiver = !lambda.IsOrdinaryFunction ? null : NewReceiver(
+            BoundReceiverKind.OrdinaryInvocation, TsType.Any, lambda.Range, _functionDepth);
+        var previousReceiver = ownedReceiver != null ? EnterReceiver(ownedReceiver) : default;
+
         foreach (var p in sym.Parameters)
             DefineWithDepth(p);
         BindParameterDefaultValues(lambda.Parameters, sym.Parameters);
@@ -721,8 +753,6 @@ public sealed class Binder
         var prevReturnType = _currentFunctionReturnType;
         var prevIsAsync = _currentFunctionIsAsync;
         var prevIsGenerator = _currentFunctionIsGenerator;
-        var prevInStaticInitializer = _inStaticInitializer;
-        _inStaticInitializer = false;
         _currentFunctionIsAsync = sym.IsAsync;
         _currentFunctionIsGenerator = sym.IsGenerator;
         _currentFunctionReturnType = sym.Type is TsAnyType ? null : BodyReturnType(sym.Type, sym.IsAsync);
@@ -730,14 +760,15 @@ public sealed class Binder
         _currentFunctionReturnType = prevReturnType;
         _currentFunctionIsAsync = prevIsAsync;
         _currentFunctionIsGenerator = prevIsGenerator;
-        _inStaticInitializer = prevInStaticInitializer;
 
+        if (ownedReceiver != null)
+            RestoreReceiver(previousReceiver);
         _captureCollectors.RemoveAt(_captureCollectors.Count - 1);
         _functionDepth--;
         _symbolTable.PopScope();
         PopTypeParameters();
 
-        var declaration = new BoundFunctionDeclaration(sym, body!);
+        var declaration = new BoundFunctionDeclaration(sym, body!) { Receiver = ownedReceiver };
         declaration.CapturedVariables.AddRange(collector);
         return declaration;
     }
@@ -1033,8 +1064,8 @@ public sealed class Binder
         var members = new List<BoundNode>();
         var prevClass = _currentClassType;
         _currentClassType = classType;
-        var prevInStaticInitializer = _inStaticInitializer;
-        _inStaticInitializer = false;
+        var previousReceiver = EnterReceiver(AbsentReceiver);
+        var constructorReceiver = NewReceiver(BoundReceiverKind.ClassPhantom, classType, range, _functionDepth + 1);
         // AG: pre-declaración de miembros antes del pre-pase Z, para que
         // `this.<campo>` en un inicializador resuelva contra `Fields` ya
         // poblados (las clases locales no pasan por `PreDeclareTypeMembers`).
@@ -1053,22 +1084,15 @@ public sealed class Binder
                 continue;
             var fieldType = ResolveType(field.TypeAnnotation);
             BoundNode boundInitializer;
+            var initializerReceiver = EnterReceiver(field.IsStatic ? ForbiddenStaticReceiver : constructorReceiver);
             if (field.IsStatic)
-            {
-                // Z-D8: `this` en un inicializador estático diagnostica (ver Z-B3).
-                // (Rev 3, R2: la variable de guardado se llama `prevStaticFlag` y
-                // no `prevInStaticInitializer`, porque ese nombre ya lo usa el
-                // restablecimiento de M2 a ámbito de método en `BindClassCore`
-                // (Z-B3); un local anidado con el mismo nombre no compila, CS0136.)
-                var prevStaticFlag = _inStaticInitializer;
                 _inStaticInitializer = true;
-                boundInitializer = BindExpression(field.Initializer);
-                _inStaticInitializer = prevStaticFlag;
-            }
             else
-            {
-                boundInitializer = BindExpression(field.Initializer);
-            }
+                _functionDepth++; // The prebound expressions execute in this class's ctor.
+            boundInitializer = BindExpression(field.Initializer);
+            if (!field.IsStatic)
+                _functionDepth--;
+            RestoreReceiver(initializerReceiver);
             // Z-D9: mismo chequeo que la declaración de variable (Binder.cs:1796).
             if (!TsType.IsCompatibleWith(boundInitializer.Type, fieldType))
                 _diagnostics.Error(
@@ -1090,14 +1114,14 @@ public sealed class Binder
                 };
                 instanceInitializerStatements.Add(new BoundExpressionStatement(
                     new BoundAssignmentExpression(
-                        new BoundMemberAccessExpression(new BoundThisExpression(classType), targetField),
+                        new BoundMemberAccessExpression(new BoundThisExpression(classType) { Receiver = constructorReceiver }, targetField),
                         boundInitializer)));
             }
         }
         int staticOrdinal = 0;
         foreach (var member in classMembers)
         {
-            var bound = BindClassMember(member, classType, boundInitializers, instanceInitializerStatements, staticOrdinal);
+            var bound = BindClassMember(member, classType, boundInitializers, instanceInitializerStatements, constructorReceiver, staticOrdinal);
             if (bound != null)
             {
                 members.Add(bound);
@@ -1106,6 +1130,7 @@ public sealed class Binder
             }
         }
         _currentClassType = prevClass;
+        RestoreReceiver(previousReceiver);
 
         _symbolTable.PopScope();
         PopTypeParameters();
@@ -1123,7 +1148,7 @@ public sealed class Binder
             defaultCtorSym.AccessModifier = TsAccessModifier.Public;
             classType.Constructor = new TsMethod("constructor", TsType.Void, new List<TsParameter>());
             members.Add(new BoundConstructorDeclaration(name, defaultCtorSym,
-                new BoundBlockStatement(instanceInitializerStatements)));
+                new BoundBlockStatement(instanceInitializerStatements)) { Receiver = constructorReceiver });
         }
 
         var declaration = new BoundClassDeclaration(sym, members);
@@ -1132,13 +1157,12 @@ public sealed class Binder
         ValidateAbstractImplementation(classType, range.Start);
         if (defineSymbol && sym.IsExported)
             _exports[exportName ?? name] = sym;
-        _inStaticInitializer = prevInStaticInitializer;
         return declaration;
     }
 
     private BoundNode? BindClassMember(SyntaxNode member, TsClassType classType,
         Dictionary<string, BoundNode> boundInitializers,
-        List<BoundNode> instanceInitializerStatements, int staticOrdinal = 0)
+        List<BoundNode> instanceInitializerStatements, BoundReceiver constructorReceiver, int staticOrdinal = 0)
     {
         switch (member)
         {
@@ -1165,21 +1189,16 @@ public sealed class Binder
 
                 _symbolTable.PushScope();
                 _functionDepth++;
-                var thisSymbol = new ParameterSymbol("this", classType, ctor.Range);
-                DefineWithDepth(thisSymbol);
+                var previousReceiver = EnterReceiver(constructorReceiver);
                 foreach (var p in ctorSym.Parameters)
                     DefineWithDepth(p);
                 BindParameterDefaultValues(ctor.Parameters, ctorSym.Parameters);
                 var prevReturnType = _currentFunctionReturnType;
-                var prevInConstructor = _inConstructor;
-                var prevThisSymbol = _currentThisSymbol;
-                _currentThisSymbol = thisSymbol;
                 _currentFunctionReturnType = TsType.Void;
                 _inConstructor = true;
                 var body = BindNode(ctor.Body);
-                _inConstructor = prevInConstructor;
                 _currentFunctionReturnType = prevReturnType;
-                _currentThisSymbol = prevThisSymbol;
+                RestoreReceiver(previousReceiver);
                 _functionDepth--;
                 _symbolTable.PopScope();
 
@@ -1194,7 +1213,7 @@ public sealed class Binder
                     propertyAssignments.Add(new BoundExpressionStatement(
                         new BoundAssignmentExpression(
                             new BoundMemberAccessExpression(
-                                new BoundThisExpression(classType),
+                                new BoundThisExpression(classType) { Receiver = constructorReceiver },
                                 new FieldSymbol(p.Name, paramSym.Type, p.Range)),
                             new BoundVariableExpression(paramSym))));
                 }
@@ -1230,7 +1249,7 @@ public sealed class Binder
                     userBlock.Statements.InsertRange(insertAt, instanceInitializerStatements);
                 }
 
-                return new BoundConstructorDeclaration(classType.Name, ctorSym, body!);
+                return new BoundConstructorDeclaration(classType.Name, ctorSym, body!) { Receiver = constructorReceiver };
             }
 
             case FieldDeclarationSyntax field:
@@ -1305,28 +1324,24 @@ public sealed class Binder
                 {
                     _symbolTable.PushScope();
                     _functionDepth++;
-                    var thisSymbol = new ParameterSymbol("this", classType, method.Range);
-                    DefineWithDepth(thisSymbol);
+                    var receiver = NewReceiver(method.IsStatic ? BoundReceiverKind.ClassPhantom : BoundReceiverKind.InstanceMethod,
+                        classType, method.Range, _functionDepth);
+                    var previousReceiver = EnterReceiver(receiver);
                     foreach (var p in methodSym.Parameters)
                         DefineWithDepth(p);
                     BindParameterDefaultValues(method.Parameters, methodSym.Parameters);
                     var prevReturnType = _currentFunctionReturnType;
                     var prevIsAsync = _currentFunctionIsAsync;
-                    var prevInConstructor = _inConstructor;
-                    var prevThisSymbol = _currentThisSymbol;
-                    _currentThisSymbol = thisSymbol;
                     _currentFunctionIsAsync = method.IsAsync;
                     _currentFunctionReturnType = BodyReturnType(methodType, method.IsAsync);
-                    _inConstructor = false;
                     var body = BindNode(method.Body);
-                    _inConstructor = prevInConstructor;
                     _currentFunctionReturnType = prevReturnType;
                     _currentFunctionIsAsync = prevIsAsync;
-                    _currentThisSymbol = prevThisSymbol;
+                    RestoreReceiver(previousReceiver);
                     _functionDepth--;
                     _symbolTable.PopScope();
                     PopTypeParameters();
-                    var boundMethod = new BoundMethodDeclaration(classType.Name, methodSym, body!);
+                    var boundMethod = new BoundMethodDeclaration(classType.Name, methodSym, body!) { Receiver = receiver };
                     boundMethod.Decorators.AddRange(method.Decorators.Select(decorator => BindExpression(decorator.Expression)));
                     return boundMethod;
                 }
@@ -1387,24 +1402,23 @@ public sealed class Binder
 
                 _symbolTable.PushScope();
                 _functionDepth++;
-                var thisSymbol = new ParameterSymbol("this", classType, accessor.Range);
-                DefineWithDepth(thisSymbol);
+                var receiver = NewReceiver(BoundReceiverKind.ClassPhantom, classType, accessor.Range, _functionDepth);
+                var previousReceiver = EnterReceiver(receiver);
                 ParameterSymbol? paramSym = null;
                 if (!accessor.IsGetter && accessor.Parameter != null)
                 {
                     paramSym = CreateParameterSymbol(accessor.Parameter);
                     DefineWithDepth(paramSym);
+                    BindParameterDefaultValues([accessor.Parameter], [paramSym]);
                 }
                 var prevReturnType = _currentFunctionReturnType;
-                var prevThisSymbol = _currentThisSymbol;
-                _currentThisSymbol = thisSymbol;
                 _currentFunctionReturnType = accessor.IsGetter ? BodyReturnType(accessorType, isAsync: false) : TsType.Void;
                 var body = BindNode(accessor.Body);
                 _currentFunctionReturnType = prevReturnType;
-                _currentThisSymbol = prevThisSymbol;
+                RestoreReceiver(previousReceiver);
                 _functionDepth--;
                 _symbolTable.PopScope();
-                var boundAccessor = new BoundAccessorDeclaration(classType.Name, propSym, accessor.IsGetter, paramSym, body!);
+                var boundAccessor = new BoundAccessorDeclaration(classType.Name, propSym, accessor.IsGetter, paramSym, body!) { Receiver = receiver };
                 boundAccessor.Decorators.AddRange(accessor.Decorators.Select(decorator => BindExpression(decorator.Expression)));
                 return boundAccessor;
             }
@@ -1415,7 +1429,9 @@ public sealed class Binder
                 _functionDepth++;
                 var prevReturnType = _currentFunctionReturnType;
                 _currentFunctionReturnType = TsType.Void;
+                var previousReceiver = EnterReceiver(AbsentReceiver);
                 var body = BindNode(staticBlock.Body);
+                RestoreReceiver(previousReceiver);
                 _currentFunctionReturnType = prevReturnType;
                 _functionDepth--;
                 _symbolTable.PopScope();
@@ -4530,7 +4546,10 @@ public sealed class Binder
     private BoundNode BindNew(NewExpressionSyntax newExpr)
     {
         var type = ResolveType(newExpr.Type);
-        var args = newExpr.Arguments.Select(BindExpression).ToList();
+        var args = newExpr.Arguments.Select((argument, i) =>
+            i == 0 && type is TsMapType map && argument is ArrayLiteralExpressionSyntax outer
+                ? BindMapEntryLiteral(outer, map)
+                : BindExpression(argument)).ToList();
 
         // `new Array(n)` builds a real array value, not a class instance.
         if (type is TsArrayType arrayNew)
@@ -4550,33 +4569,63 @@ public sealed class Binder
         return new BoundNewExpression(type, args);
     }
 
+    private BoundArrayLiteralExpression BindMapEntryLiteral(ArrayLiteralExpressionSyntax outer, TsMapType map)
+    {
+        var entries = new List<BoundNode>(outer.Elements.Count);
+        foreach (var entry in outer.Elements)
+        {
+            if (entry is not ArrayLiteralExpressionSyntax pair ||
+                pair.Elements.Any(element => element is SpreadExpressionSyntax))
+            {
+                entries.Add(BindExpression(entry));
+                continue;
+            }
+
+            var elements = new List<BoundNode>(pair.Elements.Count);
+            for (int i = 0; i < pair.Elements.Count; i++)
+            {
+                var expected = i == 0 ? map.KeyType : i == 1 ? map.ValueType : null;
+                var element = expected == null
+                    ? BindExpression(pair.Elements[i])
+                    : BindExpressionWithExpectedType(pair.Elements[i], expected);
+                if (expected != null && !TsType.IsCompatibleWith(element.Type, expected))
+                    _diagnostics.Error($"Map entry position {i} has type '{element.Type}', expected '{expected}'",
+                        pair.Elements[i].Range.Start);
+                elements.Add(element);
+            }
+            entries.Add(new BoundArrayLiteralExpression(elements, new TsArrayType(TsType.Any)));
+        }
+        return new BoundArrayLiteralExpression(entries, new TsArrayType(TsType.Any));
+    }
+
     private BoundThisExpression BindThis(ThisExpressionSyntax thisExpr)
     {
-        var type = _currentClassType ?? new TsClassType("Unknown");
+        var receiver = _currentReceiver ?? AbsentReceiver;
+        var type = receiver.Symbol?.Type ?? new TsClassType("Unknown");
         if (_inStaticInitializer)
         {
-            // Z-D8: en un inicializador estático no hay instancia; `this` no es
-            // la clase (ver §2.3: en métodos estáticos es Void, en bloques static
-            // revienta, E52) — se diagnostica en vez de emitir un LoadThis que
-            // depende de los locales del frame. La clase se referencia por nombre.
-            _diagnostics.Error("'this' cannot be used in a static field initializer",
-                thisExpr.Range.Start);
-            return new BoundThisExpression(type);
+            _diagnostics.Error("'this' cannot be used in a static field initializer", thisExpr.Range.Start);
+            return new BoundThisExpression(_currentClassType ?? type) { Receiver = ForbiddenStaticReceiver };
         }
-        if (_currentThisSymbol != null)
-            RegisterPossibleCapture(_currentThisSymbol);
-        return new BoundThisExpression(type);
+        if (receiver.Symbol is { } symbol)
+            RegisterPossibleCapture(symbol);
+        return new BoundThisExpression(type) { Receiver = receiver };
     }
 
     private BoundSuperExpression BindSuper(SuperExpressionSyntax superExpr)
     {
-        if (!_inConstructor || _currentClassType == null || _currentClassType.BaseType == null || _currentClassType.BaseType is not TsClassType baseClass)
+        if (!_inConstructor || _currentClassType?.BaseType is not TsClassType baseClass)
         {
             _diagnostics.Error("'super' can only be used in a derived class constructor",
                 superExpr.Range.Start, DiagnosticCode.TS2001);
             return new BoundSuperExpression(new TsClassType("Unknown"));
         }
-        return new BoundSuperExpression(baseClass);
+        var receiver = _currentReceiver;
+        var isLexical = receiver?.Symbol is { } symbol
+            && _symbolFunctionDepth.TryGetValue(symbol, out int depth) && depth < _functionDepth;
+        if (isLexical)
+            RegisterPossibleCapture(receiver!.Symbol!);
+        return new BoundSuperExpression(baseClass) { Receiver = receiver, IsLexicalReceiver = isLexical };
     }
 
     private BoundAwaitExpression BindAwait(AwaitExpressionSyntax awaitExpr)
@@ -4855,7 +4904,10 @@ public sealed class Binder
             {
                 var obj = BindExpression(indexExpr.Object);
                 var index = BindExpression(indexExpr.Index);
-                return new BoundDeleteIndexExpression(obj, index, indexExpr.IsNullConditional);
+                return new BoundDeleteIndexExpression(obj, index, indexExpr.IsNullConditional)
+                {
+                    IsMapStorage = EffectiveIndexReceiver(obj.Type, indexExpr.IsNullConditional) is TsMapType
+                };
             }
             default:
             {
@@ -5098,11 +5150,7 @@ public sealed class Binder
         var obj = BindExpression(indexExpr.Object);
         var index = BindExpression(indexExpr.Index);
         var indexType = WidenLiteralType(index.Type);
-        var objType = obj.Type;
-        if (objType is TsNullableType nullableObject)
-            objType = nullableObject.ElementType;
-        else if (indexExpr.IsNullConditional && TryRemoveNullish(objType, out var nonNullObjectType))
-            objType = nonNullObjectType;
+        var objType = EffectiveIndexReceiver(obj.Type, indexExpr.IsNullConditional);
 
         var classIndexSignature = objType is TsClassType cls
             ? cls.IndexSignatures.FirstOrDefault(sig => IsIndexKeyCompatible(indexType, sig.KeyType))
@@ -5136,7 +5184,17 @@ public sealed class Binder
 
         if (indexExpr.IsNullConditional && resultType is not TsNullableType)
             resultType = new TsNullableType(resultType);
-        return new BoundIndexExpression(obj, index, resultType, indexExpr.IsNullConditional);
+        return new BoundIndexExpression(obj, index, resultType, indexExpr.IsNullConditional)
+        {
+            IsMapStorage = objType is TsMapType
+        };
+    }
+
+    private static TsType EffectiveIndexReceiver(TsType type, bool isNullConditional)
+    {
+        if (type is TsNullableType nullable)
+            return nullable.ElementType;
+        return isNullConditional && TryRemoveNullish(type, out var nonNullish) ? nonNullish : type;
     }
 
     private static bool IsBuiltinStaticNamespace(string name) =>
@@ -5783,6 +5841,7 @@ public sealed class Binder
             {
                 var forEach = new MethodSymbol("forEach", TsType.Void, range) { DeclaringClassName = "Map" };
                 forEach.Parameters.Add(new ParameterSymbol("callback", TsType.Any, range));
+                forEach.Parameters.Add(new ParameterSymbol("thisArg", TsType.Any, range) { HasDefault = true });
                 return forEach;
             }
             default:

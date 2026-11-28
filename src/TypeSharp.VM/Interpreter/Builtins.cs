@@ -228,56 +228,42 @@ public static class Builtins
             // ── Map instance members (receiver = args[0]) ──
             ["Map::set"] = args =>
             {
-                var map = Map(args[0]);
-                if (args.Length < 3)
-                    throw new InvalidOperationException("Map.set requires key and value arguments");
-                map.Set(args[1], args[2]);
-                return args[0];
+                var receiver = NativeMap.RequireReceiver(args);
+                receiver.Value.Set(NativeMap.ArgOrVoid(args, 1), NativeMap.ArgOrVoid(args, 2));
+                return receiver;
             },
             ["Map::get"] = args =>
-            {
-                var map = Map(args[0]);
-                if (args.Length < 2)
-                    throw new InvalidOperationException("Map.get requires a key argument");
-                return map.Get(args[1]);
-            },
+                NativeMap.RequireReceiver(args).Value.Get(NativeMap.ArgOrVoid(args, 1)),
             ["Map::has"] = args =>
-            {
-                var map = Map(args[0]);
-                if (args.Length < 2)
-                    throw new InvalidOperationException("Map.has requires a key argument");
-                return Bool(map.Contains(args[1]));
-            },
+                Bool(NativeMap.RequireReceiver(args).Value.Contains(NativeMap.ArgOrVoid(args, 1))),
             ["Map::delete"] = args =>
-            {
-                var map = Map(args[0]);
-                if (args.Length < 2)
-                    throw new InvalidOperationException("Map.delete requires a key argument");
-                return Bool(map.Remove(args[1]));
-            },
+                Bool(NativeMap.RequireReceiver(args).Value.Remove(NativeMap.ArgOrVoid(args, 1))),
             ["Map::clear"] = args =>
             {
-                Map(args[0]).Clear();
+                NativeMap.RequireReceiver(args).Value.Clear();
                 return TsValue.Void;
             },
             ["Map::values"] = args =>
             {
+                var receiver = NativeMap.RequireReceiver(args);
                 var result = new TsArray();
-                foreach (var entry in Map(args[0]).Entries)
+                foreach (var entry in receiver.Value.Entries)
                     result.Add(entry.Value);
                 return new TsArrayValue(result);
             },
             ["Map::keys"] = args =>
             {
+                var receiver = NativeMap.RequireReceiver(args);
                 var result = new TsArray();
-                foreach (var entry in Map(args[0]).Entries)
+                foreach (var entry in receiver.Value.Entries)
                     result.Add(entry.Key);
                 return new TsArrayValue(result);
             },
             ["Map::entries"] = args =>
             {
+                var receiver = NativeMap.RequireReceiver(args);
                 var result = new TsArray();
-                foreach (var entry in Map(args[0]).Entries)
+                foreach (var entry in receiver.Value.Entries)
                     result.Add(CreateEntryPair(entry.Key, entry.Value));
                 return new TsArrayValue(result);
             },
@@ -1534,10 +1520,6 @@ public static class Builtins
     private static TsUint8ArrayValue Bytes(TsValue v) => v is TsUint8ArrayValue b
         ? b
         : throw new InvalidOperationException("Receiver is not a Uint8Array");
-
-    private static TsMap Map(TsValue v) => v is TsMapValue map
-        ? map.Value
-        : throw new InvalidOperationException("Receiver is not a Map");
 
     private static TsSet Set(TsValue v) => v is TsSetValue set
         ? set.Value

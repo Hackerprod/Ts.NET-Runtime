@@ -165,6 +165,9 @@ public sealed class IRGenerator
             case BoundFunctionDeclaration func:
                 if (func.CapturedVariables.Count > 0)
                     _capturesByFunction[func.Symbol.Name] = func.CapturedVariables.Select(s => s.Name).ToList();
+                foreach (var parameter in func.Symbol.Parameters)
+                    if (parameter.DefaultExpression != null)
+                        CollectCaptureInfo(parameter.DefaultExpression);
                 CollectCaptureInfo(func.Body);
                 break;
             case BoundClassDeclaration cls:
@@ -173,10 +176,15 @@ public sealed class IRGenerator
                 break;
             case BoundMethodDeclaration method:
                 foreach (var decorator in method.Decorators) CollectCaptureInfo(decorator);
+                foreach (var parameter in method.Symbol.Parameters)
+                    if (parameter.DefaultExpression != null)
+                        CollectCaptureInfo(parameter.DefaultExpression);
                 CollectCaptureInfo(method.Body);
                 break;
             case BoundAccessorDeclaration accessor:
                 foreach (var decorator in accessor.Decorators) CollectCaptureInfo(decorator);
+                if (accessor.Parameter?.DefaultExpression is { } accessorDefault)
+                    CollectCaptureInfo(accessorDefault);
                 CollectCaptureInfo(accessor.Body);
                 break;
             case BoundFieldInitializer field:
@@ -187,6 +195,9 @@ public sealed class IRGenerator
                 CollectCaptureInfo(staticBlock.Body);
                 break;
             case BoundConstructorDeclaration ctor:
+                foreach (var parameter in ctor.Symbol.Parameters)
+                    if (parameter.DefaultExpression != null)
+                        CollectCaptureInfo(parameter.DefaultExpression);
                 CollectCaptureInfo(ctor.Body);
                 break;
             case BoundBlockStatement block:
@@ -446,6 +457,7 @@ public sealed class IRGenerator
             _boxSlots[captured.Name] = slot;
         }
 
+        EmitOwnedReceiverBox(func.Receiver);
         GenerateDefaultParameterInitializers(func.Symbol.Parameters, argumentOffset: 0);
 
         // Parameters that inner functions capture are re-homed into boxes.
@@ -499,7 +511,7 @@ public sealed class IRGenerator
     }
 
     private FunctionIR GenerateMethodFunction(string className, string methodName, TsType returnType,
-        List<ParameterSymbol> explicitParams, BoundNode body, bool isAsync = false)
+        List<ParameterSymbol> explicitParams, BoundNode body, BoundReceiver? receiver, bool isAsync = false)
     {
         var parameters = new List<ParameterInfo>();
         parameters.Add(new ParameterInfo("this", new TsClassType(className)));
@@ -527,7 +539,9 @@ public sealed class IRGenerator
             _localMap[explicitParams[i].Name] = i + 1;
         _tempCounter = 1 + explicitParams.Count;
 
-        if (ContainsCapturedThis(body))
+        // Only legacy manually-built bound trees lack the explicit owner.
+        // Their original slot-0 capture convention remains supported.
+        if (receiver == null && ContainsCapturedThis(body))
         {
             int boxSlot = _tempCounter++;
             _currentBlock.Instructions.Add(new Instruction(Opcode.NewObject, 0, 0, "$Box"));
@@ -539,6 +553,7 @@ public sealed class IRGenerator
             _boxSlots["this"] = boxSlot;
         }
 
+        EmitOwnedReceiverBox(receiver);
         GenerateDefaultParameterInitializers(explicitParams, argumentOffset: 1);
 
         foreach (var param in explicitParams)
@@ -578,7 +593,7 @@ public sealed class IRGenerator
                 {
                     var funcIR = GenerateMethodFunction(
                         cls.Symbol.Name, ".ctor", TsType.Void,
-                        ctor.Symbol.Parameters, ctor.Body, ctor.Symbol.IsAsync);
+                        ctor.Symbol.Parameters, ctor.Body, ctor.Receiver, ctor.Symbol.IsAsync);
                     module.AddFunction(funcIR);
                     break;
                 }
@@ -586,7 +601,7 @@ public sealed class IRGenerator
                 {
                     var funcIR = GenerateMethodFunction(
                         cls.Symbol.Name, method.Symbol.RuntimeName ?? method.Symbol.Name, method.Symbol.Type,
-                        method.Symbol.Parameters, method.Body, method.Symbol.IsAsync);
+                        method.Symbol.Parameters, method.Body, method.Receiver, method.Symbol.IsAsync);
                     module.AddFunction(funcIR);
                     break;
                 }
@@ -640,6 +655,9 @@ public sealed class IRGenerator
         _tempCounter = parameters.Count;
         _currentBlock = funcIR.CreateBlock();
 
+        EmitOwnedReceiverBox(accessor.Receiver);
+        if (accessor.Parameter != null)
+            GenerateDefaultParameterInitializers([accessor.Parameter], argumentOffset: 1);
         GenerateStatement(accessor.Body);
         funcIR.LocalCount = _tempCounter;
         if (!_currentBlock.EndsInBranch)
@@ -1316,19 +1334,11 @@ public sealed class IRGenerator
             case BoundDestructuringAssignmentExpression destructuringAssign:
                 GenerateDestructuringAssignment(destructuringAssign);
                 break;
-            case BoundThisExpression:
-                if (_boxSlots.TryGetValue("this", out int thisBoxSlot))
-                {
-                    EmitLoadLocal(thisBoxSlot);
-                    _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, "v"));
-                }
-                else
-                {
-                    EmitLoadThis();
-                }
+            case BoundThisExpression thisExpression:
+                EmitBoundReceiver(thisExpression.Receiver);
                 break;
-            case BoundSuperExpression:
-                EmitLoadThis();
+            case BoundSuperExpression superExpression:
+                EmitSuperReceiver(superExpression);
                 break;
             case BoundMemberAccessExpression member:
                 GenerateMemberAccess(member);
@@ -1451,7 +1461,7 @@ public sealed class IRGenerator
                 if (!deleteIndex.IsNullConditional)
                 {
                     GenerateExpression(deleteIndex.Index);
-                    _currentBlock!.Instructions.Add(new Instruction(Opcode.DeleteIndex));
+                    EmitDeleteIndex(deleteIndex.IsMapStorage);
                     break;
                 }
 
@@ -1472,7 +1482,7 @@ public sealed class IRGenerator
 
                 _currentBlock = doDeleteBlock;
                 GenerateExpression(deleteIndex.Index);
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.DeleteIndex));
+                EmitDeleteIndex(deleteIndex.IsMapStorage);
                 EmitBranch(endBlock.Id);
 
                 _currentBlock = endBlock;
@@ -1991,7 +2001,7 @@ public sealed class IRGenerator
         EmitStoreLocal(tmpIdx);
         EmitLoadLocal(tmpObj);
         EmitLoadLocal(tmpIdx);
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadElement));
+        EmitLoadIndex(index.IsMapStorage);
         if (unary.IsPrefix)
         {
             EmitConstOne(isInt64, isFloat);
@@ -2008,7 +2018,7 @@ public sealed class IRGenerator
         EmitLoadLocal(tmpObj);
         EmitLoadLocal(tmpIdx);
         EmitLoadLocal(tmpVal);
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreElement));
+        EmitStoreIndex(index.IsMapStorage);
     }
 
     private void GenerateBoxedIncrement(BoundUnaryExpression unary, Symbol symbol)
@@ -2147,7 +2157,7 @@ public sealed class IRGenerator
         }
         else if (call.Callee is BoundSuperExpression superExpr)
         {
-            EmitLoadThis();
+            EmitSuperReceiver(superExpr);
             for (int i = 0; i < call.Arguments.Count; i++)
                 GenerateExpression(call.Arguments[i]);
 
@@ -2274,13 +2284,38 @@ public sealed class IRGenerator
             GenerateExpression(expression);
     }
 
+    // Known Maps address storage by raw key. A generic index remains a
+    // runtime dispatch, where the spelling "size" is the native property.
+    private void EmitLoadIndex(bool mapStorage) =>
+        _currentBlock!.Instructions.Add(mapStorage
+            ? new Instruction(Opcode.Call, 0, 2, "Map::get")
+            : new Instruction(Opcode.LoadElement));
+
+    private void EmitStoreIndex(bool mapStorage)
+    {
+        if (mapStorage)
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 3, "Map::set"));
+            _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
+        }
+        else
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreElement));
+        }
+    }
+
+    private void EmitDeleteIndex(bool mapStorage) =>
+        _currentBlock!.Instructions.Add(mapStorage
+            ? new Instruction(Opcode.Call, 0, 2, "Map::delete")
+            : new Instruction(Opcode.DeleteIndex));
+
     private void GenerateIndex(BoundIndexExpression index, int? objectSlot = null, int? indexSlot = null)
     {
         GenerateExpressionOrLoadCaptured(index.Object, objectSlot);
         if (!index.IsNullConditional)
         {
             GenerateExpressionOrLoadCaptured(index.Index, indexSlot);
-            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadElement));
+            EmitLoadIndex(index.IsMapStorage);
             return;
         }
 
@@ -2303,7 +2338,7 @@ public sealed class IRGenerator
         _currentBlock = loadBlock;
         _currentBlock.Instructions.Add(new Instruction(Opcode.Pop));
         GenerateExpressionOrLoadCaptured(index.Index, indexSlot);
-        _currentBlock.Instructions.Add(new Instruction(Opcode.LoadElement));
+        EmitLoadIndex(index.IsMapStorage);
         EmitBranch(endBlock.Id);
         _currentBlock = endBlock;
     }
@@ -2457,7 +2492,7 @@ public sealed class IRGenerator
             EmitLoadLocal(tmpIndexObj);
             EmitLoadLocal(tmpIndexIdx);
             EmitLoadLocal(tmpIndexVal);
-            _currentBlock!.Instructions.Add(new Instruction(Opcode.StoreElement));
+            EmitStoreIndex(indexTarget.IsMapStorage);
         }
         else if (assign.Target is BoundVariableExpression boxedTarget && IsBoxedSymbol(boxedTarget.Symbol))
         {
@@ -2637,6 +2672,59 @@ public sealed class IRGenerator
 
     private void EmitLoadArg(int index) =>
         _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadArg, index));
+
+    private void EmitUnboxedReceiver(BoundReceiver? receiver)
+    {
+        switch (receiver?.Kind)
+        {
+            case BoundReceiverKind.OrdinaryInvocation:
+            case BoundReceiverKind.InstanceMethod:
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadInvocationReceiver));
+                break;
+            case BoundReceiverKind.Absent:
+            case BoundReceiverKind.ForbiddenStaticField:
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+                break;
+            default:
+                EmitLoadThis(); // Class phantom slot, including legacy BoundThis nodes.
+                break;
+        }
+    }
+
+    private void EmitBoundReceiver(BoundReceiver? receiver)
+    {
+        string? key = receiver == null ? "this" : receiver.Symbol?.Name;
+        if (key != null && _boxSlots.TryGetValue(key, out int slot))
+        {
+            EmitLoadLocal(slot);
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadField, 0, 0, "v"));
+        }
+        else
+        {
+            EmitUnboxedReceiver(receiver);
+        }
+    }
+
+    private void EmitOwnedReceiverBox(BoundReceiver? receiver)
+    {
+        if (receiver?.Symbol is not { IsCaptured: true } symbol)
+            return;
+        int slot = _tempCounter++;
+        _currentBlock!.Instructions.Add(new Instruction(Opcode.NewObject, 0, 0, "$Box"));
+        _currentBlock.Instructions.Add(new Instruction(Opcode.Dup));
+        EmitUnboxedReceiver(receiver);
+        _currentBlock.Instructions.Add(new Instruction(Opcode.StoreField, 0, 0, "v"));
+        EmitStoreLocal(slot);
+        _boxSlots[symbol.Name] = slot;
+    }
+
+    private void EmitSuperReceiver(BoundSuperExpression expression)
+    {
+        if (expression.IsLexicalReceiver)
+            EmitBoundReceiver(expression.Receiver);
+        else
+            EmitLoadThis();
+    }
 
     private void EmitLoadThis() =>
         _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadThis));

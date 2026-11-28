@@ -262,6 +262,7 @@ public sealed class BoundDeleteFieldExpression : BoundNode
 // `delete obj[expr]` or `delete obj?.[expr]` — removes an indexed element, returns bool.
 public sealed class BoundDeleteIndexExpression : BoundNode
 {
+    public bool IsMapStorage { get; init; }
     public BoundNode Object { get; }
     public BoundNode Index { get; }
     public bool IsNullConditional { get; }
@@ -381,13 +382,25 @@ public sealed class BoundNewExpression : BoundNode
     }
 }
 
+// A receiver binding is not a source parameter. Its private symbol supplies
+// an identity for threading a lexical receiver through the existing closure ABI.
+public enum BoundReceiverKind
+{
+    Absent, OrdinaryInvocation, InstanceMethod, ClassPhantom, ForbiddenStaticField
+}
+
+public sealed record BoundReceiver(BoundReceiverKind Kind, ParameterSymbol? Symbol = null);
+
 public sealed class BoundThisExpression : BoundNode
 {
+    public BoundReceiver? Receiver { get; init; }
     public BoundThisExpression(TsType type) : base(BoundNodeKind.ThisExpression, type) { }
 }
 
 public sealed class BoundSuperExpression : BoundNode
 {
+    public BoundReceiver? Receiver { get; init; }
+    public bool IsLexicalReceiver { get; init; }
     public TsClassType BaseClass { get; }
 
     public BoundSuperExpression(TsClassType baseClass)
@@ -439,6 +452,7 @@ public sealed class BoundObjectLiteralExpression : BoundNode
 
 public sealed class BoundIndexExpression : BoundNode
 {
+    public bool IsMapStorage { get; init; }
     public BoundNode Object { get; }
     public BoundNode Index { get; }
     public bool IsNullConditional { get; }
@@ -700,6 +714,7 @@ public sealed class BoundTryStatement : BoundNode
 // Bound declarations
 public sealed class BoundFunctionDeclaration : BoundNode
 {
+    public BoundReceiver? Receiver { get; init; }
     public FunctionSymbol Symbol { get; }
     public BoundNode Body { get; }
 
@@ -717,6 +732,7 @@ public sealed class BoundFunctionDeclaration : BoundNode
 
 public sealed class BoundMethodDeclaration : BoundNode
 {
+    public BoundReceiver? Receiver { get; init; }
     public string ClassName { get; }
     public MethodSymbol Symbol { get; }
     public BoundNode Body { get; }
@@ -733,6 +749,7 @@ public sealed class BoundMethodDeclaration : BoundNode
 
 public sealed class BoundAccessorDeclaration : BoundNode
 {
+    public BoundReceiver? Receiver { get; init; }
     public string ClassName { get; }
     public PropertySymbol Symbol { get; }
     public bool IsGetter { get; }
@@ -754,6 +771,7 @@ public sealed class BoundAccessorDeclaration : BoundNode
 
 public sealed class BoundConstructorDeclaration : BoundNode
 {
+    public BoundReceiver? Receiver { get; init; }
     public string ClassName { get; }
     public MethodSymbol Symbol { get; }
     public BoundNode Body { get; }

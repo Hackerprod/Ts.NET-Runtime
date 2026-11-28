@@ -381,6 +381,7 @@ public sealed class LambdaExpressionSyntax : ExpressionSyntax
     public TypeSyntax? ReturnType { get; }
     public SyntaxNode Body { get; }
     public bool IsAsync { get; }
+    public bool IsOrdinaryFunction { get; init; }
     public bool IsGenerator { get; }
     public List<GenericParameterSyntax> GenericParameters { get; } = new();
 

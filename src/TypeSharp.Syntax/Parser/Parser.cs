@@ -2044,7 +2044,8 @@ public sealed class Parser
             TypeSyntax? returnType = Check(TokenKind.Colon) ? ParseTypeAnnotation() : null;
             var body = ParseBlock();
             return new LambdaExpressionSyntax(parameters, returnType, body, false,
-                new SourceRange(functionKeyword.Location, body.Range.End), isGenerator);
+                new SourceRange(functionKeyword.Location, body.Range.End), isGenerator)
+                { IsOrdinaryFunction = true };
         }
 
         if (Check(TokenKind.ClassKeyword))

@@ -152,7 +152,7 @@ public static class BytecodeCompiler
         Opcode.LoadConst_BigInt or Opcode.LoadConst_F32 or Opcode.LoadConst_F64 or
         Opcode.LoadConst_Decimal or Opcode.LoadConst_String or Opcode.LoadConst_Regex or Opcode.LoadConst_Bool or
         Opcode.LoadConst_Null or Opcode.LoadConst_Void or
-        Opcode.LoadLocal or Opcode.LoadArg or Opcode.LoadThis or
+        Opcode.LoadLocal or Opcode.LoadArg or Opcode.LoadThis or Opcode.LoadInvocationReceiver or
         Opcode.LoadField or Opcode.LoadGlobal or
         Opcode.LoadFunc => 1,
 
@@ -302,6 +302,9 @@ public static class BytecodeCompiler
                 break;
             case Opcode.LoadThis:
                 writer.Write(Opcodes.LoadThis);
+                break;
+            case Opcode.LoadInvocationReceiver:
+                writer.Write(Opcodes.LoadInvocationReceiver);
                 break;
             case Opcode.HasFieldLiteral:
                 writer.Write(Opcodes.HasFieldLiteral);
