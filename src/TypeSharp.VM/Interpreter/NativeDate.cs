@@ -14,13 +14,76 @@ internal static class NativeDate
 
     internal enum UtcPart { Year, Month, Date, Day, Hours, Minutes, Seconds, Milliseconds }
 
-    internal static TsObjectValue Construct(ExecutionContext context, ReadOnlySpan<TsValue> args)
+    internal delegate TsValue InvokeOwnMethod(TsFunctionValue method, TsValue receiver);
+
+    // The same descriptors back the existing qualified builtin entries, native
+    // property reads and callable-value dispatch. Reference identity, not a
+    // TypeName or a function spelling, identifies a read intrinsic.
+    internal sealed class Method(string selector, Func<TsValue, TsValue> implementation)
+    {
+        internal string Selector { get; } = selector;
+        internal TsFunctionValue Reference { get; } = new("Date::" + selector);
+        internal string QualifiedName => Reference.FunctionName;
+        internal TsValue Invoke(TsValue receiver) => implementation(receiver);
+    }
+
+    internal static readonly Method GetTimeMethod = new("getTime", Timestamp);
+    internal static readonly Method ValueOfMethod = new("valueOf", Timestamp);
+    internal static readonly Method ToIsoStringMethod = new("toISOString", ToIsoString);
+    internal static readonly Method GetUtcYearMethod = new("getUTCFullYear", receiver => GetUtc(receiver, UtcPart.Year));
+    internal static readonly Method GetUtcMonthMethod = new("getUTCMonth", receiver => GetUtc(receiver, UtcPart.Month));
+    internal static readonly Method GetUtcDateMethod = new("getUTCDate", receiver => GetUtc(receiver, UtcPart.Date));
+    internal static readonly Method GetUtcDayMethod = new("getUTCDay", receiver => GetUtc(receiver, UtcPart.Day));
+    internal static readonly Method GetUtcHoursMethod = new("getUTCHours", receiver => GetUtc(receiver, UtcPart.Hours));
+    internal static readonly Method GetUtcMinutesMethod = new("getUTCMinutes", receiver => GetUtc(receiver, UtcPart.Minutes));
+    internal static readonly Method GetUtcSecondsMethod = new("getUTCSeconds", receiver => GetUtc(receiver, UtcPart.Seconds));
+    internal static readonly Method GetUtcMillisecondsMethod = new("getUTCMilliseconds", receiver => GetUtc(receiver, UtcPart.Milliseconds));
+
+    private static readonly Method[] Methods =
+    [
+        GetTimeMethod, ValueOfMethod, ToIsoStringMethod, GetUtcYearMethod, GetUtcMonthMethod,
+        GetUtcDateMethod, GetUtcDayMethod, GetUtcHoursMethod, GetUtcMinutesMethod,
+        GetUtcSecondsMethod, GetUtcMillisecondsMethod,
+    ];
+
+    private static readonly Dictionary<string, Method> ByQualifiedName =
+        Methods.ToDictionary(method => method.QualifiedName, StringComparer.Ordinal);
+    private static readonly Dictionary<string, Method> BySelector =
+        Methods.ToDictionary(method => method.Selector, StringComparer.Ordinal);
+
+    internal static TsValue ReadProperty(TsObjectValue date, string selector) =>
+        date.Value.Fields.TryGetValue(selector, out var slot) ? slot
+        : BySelector.TryGetValue(selector, out var method) ? method.Reference
+        : TsValue.Void;
+
+    internal static bool TryGetOwnMethod(TsValue receiver, string qualifiedName, out TsValue slot)
+    {
+        if (receiver is TsObjectValue { Value.NativeDateTimestamp: not null } date &&
+            ByQualifiedName.TryGetValue(qualifiedName, out var method) &&
+            date.Value.Fields.TryGetValue(method.Selector, out var own))
+        {
+            slot = own;
+            return true;
+        }
+        slot = TsValue.Void;
+        return false;
+    }
+
+    internal static Method? GetIntrinsicMethod(TsValue? value) =>
+        value is TsFunctionValue function && function.FunctionName.StartsWith("Date::", StringComparison.Ordinal) &&
+        ByQualifiedName.TryGetValue(function.FunctionName, out var method) &&
+        ReferenceEquals(function, method.Reference) ? method : null;
+
+    internal static TsFunctionValue RequireOwnCallable(TsValue slot) =>
+        slot as TsFunctionValue ?? throw ScriptError("TypeError", "Date member is not callable");
+
+    internal static TsObjectValue Construct(ExecutionContext context, ReadOnlySpan<TsValue> args, InvokeOwnMethod invoke)
     {
         double timestamp = args.Length switch
         {
             0 => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            1 => FromSingle(context, args[0]),
-            _ => FromComponents(context, args),
+            1 => FromSingle(context, args[0], invoke),
+            _ => FromComponents(context, args, invoke),
         };
         return new TsObjectValue(context.Heap.AllocateNativeDate(TimeClip(timestamp)));
     }
@@ -86,38 +149,86 @@ internal static class NativeDate
         return clipped == 0d ? 0d : clipped;
     }
 
-    private static double FromSingle(ExecutionContext context, TsValue value)
+    private static double FromSingle(ExecutionContext context, TsValue value, InvokeOwnMethod invoke)
     {
         // The native copy path preserves an invalid timestamp too, without
         // looking at any ordinary properties or inheriting them on the copy.
         if (TryGetTimestamp(value, out double timestamp))
             return timestamp;
-        return value switch
-        {
-            TsStringValue text => ReadText(context, text.Value, component: false),
-            TsArrayValue or TsUint8ArrayValue => DateJoin.Convert(context, value, component: false),
-            _ => FromPrimitiveNumber(value),
-        };
+        return ConvertArgument(context, value, component: false, invoke);
     }
 
-    private static double FromComponents(ExecutionContext context, ReadOnlySpan<TsValue> args)
+    private static double ConvertArgument(ExecutionContext context, TsValue value, bool component, InvokeOwnMethod invoke)
+    {
+        if (value is TsArrayValue or TsUint8ArrayValue)
+            return DateJoin.Convert(context, value, component, invoke);
+
+        if (value is TsObjectValue obj && IsConversionObject(obj))
+        {
+            var primitive = ConvertObject(context, obj, stringHint: false, invoke);
+            // The default ordinary and native Date texts are non-numeric; the
+            // ordinary default is not a parseable date either. For native
+            // Dates this branch is only a component fallback, not the copy.
+            if (primitive is null)
+                return double.NaN;
+            value = primitive;
+        }
+
+        return value is TsStringValue text
+            ? ReadText(context, text.Value, component)
+            : FromPrimitiveNumber(value);
+    }
+
+    private static bool IsConversionObject(TsObjectValue value) =>
+        value.Value.TypeName == "Object" || value.Value.NativeDateTimestamp.HasValue;
+
+    private static bool IsPrimitive(TsValue value) => value is TsVoid or TsNull or TsBoolValue or
+        TsInt32Value or TsInt64Value or TsUInt64Value or TsBigIntValue or TsFloat32Value or
+        TsFloat64Value or TsDecimalValue or TsStringValue;
+
+    // C# null denotes accepted intrinsic default text. Script null and
+    // undefined are real TsValue instances, distinct from that default.
+    private static TsValue? ConvertObject(ExecutionContext context, TsObjectValue receiver,
+        bool stringHint, InvokeOwnMethod invoke, long? joinAllocated = null)
+    {
+        for (int i = 0; i != 2; ++i)
+        {
+            bool text = (i == 0) == stringHint;
+            // Read the second slot only if needed: the first hook can modify it.
+            if (!receiver.Value.Fields.TryGetValue(text ? "toString" : "valueOf", out var slot))
+            {
+                if (text)
+                    return null;
+                if (TryGetTimestamp(receiver, out var timestamp))
+                    return TsValue.FromFloat64(timestamp);
+                // Default ordinary valueOf returns the receiver (not a primitive).
+                continue;
+            }
+
+            if (slot is not TsFunctionValue method)
+                continue; // An own noncallable shadows the intrinsic default.
+            var result = invoke(method, receiver);
+            // Hooks run with the same heap and may allocate or reduce the
+            // remaining budget. Check before trying another method or appending.
+            if (joinAllocated is long pending)
+                CheckJoinAvailable(context, pending, 0);
+            if (IsPrimitive(result))
+                return result;
+        }
+        throw ScriptError("TypeError", "Cannot convert object to primitive value");
+    }
+
+    private static double FromComponents(ExecutionContext context, ReadOnlySpan<TsValue> args, InvokeOwnMethod invoke)
     {
         Span<double> values = stackalloc double[7];
         values.Clear();
         values[2] = 1;
         bool invalid = false;
-        // Do not short-circuit a nonfinite component: later supplied BigInts
-        // still throw. The interpreter discards arguments after index six
-        // only after their usual evaluation.
+        // Do not short-circuit a nonfinite component: later conversions can
+        // still run callbacks or throw. Extra arguments have already evaluated.
         for (int i = 0; i < Math.Min(values.Length, args.Length); ++i)
         {
-            var arg = args[i];
-            var n = arg switch
-            {
-                TsStringValue text => ReadText(context, text.Value, component: true),
-                TsArrayValue or TsUint8ArrayValue => DateJoin.Convert(context, arg, component: true),
-                _ => TryGetTimestamp(arg, out var stamp) ? stamp : FromPrimitiveNumber(arg),
-            };
+            var n = ConvertArgument(context, args[i], component: true, invoke);
             invalid |= !double.IsFinite(n);
             values[i] = Math.Truncate(n);
         }
@@ -360,17 +471,26 @@ internal static class NativeDate
         context.InstructionCount = used + work;
     }
 
-    // Join only runtime-represented arrays, with no property/coercion hooks.
-    // Keep the yielded characters in a bounded buffer and parse the span
-    // directly: no final copied string, recursion, or unmetered active set.
-    private ref struct DateJoin(ExecutionContext context)
+    private static void CheckJoinAvailable(ExecutionContext context, long allocated, long bytes)
+    {
+        long limit = Math.Min(context.Heap.MaxBytes, context.Limits.MaximumMemoryBytes);
+        long used = context.Heap.LogicalBytes;
+        if (used > limit || allocated > limit - used || bytes > limit - used - allocated)
+            throw new InvalidOperationException("Memory limit exceeded while joining Date argument");
+    }
+
+    // Join only represented arrays; only ordinary/native-Date leaves use hooks.
+    // Keep yielded characters in a bounded buffer and parse the span directly:
+    // no final copied string, recursion, or unmetered active traversal set.
+    private ref struct DateJoin(ExecutionContext context, InvokeOwnMethod invoke)
     {
         private const int AllocationOverhead = 64;
-        private const int FrameBytes = 24; // conservative reference + index + padding
-        private struct Frame(TsArray array)
+        private const int FrameBytes = 24; // reference + two 32-bit fields (16 bytes with 64-bit alignment), conservatively padded
+        private struct Frame(TsArray array, int limit)
         {
-            internal TsArray Array = array;
-            internal int Index;
+            internal readonly TsArray Array = array;
+            internal readonly int Limit = limit;
+            internal int Index = 0;
         }
 
         private char[]? _chars;
@@ -380,22 +500,28 @@ internal static class NativeDate
         // old backing arrays awaiting GC remain inside the available budget.
         private long _allocated;
 
-        internal static double Convert(ExecutionContext context, TsValue value, bool component)
+        internal static double Convert(ExecutionContext context, TsValue value, bool component, InvokeOwnMethod invoke)
         {
-            var writer = new DateJoin(context);
+            var writer = new DateJoin(context, invoke);
             writer.AppendValue(value);
             while (writer._depth != 0)
             {
-                ref var frame = ref writer._active![writer._depth - 1];
-                Charge(context, 1);
-                if (frame.Index == frame.Array.Count)
+                TsValue element;
                 {
-                    frame = default;
-                    writer._depth--;
-                    continue;
+                    ref var frame = ref writer._active![writer._depth - 1];
+                    Charge(context, 1);
+                    if (frame.Index == frame.Limit)
+                    {
+                        frame = default;
+                        writer._depth--;
+                        continue;
+                    }
+                    int position = frame.Index;
+                    if (position != 0) writer.Append(',');
+                    element = frame.Array.Get(position);
+                    frame.Index = position + 1;
                 }
-                if (frame.Index != 0) writer.Append(',');
-                TsValue element = frame.Array.Get(frame.Index++);
+                // No frame reference survives a hook or nested frame growth.
                 writer.AppendValue(element);
             }
             return ReadText(context, writer._chars.AsSpan(0, writer._length), component);
@@ -415,6 +541,7 @@ internal static class NativeDate
                         if (ReferenceEquals(_active![i].Array, nested.Value))
                             return; // Cycles contribute empty text only on this path.
                     }
+                    int limit = nested.Value.Count;
                     if (_depth == (_active?.Length ?? 0))
                     {
                         int capacity = Growth(_depth, _depth + 1);
@@ -422,7 +549,7 @@ internal static class NativeDate
                         Charge(context, _depth);
                         Array.Resize(ref _active, capacity);
                     }
-                    _active![_depth++] = new Frame(nested.Value);
+                    _active![_depth++] = new Frame(nested.Value, limit);
                     return;
                 case TsUint8ArrayValue bytes:
                     for (int i = 0; i < bytes.Length; ++i)
@@ -432,6 +559,29 @@ internal static class NativeDate
                         AppendNumber(bytes.Get(i));
                     }
                     return;
+                case TsObjectValue obj when IsConversionObject(obj):
+                    var primitive = ConvertObject(context, obj, stringHint: true, invoke, _allocated);
+                    if (primitive is not null)
+                        AppendScalar(primitive);
+                    else if (TryGetTimestamp(obj, out var timestamp))
+                        AppendNativeDate(timestamp);
+                    else
+                        Append("[object Object]");
+                    return;
+                default:
+                    AppendScalar(value);
+                    return;
+            }
+        }
+
+        private void AppendScalar(TsValue value)
+        {
+            switch (value)
+            {
+                // A hook's accepted null/undefined is text. Raw array slots
+                // already took the separate empty branch in AppendValue.
+                case TsNull: Append("null"); return;
+                case TsVoid: Append("undefined"); return;
                 case TsStringValue text: Append(text.Value); return;
                 case TsBoolValue boolean: Append(boolean.Value ? "true" : "false"); return;
                 case TsInt32Value n: AppendNumber(n.Value); return;
@@ -441,9 +591,6 @@ internal static class NativeDate
                 case TsFloat64Value n: AppendDouble(n.Value); return;
                 case TsDecimalValue n: AppendDouble((double)n.Value); return;
                 case TsBigIntValue n: AppendBigInt(n.Value); return;
-                case TsObjectValue date when TryGetTimestamp(date, out double timestamp):
-                    AppendNativeDate(timestamp);
-                    return;
                 default: Append("[object Object]"); return;
             }
         }
@@ -561,12 +708,6 @@ internal static class NativeDate
             _allocated += bytes;
         }
 
-        private void CheckAvailable(long bytes)
-        {
-            long limit = Math.Min(context.Heap.MaxBytes, context.Limits.MaximumMemoryBytes);
-            long used = context.Heap.LogicalBytes;
-            if (used > limit || _allocated > limit - used || bytes > limit - used - _allocated)
-                throw new InvalidOperationException("Memory limit exceeded while joining Date argument");
-        }
+        private void CheckAvailable(long bytes) => CheckJoinAvailable(context, _allocated, bytes);
     }
 }

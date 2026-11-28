@@ -280,18 +280,19 @@ public static class Builtins
                 return new TsArrayValue(result);
             },
 
-            // Date instance members (receiver = args[0]).
-            ["Date::getTime"] = args => NativeDate.Timestamp(args[0]),
-            ["Date::valueOf"] = args => NativeDate.Timestamp(args[0]),
-            ["Date::toISOString"] = args => NativeDate.ToIsoString(args[0]),
-            ["Date::getUTCFullYear"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Year),
-            ["Date::getUTCMonth"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Month),
-            ["Date::getUTCDate"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Date),
-            ["Date::getUTCDay"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Day),
-            ["Date::getUTCHours"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Hours),
-            ["Date::getUTCMinutes"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Minutes),
-            ["Date::getUTCSeconds"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Seconds),
-            ["Date::getUTCMilliseconds"] = args => NativeDate.GetUtc(args[0], NativeDate.UtcPart.Milliseconds),
+            // Date keeps the historical receiver-prefixed builtin ABI. These
+            // same descriptors also back the VM's unbound property reads.
+            [NativeDate.GetTimeMethod.QualifiedName] = args => NativeDate.GetTimeMethod.Invoke(args[0]),
+            [NativeDate.ValueOfMethod.QualifiedName] = args => NativeDate.ValueOfMethod.Invoke(args[0]),
+            [NativeDate.ToIsoStringMethod.QualifiedName] = args => NativeDate.ToIsoStringMethod.Invoke(args[0]),
+            [NativeDate.GetUtcYearMethod.QualifiedName] = args => NativeDate.GetUtcYearMethod.Invoke(args[0]),
+            [NativeDate.GetUtcMonthMethod.QualifiedName] = args => NativeDate.GetUtcMonthMethod.Invoke(args[0]),
+            [NativeDate.GetUtcDateMethod.QualifiedName] = args => NativeDate.GetUtcDateMethod.Invoke(args[0]),
+            [NativeDate.GetUtcDayMethod.QualifiedName] = args => NativeDate.GetUtcDayMethod.Invoke(args[0]),
+            [NativeDate.GetUtcHoursMethod.QualifiedName] = args => NativeDate.GetUtcHoursMethod.Invoke(args[0]),
+            [NativeDate.GetUtcMinutesMethod.QualifiedName] = args => NativeDate.GetUtcMinutesMethod.Invoke(args[0]),
+            [NativeDate.GetUtcSecondsMethod.QualifiedName] = args => NativeDate.GetUtcSecondsMethod.Invoke(args[0]),
+            [NativeDate.GetUtcMillisecondsMethod.QualifiedName] = args => NativeDate.GetUtcMillisecondsMethod.Invoke(args[0]),
 
             // Set instance members use the historical receiver-prefixed Call ABI.
             ["Set::add"] = args =>

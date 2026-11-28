@@ -1417,6 +1417,8 @@ public sealed class Interpreter
                             || (calleeName != NativeString.InvokeMemberReference && receiver is TsRegexValue && NativeRegex.IsIntrinsicReference(callable))
                             || (calleeName == NativeSet.InvokeMemberReference && receiver is TsGeneratorValue g
                                 && g.Frame?.Function.IsAsync != true && TryGeneratorReference(callable, out _))
+                            || (calleeName == NativeSet.InvokeMemberReference &&
+                                NativeDate.GetIntrinsicMethod(callable) is not null)
                             ? receiver : null;
                         frame.Push(InvokeCallable(callable, positional, module, ctx, frame, invocationReceiver,
                             generatorMemberReference: calleeName == NativeSet.InvokeMemberReference));
@@ -1639,9 +1641,16 @@ public sealed class Interpreter
                     {
                         frame.Push(generatorResult);
                     }
+                    else if (TryInvokeNativeDateOwn(resolvedName, callArgs, module, ctx, frame, out var ownDateResult))
+                    {
+                        frame.Push(ownDateResult);
+                    }
                     else if (TryGetVirtualFieldCallable(calleeName, callArgs, out var fieldCallable, out var fieldArgs))
                     {
-                        frame.Push(InvokeCallable(fieldCallable, fieldArgs, module, ctx, frame));
+                        // Only a borrowed Date intrinsic receives the actual
+                        // object here. Ordinary fields keep their old ABI.
+                        var dateReceiver = NativeDate.GetIntrinsicMethod(fieldCallable) is not null ? callArgs[0] : null;
+                        frame.Push(InvokeCallable(fieldCallable, fieldArgs, module, ctx, frame, dateReceiver));
                     }
                     // A polymorphic site's cached managed method must not steal a genuine Map call.
                     else if (callArgs.Length > 0 && callArgs[0] is TsMapValue && NativeMap.IsMethod(resolvedName))
@@ -1712,7 +1721,7 @@ public sealed class Interpreter
                         var args = new TsValue[used];
                         for (int i = used - 1; i >= 0; --i)
                             args[i] = frame.Pop();
-                        frame.Push(NativeDate.Construct(ctx, args));
+                        frame.Push(NativeDate.Construct(ctx, args, DateOwnCall(module, ctx, frame)));
                         break;
                     }
 
@@ -2947,8 +2956,7 @@ public sealed class Interpreter
 
     private static TsValue ReadFieldValue(TsValue receiver, string fieldName) => receiver switch
     {
-        TsObjectValue { Value.NativeDateTimestamp: not null } date =>
-            date.Value.Fields.TryGetValue(fieldName, out var value) ? value : TsValue.Void,
+        TsObjectValue { Value.NativeDateTimestamp: not null } date => NativeDate.ReadProperty(date, fieldName),
         TsObjectValue objVal => objVal.Value.GetField(fieldName),
         TsArrayValue arrVal when fieldName == "length" => TsValue.FromInt32(arrVal.Value.Count),
         TsMapValue mapVal when fieldName == "size" => TsValue.FromFloat64(mapVal.Value.Count),
@@ -3217,13 +3225,32 @@ public sealed class Interpreter
     private Uint8ArrayOperations.InvokeOwnMethod Uint8ArrayOwnCall(BytecodeModule module, ExecutionContext context, CallFrame caller) =>
         (method, receiver) => InvokeCallable(method, [], module, context, caller, receiver);
 
-    // Selection has already happened. Only fixed CALL and resolved CALL_VIRT
-    // opt in for the three typed consumers; callable-value dispatch stays unchanged.
+    private NativeDate.InvokeOwnMethod DateOwnCall(BytecodeModule module, ExecutionContext context, CallFrame caller) =>
+        (method, receiver) => InvokeCallable(method, [], module, context, caller, receiver);
+
+    private bool TryInvokeNativeDateOwn(string name, TsValue[] args, BytecodeModule module,
+        ExecutionContext context, CallFrame caller, out TsValue result)
+    {
+        result = TsValue.Void;
+        if (args.Length == 0 || !NativeDate.TryGetOwnMethod(args[0], name, out var slot))
+            return false;
+
+        var method = NativeDate.RequireOwnCallable(slot);
+        result = InvokeCallable(method, args.Length == 1 ? [] : args.AsSpan(1).ToArray(),
+            module, context, caller, args[0]);
+        return true;
+    }
+
+    // Typed receiver-prefixed operands may opt into Date shadowing or the
+    // three Uint8Array consumers below; other builtin ABIs stay unchanged.
     private TsValue InvokeSelectedBuiltin(string name, Func<TsValue[], TsValue> builtin, TsValue[] args,
         BytecodeModule module, ExecutionContext context, CallFrame caller, bool typedOperands = false)
     {
         if (name == NativeRegex.TestName)
             return NativeRegex.TestBuiltin(args, RegexOwnCall(module, context, caller));
+
+        if (typedOperands && TryInvokeNativeDateOwn(name, args, module, context, caller, out var ownDateResult))
+            return ownDateResult;
 
         if (typedOperands && args.Length > 0 && args[0] is TsUint8ArrayValue bytes)
         {
@@ -3255,6 +3282,9 @@ public sealed class Interpreter
 
         if (NativeRegex.IsIntrinsicReference(fnValue))
             return NativeRegex.TestWithReceiver(invocationReceiver, args, RegexOwnCall(module, ctx, caller));
+
+        if (NativeDate.GetIntrinsicMethod(fnValue) is { } dateMethod)
+            return dateMethod.Invoke(invocationReceiver ?? TsValue.Void);
 
         if (NativeString.IsMethod(fnValue.FunctionName))
             return NativeString.InvokeReference(fnValue, invocationReceiver, args);
