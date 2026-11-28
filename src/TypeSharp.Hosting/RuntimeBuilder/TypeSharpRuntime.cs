@@ -397,7 +397,9 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
             }
         }
 
-        return new BytecodeModule($"generation-{generation.Id}", functions.ToArray());
+        var linked = new BytecodeModule($"generation-{generation.Id}", functions.ToArray());
+        BytecodeVerifier.Verify(linked);
+        return linked;
     }
 
     internal static HashSet<string> FindDuplicateFunctionNames(IEnumerable<TsModule> modules)

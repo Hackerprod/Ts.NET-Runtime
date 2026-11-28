@@ -3,7 +3,8 @@ namespace TypeSharp.VM.Bytecode;
 public static class BytecodeSerializer
 {
     private const uint Magic = 0x43425354; // TSBC
-    private const int Version = 2;
+    private const int LegacyVersion = 2;
+    private const int GeneratorVersion = 3;
     private const int MaxCollectionLength = 1_000_000;
 
     public static void Serialize(Stream destination, BytecodeModule module)
@@ -13,7 +14,7 @@ public static class BytecodeSerializer
 
         using var writer = new BinaryWriter(destination, System.Text.Encoding.UTF8, leaveOpen: true);
         writer.Write(Magic);
-        writer.Write(Version);
+        writer.Write(BytecodeVerifier.UsesGeneratorExtensions(module) ? GeneratorVersion : LegacyVersion);
         writer.Write(module.Name);
         writer.Write(module.Functions.Length);
         foreach (var function in module.Functions)
@@ -26,7 +27,8 @@ public static class BytecodeSerializer
         using var reader = new BinaryReader(source, System.Text.Encoding.UTF8, leaveOpen: true);
         if (reader.ReadUInt32() != Magic)
             throw new BytecodeVerificationException("Invalid bytecode magic");
-        if (reader.ReadInt32() != Version)
+        int version = reader.ReadInt32();
+        if (version is not (LegacyVersion or GeneratorVersion))
             throw new BytecodeVerificationException("Unsupported bytecode version");
 
         var name = reader.ReadString();
@@ -37,6 +39,8 @@ public static class BytecodeSerializer
 
         var module = new BytecodeModule(name, functions);
         BytecodeVerifier.Verify(module);
+        if (version == LegacyVersion && BytecodeVerifier.UsesGeneratorExtensions(module))
+            throw new BytecodeVerificationException("Generator extension requires bytecode version 3");
         return module;
     }
 

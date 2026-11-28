@@ -979,6 +979,19 @@ public sealed class TsThrownException : InvalidOperationException
 public readonly record struct TryHandler(int HandlerOffset, int StackDepth);
 
 // Frame for VM execution
+internal enum GeneratorPhase { Outside, Try, Catch, Finally }
+internal enum GeneratorCompletionKind { Return, Throw, Jump }
+internal readonly record struct GeneratorCompletion(GeneratorCompletionKind Kind, TsValue Value, int Target = 0, int Exits = 0);
+internal sealed class GeneratorRegion(int enterOffset, int catchOffset, int finallyOffset, int baseline)
+{
+    internal int EnterOffset { get; } = enterOffset;
+    internal int CatchOffset { get; } = catchOffset;
+    internal int FinallyOffset { get; } = finallyOffset;
+    internal int Baseline { get; } = baseline;
+    internal GeneratorPhase Phase { get; set; } = GeneratorPhase.Try;
+    internal GeneratorCompletion? Pending { get; set; }
+}
+
 public sealed class CallFrame
 {
     private const int InitialStackSlots = 256;
@@ -995,6 +1008,7 @@ public sealed class CallFrame
     public int InstructionPointer;
     public CallFrame? Caller { get; set; }
     public Stack<TryHandler>? TryHandlers;
+    internal Stack<GeneratorRegion>? GeneratorRegions;
 
     public CallFrame(BytecodeFunction function, CallFrame? caller = null)
     {

@@ -15,7 +15,7 @@ public sealed class BytecodeFunction
     public long[] IntegerConstants { get; }
     public double[] DoubleConstants { get; }
     public decimal[] DecimalConstants { get; }
-    public int OperandStackCapacity { get; }
+    public int OperandStackCapacity { get; internal set; }
 
     public BytecodeFunction(string name, byte[] instructions, int parameterCount, int localCount,
         bool isAsync, string[] stringConstants, long[] integerConstants, double[] doubleConstants,
@@ -90,21 +90,23 @@ public static class BytecodeCompiler
         var decimalConstants = CollectDecimalConstants(function);
 
         var blockStarts = new Dictionary<int, int>();
+        var generatorEnters = new Dictionary<int, int>();
 
         foreach (var block in function.Blocks)
         {
             blockStarts[block.Id] = writer.Position;
             foreach (var instr in block.Instructions)
             {
+                if (instr.Opcode == Opcode.GEnter)
+                    generatorEnters.Add(block.Id, writer.Position);
                 EmitInstruction(writer, instr);
             }
         }
 
         var bytecode = writer.ToArray();
-        PatchBranchTargets(bytecode, function.Blocks, blockStarts);
-        var stackCapacity = ComputeMaxStackDepth(function);
+        PatchBranchTargets(bytecode, blockStarts, generatorEnters);
 
-        return new BytecodeFunction(
+        var compiled = new BytecodeFunction(
             function.Name,
             bytecode,
             function.Parameters.Count,
@@ -114,9 +116,12 @@ public static class BytecodeCompiler
             intConstants,
             doubleConstants,
             decimalConstants,
-            stackCapacity,
+            ComputeMaxStackDepth(function),
             function.IsGenerator,
             function.Parameters.FindIndex(p => p.IsRest));
+        if (bytecode.Length > 0 && bytecode[0] == Opcodes.GStart)
+            compiled.OperandStackCapacity = Math.Max(1, BytecodeVerifier.VerifyStructuredGenerator(compiled));
+        return compiled;
     }
 
     // ────────────────────────────────────────────────────────
@@ -204,6 +209,8 @@ public static class BytecodeCompiler
         // Call: -(argCount + 1) + 1 = -argCount
         Opcode.Call or Opcode.CallVirt => -(instr.Operand1),
         Opcode.CallDynamic => -(instr.Operand1),
+        Opcode.GCallMember => -2,
+        Opcode.GReturn => -1,
         Opcode.CallDynamicArray => -1, // pop callee + args array, push result
 
         // Return
@@ -454,6 +461,22 @@ public static class BytecodeCompiler
                 writer.WriteInt32(instr.Operand1);
                 break;
 
+            case Opcode.GStart: writer.Write(Opcodes.GStart); break;
+            case Opcode.GReturn: writer.Write(Opcodes.GReturn); break;
+            case Opcode.GEndFinally: writer.Write(Opcodes.GEndFinally); break;
+            case Opcode.GCallMember: writer.Write(Opcodes.GCallMember); break;
+            case Opcode.GBlock:
+            case Opcode.GEnter:
+            case Opcode.GTransfer:
+                writer.Write(instr.Opcode switch
+                {
+                    Opcode.GBlock => Opcodes.GBlock,
+                    Opcode.GEnter => Opcodes.GEnter,
+                    _ => Opcodes.GTransfer
+                });
+                writer.WriteInt32(instr.Operand0);
+                writer.WriteInt32(instr.Operand1);
+                break;
             case Opcode.Return: writer.Write(Opcodes.Return); break;
             case Opcode.ReturnVoid: writer.Write(Opcodes.ReturnVoid); break;
 
@@ -641,7 +664,8 @@ public static class BytecodeCompiler
     //  Patch branch targets (block ID → byte offset)
     // ────────────────────────────────────────────────────────
 
-    private static void PatchBranchTargets(byte[] bytecode, List<BasicBlock> blocks, Dictionary<int, int> blockStarts)
+    private static void PatchBranchTargets(byte[] bytecode, Dictionary<int, int> blockStarts,
+        Dictionary<int, int> generatorEnters)
     {
         var stream = new MemoryStream(bytecode);
         var reader = new BinaryReader(stream);
@@ -649,11 +673,18 @@ public static class BytecodeCompiler
 
         while (stream.Position < stream.Length)
         {
-            long opStart = stream.Position;
             byte op = reader.ReadByte();
             var fmt = OpcodeFormats.Get(op);
 
-            if (fmt.IsBranch)
+            if (op is Opcodes.GBlock or Opcodes.GEnter or Opcodes.GTransfer)
+            {
+                Patch(op == Opcodes.GBlock ? generatorEnters : blockStarts, allowAbsent: op != Opcodes.GTransfer);
+                if (op == Opcodes.GEnter)
+                    Patch(blockStarts, allowAbsent: true);
+                else
+                    stream.Seek(4, SeekOrigin.Current); // phase or exit count
+            }
+            else if (fmt.IsBranch)
             {
                 int blockId = reader.ReadInt32();
                 if (blockStarts.TryGetValue(blockId, out int byteOffset))
@@ -666,6 +697,16 @@ public static class BytecodeCompiler
             {
                 stream.Seek(fmt.OperandBytes, SeekOrigin.Current);
             }
+        }
+
+        void Patch(Dictionary<int, int> offsets, bool allowAbsent)
+        {
+            var id = reader.ReadInt32();
+            if (id == -1 && allowAbsent) return;
+            if (!offsets.TryGetValue(id, out var offset))
+                throw new BytecodeCompilationException($"Invalid generator target block {id}");
+            stream.Seek(-4, SeekOrigin.Current);
+            writer.Write(offset);
         }
     }
 

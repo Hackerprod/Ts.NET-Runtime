@@ -250,6 +250,12 @@ public sealed class Interpreter
             {
                 // Dispatch to the innermost active handler of THIS frame;
                 // otherwise let the exception unwind to the calling frame.
+                if (IsStructuredGenerator(frame))
+                {
+                    if (!ContinueGeneratorCompletion(frame, new(GeneratorCompletionKind.Throw, thrown.Value), out _))
+                        throw;
+                    continue;
+                }
                 if (frame.TryHandlers is not { Count: > 0 })
                     throw;
 
@@ -1387,8 +1393,11 @@ public sealed class Interpreter
                         var invocationReceiver = (calleeName == NativeSet.InvokeMemberReference &&
                             receiver is TsSetValue && NativeSet.IsIntrinsicReference(callable))
                             || (receiver is TsRegexValue && NativeRegex.IsIntrinsicReference(callable))
+                            || (calleeName == NativeSet.InvokeMemberReference && receiver is TsGeneratorValue g
+                                && g.Frame?.Function.IsAsync != true && TryGeneratorReference(callable, out _))
                             ? receiver : null;
-                        frame.Push(InvokeCallable(callable, positional, module, ctx, frame, invocationReceiver));
+                        frame.Push(InvokeCallable(callable, positional, module, ctx, frame, invocationReceiver,
+                            generatorMemberReference: calleeName == NativeSet.InvokeMemberReference));
                     }
                     else if (HigherOrderIntrinsics.Contains(calleeName))
                     {
@@ -1495,6 +1504,54 @@ public sealed class Interpreter
                     break;
                 }
 
+                case Opcodes.GCallMember:
+                {
+                    var positional = ToArgumentArray(frame.Pop());
+                    var callable = frame.Pop();
+                    var receiver = frame.Pop();
+                    var intrinsicReceiver = receiver is TsGeneratorValue native && native.Frame?.Function.IsAsync != true
+                        && TryGeneratorReference(callable, out _) ? receiver : null;
+                    frame.Push(InvokeCallable(callable, positional, module, ctx, frame, intrinsicReceiver, generatorMemberReference: true));
+                    break;
+                }
+
+                case Opcodes.GStart:
+                    break;
+                case Opcodes.GBlock:
+                    frame.InstructionPointer += 8;
+                    break;
+                case Opcodes.GEnter:
+                {
+                    int catchOffset = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    int finallyOffset = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    (frame.GeneratorRegions ??= new()).Push(new(instructionOffset, catchOffset, finallyOffset, frame.StackPointer));
+                    break;
+                }
+                case Opcodes.GTransfer:
+                {
+                    int target = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    int exits = ReadInt32(bytecode, ref frame.InstructionPointer);
+                    if (ContinueGeneratorCompletion(frame, new(GeneratorCompletionKind.Jump, TsValue.Void, target, exits), out var result))
+                        break;
+                    return result;
+                }
+                case Opcodes.GReturn:
+                {
+                    if (ContinueGeneratorCompletion(frame, new(GeneratorCompletionKind.Return, frame.Pop()), out var result))
+                        break;
+                    return result;
+                }
+                case Opcodes.GEndFinally:
+                {
+                    var region = frame.GeneratorRegions!.Pop();
+                    var completion = region.Pending ?? throw new InvalidOperationException("Missing generator completion");
+                    if (ContinueGeneratorCompletion(frame, completion, out var result))
+                        break;
+                    if (completion.Kind == GeneratorCompletionKind.Throw)
+                        throw new TsThrownException(completion.Value);
+                    return result;
+                }
+
                 case Opcodes.Return: // RETURN
                 {
                     return frame.Pop();
@@ -1534,14 +1591,13 @@ public sealed class Interpreter
                     {
                         frame.Push(InvokeNativeSet(resolvedName, callArgs, module, ctx, frame));
                     }
+                    else if (TryInvokeGeneratorMethod(calleeName, callArgs, module, ctx, frame, out var generatorResult))
+                    {
+                        frame.Push(generatorResult);
+                    }
                     else if (TryGetVirtualFieldCallable(calleeName, callArgs, out var fieldCallable, out var fieldArgs))
                     {
                         frame.Push(InvokeCallable(fieldCallable, fieldArgs, module, ctx, frame));
-                    }
-                    else if (TryInvokeGeneratorMethod(resolvedName, callArgs, module, ctx, frame, out var generatorResult)
-                        || (resolvedName == calleeName && TryInvokeGeneratorMethod(calleeName, callArgs, module, ctx, frame, out generatorResult)))
-                    {
-                        frame.Push(generatorResult);
                     }
                     // A polymorphic site's cached managed method must not steal a genuine Map call.
                     else if (callArgs.Length > 0 && callArgs[0] is TsMapValue && NativeMap.IsMethod(resolvedName))
@@ -1746,6 +1802,8 @@ public sealed class Interpreter
                         frame.Push(NativeSet.ReadProperty(set, name.Value));
                     else if (target is TsRegexValue regex && index is TsStringValue regexKey)
                         frame.Push(NativeRegex.ReadProperty(regex, regexKey.Value));
+                    else if (target is TsGeneratorValue generator && index is TsStringValue generatorKey)
+                        frame.Push(ReadFieldValue(generator, generatorKey.Value));
                     else if (target is TsObjectValue objectTarget)
                         frame.Push(ReadFieldValue(objectTarget, ToPropertyKey(index)));
                     else if (target is TsNull)
@@ -2601,6 +2659,13 @@ public sealed class Interpreter
         TsMapValue mapVal when fieldName == "size" => TsValue.FromFloat64(mapVal.Value.Count),
         TsSetValue setVal => NativeSet.ReadProperty(setVal, fieldName),
         TsRegexValue regex => NativeRegex.ReadProperty(regex, fieldName),
+        TsGeneratorValue g when g.Frame?.Function.IsAsync != true => fieldName switch
+        {
+            "next" => GeneratorNextReference,
+            "return" => GeneratorReturnReference,
+            "throw" => GeneratorThrowReference,
+            _ => TsValue.Null
+        },
         TsUint8ArrayValue bytesVal when fieldName is "length" or "byteLength" => TsValue.FromFloat64(bytesVal.Length),
         TsStringValue strVal when fieldName == "length" => TsValue.FromInt32(strVal.Value.Length),
         _ => TsValue.Null,
@@ -2631,6 +2696,8 @@ public sealed class Interpreter
         // pasa captured: null -> el singleton Array.Empty compartido, así
         // que dos cargas del mismo nombre son iguales; MakeClosure pasa un
         // array nuevo por evaluación, así que dos lambdas distintas no lo son.
+        if (TryGeneratorReference(left, out _) || TryGeneratorReference(right, out _))
+            return false; // intrinsic identity equality was handled above
         if (left is TsFunctionValue lf && right is TsFunctionValue rf)
             return lf.FunctionName == rf.FunctionName && ReferenceEquals(lf.Captured, rf.Captured);
         return false;
@@ -2670,9 +2737,13 @@ public sealed class Interpreter
                 default:
                     // Close only an invalid yielded entry, never mask a generator's
                     // own throw or resume it to fetch any later entries.
+                    var error = NativeMap.TypeError("Map constructor entry must be an object");
                     if (source != null)
-                        CompleteGenerator(source, TsValue.Void);
-                    throw NativeMap.TypeError("Map constructor entry must be an object");
+                    {
+                        try { ResumeGenerator(source, module, ctx, caller, GeneratorResume.Return, TsValue.Void); }
+                        catch (TsThrownException) { /* Preserve the original Map entry error. */ }
+                    }
+                    throw error;
             }
         }
 
@@ -2701,7 +2772,7 @@ public sealed class Interpreter
             case TsGeneratorValue generator:
                 while (true)
                 {
-                    var yielded = (TsObjectValue)ResumeGenerator(generator, module, ctx, caller, null, isThrow: false);
+                    var yielded = (TsObjectValue)ResumeGenerator(generator, module, ctx, caller, GeneratorResume.Next, TsValue.Void);
                     if (yielded.Value.GetField("done") is TsBoolValue { Value: true })
                         return;
                     AddEntry(yielded.Value.GetField("value"), generator);
@@ -2755,7 +2826,7 @@ public sealed class Interpreter
                     ctx.CheckRecursionDepth();
                     ctx.CheckMemory();
                     ctx.CheckCancellation();
-                    var step = (TsObjectValue)ResumeGenerator(generator, module, ctx, caller, null, isThrow: false);
+                    var step = (TsObjectValue)ResumeGenerator(generator, module, ctx, caller, GeneratorResume.Next, TsValue.Void);
                     if (step.Value.GetField("done") is TsBoolValue { Value: true })
                         return;
                     set.Add(step.Value.GetField("value"));
@@ -2847,10 +2918,14 @@ public sealed class Interpreter
     // Invokes any callable value (module function, closure, builtin, host
     // function). Shared by CALL_DYNAMIC and the higher-order array intrinsics.
     internal TsValue InvokeCallable(TsValue calleeValue, TsValue[] args, BytecodeModule module,
-        ExecutionContext ctx, CallFrame caller, TsValue? invocationReceiver = null)
+        ExecutionContext ctx, CallFrame caller, TsValue? invocationReceiver = null, bool generatorMemberReference = false)
     {
         if (calleeValue is not TsFunctionValue fnValue)
             throw new InvalidOperationException($"Value '{calleeValue}' is not callable");
+
+        if (TryGeneratorReference(fnValue, out var generatorMethod))
+            return InvokeGeneratorMember(generatorMemberReference ? invocationReceiver : null, generatorMethod, args.Length == 0 ? TsValue.Void : args[0],
+                module, ctx, caller);
 
         if (NativeRegex.IsIntrinsicReference(fnValue))
             return NativeRegex.TestWithReceiver(invocationReceiver, args);
@@ -2921,29 +2996,172 @@ public sealed class Interpreter
         throw new InvalidOperationException($"Function '{fnValue.FunctionName}' not found");
     }
 
-    private bool TryInvokeGeneratorMethod(string resolvedName, TsValue[] args, BytecodeModule module,
+    private enum GeneratorResume { Next, Return, Throw }
+
+    // The function names are for display only. Invocation and equality
+    // distinguish these three held references from ordinary function values.
+    private static readonly TsFunctionValue GeneratorNextReference = new("Generator.prototype.next");
+    private static readonly TsFunctionValue GeneratorReturnReference = new("Generator.prototype.return");
+    private static readonly TsFunctionValue GeneratorThrowReference = new("Generator.prototype.throw");
+
+    private static bool TryGeneratorReference(TsValue value, out GeneratorResume method)
+    {
+        if (ReferenceEquals(value, GeneratorNextReference)) { method = GeneratorResume.Next; return true; }
+        if (ReferenceEquals(value, GeneratorReturnReference)) { method = GeneratorResume.Return; return true; }
+        if (ReferenceEquals(value, GeneratorThrowReference)) { method = GeneratorResume.Throw; return true; }
+        method = default;
+        return false;
+    }
+
+    private bool TryInvokeGeneratorMethod(string name, TsValue[] args, BytecodeModule module,
         ExecutionContext ctx, CallFrame caller, out TsValue result)
     {
         result = TsValue.Null;
-        if (!resolvedName.StartsWith("Generator::", StringComparison.Ordinal))
+        var receiver = args.Length > 0 ? args[0] : TsValue.Void;
+        bool qualified = name is "Generator::next" or "Generator::return" or "Generator::throw";
+        string selector = qualified ? name["Generator::".Length..] : name;
+        if ((!qualified && receiver is not TsGeneratorValue) || selector is not ("next" or "return" or "throw"))
             return false;
-        if (args.Length < 1 || args[0] is not TsGeneratorValue generator)
-            throw new InvalidOperationException($"{resolvedName} requires a generator receiver");
-
-        result = resolvedName switch
-        {
-            "Generator::next" => ResumeGenerator(generator, module, ctx, caller, null, isThrow: false),
-            "Generator::return" => CompleteGenerator(generator, args.Length > 1 ? args[1] : TsValue.Void),
-            "Generator::throw" => ResumeGenerator(generator, module, ctx, caller,
-                args.Length > 1 ? args[1] : TsValue.Void, isThrow: true),
-            _ => throw new InvalidOperationException($"Generator method '{resolvedName}' is not implemented")
-        };
+        var method = selector switch { "return" => GeneratorResume.Return, "throw" => GeneratorResume.Throw, _ => GeneratorResume.Next };
+        result = InvokeGeneratorMember(receiver, method, args.Length > 1 ? args[1] : TsValue.Void, module, ctx, caller);
         return true;
     }
 
-    private TsValue ResumeGenerator(TsGeneratorValue generator, BytecodeModule module, ExecutionContext ctx,
-        CallFrame caller, TsValue? abruptValue, bool isThrow)
+    private TsValue InvokeGeneratorMember(TsValue? receiver, GeneratorResume method, TsValue value,
+        BytecodeModule module, ExecutionContext ctx, CallFrame caller)
     {
+        if (receiver is not TsGeneratorValue generator)
+            throw NativeMap.TypeError($"Generator.prototype.{method.ToString().ToLowerInvariant()} requires a generator receiver");
+        return ResumeGenerator(generator, module, ctx, caller, method, value);
+    }
+
+    private static bool IsStructuredGenerator(CallFrame frame) =>
+        frame.Function.Instructions.Length > 0 && frame.Function.Instructions[0] == Opcodes.GStart;
+
+    // Return true when control should continue in the frame. All non-Jump
+    // terminal completions keep the original script value, including undefined.
+    private static bool ContinueGeneratorCompletion(CallFrame frame, GeneratorCompletion completion, out TsValue result)
+    {
+        result = completion.Value;
+        while (true)
+        {
+            if (completion.Kind == GeneratorCompletionKind.Jump && completion.Exits == 0)
+            {
+                frame.InstructionPointer = completion.Target;
+                return true;
+            }
+            if (frame.GeneratorRegions is not { Count: > 0 } regions)
+            {
+                if (completion.Kind == GeneratorCompletionKind.Jump)
+                    throw new InvalidOperationException("Invalid generator region exit");
+                return false;
+            }
+            var region = regions.Peek();
+            while (frame.StackPointer > region.Baseline)
+                frame.Pop();
+            if (completion.Kind == GeneratorCompletionKind.Throw &&
+                region.Phase == GeneratorPhase.Try && region.CatchOffset >= 0)
+            {
+                region.Phase = GeneratorPhase.Catch;
+                frame.Push(completion.Value);
+                frame.InstructionPointer = region.CatchOffset;
+                return true;
+            }
+            if (completion.Kind == GeneratorCompletionKind.Jump)
+                completion = completion with { Exits = completion.Exits - 1 };
+            if (region.Phase != GeneratorPhase.Finally && region.FinallyOffset >= 0)
+            {
+                region.Phase = GeneratorPhase.Finally;
+                region.Pending = completion;
+                frame.InstructionPointer = region.FinallyOffset;
+                return true;
+            }
+            regions.Pop();
+        }
+    }
+
+    private TsValue ResumeGenerator(TsGeneratorValue generator, BytecodeModule module, ExecutionContext ctx,
+        CallFrame caller, GeneratorResume method, TsValue value)
+    {
+        if (generator.Frame?.Function.IsAsync == true)
+            return ResumeUnchangedAsyncGenerator(generator, module, ctx, caller, method, value);
+        if (generator.Running)
+            throw NativeMap.TypeError("Generator is already running");
+
+        if (generator.Done)
+            return method == GeneratorResume.Throw
+                ? throw new TsThrownException(value)
+                : CreateIteratorResult(method == GeneratorResume.Return ? value : TsValue.Void, done: true);
+        if (generator.Frame == null)
+        {
+            if (method == GeneratorResume.Next && generator.TryNextLegacy(out var legacyValue, out var legacyDone))
+                return CreateIteratorResult(legacyValue, legacyDone);
+            if (method == GeneratorResume.Next)
+                throw new InvalidOperationException("Generator has no suspended frame");
+            generator.Done = true;
+            return method == GeneratorResume.Throw ? throw new TsThrownException(value) : CreateIteratorResult(value, done: true);
+        }
+        var frame = generator.Frame;
+        var resumeModule = generator.Module ?? throw new InvalidOperationException("Generator has no defining module");
+
+        var previousCaller = frame.Caller;
+        var pushed = false;
+        generator.Running = true;
+        try
+        {
+            frame.Caller = caller;
+            bool structured = IsStructuredGenerator(frame);
+            bool dispatchesAbrupt = frame.InstructionPointer != 0 &&
+                (structured ? frame.GeneratorRegions is { Count: > 0 } :
+                    method == GeneratorResume.Throw && frame.TryHandlers is { Count: > 0 });
+            if (method == GeneratorResume.Next || dispatchesAbrupt)
+            {
+                PushManagedFrame(ctx, frame);
+                pushed = true;
+            }
+            if (method != GeneratorResume.Next)
+            {
+                bool resumed = false;
+                if (pushed)
+                {
+                    if (structured)
+                        resumed = ContinueGeneratorCompletion(frame, new(method == GeneratorResume.Throw
+                            ? GeneratorCompletionKind.Throw : GeneratorCompletionKind.Return, value), out _);
+                    else if (method == GeneratorResume.Throw)
+                        resumed = InjectGeneratorThrow(generator, value);
+                }
+                if (!resumed)
+                {
+                    generator.Done = true;
+                    return method == GeneratorResume.Throw ? throw new TsThrownException(value) : CreateIteratorResult(value, done: true);
+                }
+            }
+            var returned = ExecuteFrame(frame, resumeModule, ctx);
+            generator.Done = true;
+            return CreateIteratorResult(FinishFunctionResult(frame.Function, returned), done: true);
+        }
+        catch (TsGeneratorYieldException yielded)
+        {
+            return CreateIteratorResult(yielded.Value, done: false);
+        }
+        catch (TsThrownException)
+        {
+            generator.Done = true;
+            throw;
+        }
+        finally
+        {
+            try { if (pushed) PopManagedFrame(ctx, frame); }
+            finally { frame.Caller = previousCaller; generator.Running = false; }
+        }
+    }
+
+    private TsValue ResumeUnchangedAsyncGenerator(TsGeneratorValue generator, BytecodeModule module, ExecutionContext ctx,
+        CallFrame caller, GeneratorResume method, TsValue abruptValue)
+    {
+        if (method == GeneratorResume.Return)
+            return CompleteGenerator(generator, abruptValue);
+        bool isThrow = method == GeneratorResume.Throw;
         if (generator.Done)
             return isThrow
                 ? throw new TsThrownException(abruptValue ?? TsValue.Void)

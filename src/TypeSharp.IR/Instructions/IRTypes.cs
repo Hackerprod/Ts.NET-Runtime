@@ -137,6 +137,7 @@ public enum Opcode
 
     // Appended to preserve public Opcode enum values.
     LoadInvocationReceiver,
+    GStart, GBlock, GEnter, GTransfer, GReturn, GEndFinally, GCallMember,
 }
 
 public sealed class Instruction
@@ -193,7 +194,19 @@ public sealed class BasicBlock
     public Instruction LastInstruction => Instructions[^1];
 
     public bool EndsInBranch => Instructions.Count > 0 &&
-        (LastInstruction.Opcode is Opcode.Branch or Opcode.Return or Opcode.ReturnVoid or Opcode.Throw);
+        (LastInstruction.Opcode is Opcode.Branch or Opcode.Return or Opcode.ReturnVoid or Opcode.Throw
+            or Opcode.GEnter or Opcode.GTransfer or Opcode.GReturn or Opcode.GEndFinally);
+
+    internal GeneratorBlockOwner? GeneratorOwner { get; init; }
+}
+
+internal enum GeneratorBlockPhase { Outside, Try, Catch, Finally }
+
+// A phase's parent never changes. Its generator-region owner is the block
+// containing GEnter, not a byte offset until bytecode relocation.
+internal sealed record GeneratorBlockOwner(int EnterBlock, GeneratorBlockPhase Phase, GeneratorBlockOwner? Parent)
+{
+    internal int Depth { get; } = (Parent?.Depth ?? 0) + 1;
 }
 
 public sealed class FunctionIR
@@ -205,6 +218,8 @@ public sealed class FunctionIR
     public int LocalCount { get; set; }
     public bool IsAsync { get; set; }
     public bool IsGenerator { get; set; }
+    internal bool UsesGeneratorRegions { get; set; }
+    internal GeneratorBlockOwner? GeneratorOwner { get; set; }
 
     // Names of variables captured from enclosing functions; their boxes are
     // installed by the VM after the declared parameters.
@@ -219,7 +234,7 @@ public sealed class FunctionIR
 
     public BasicBlock CreateBlock()
     {
-        var block = new BasicBlock(Blocks.Count);
+        var block = new BasicBlock(Blocks.Count) { GeneratorOwner = GeneratorOwner };
         Blocks.Add(block);
         return block;
     }

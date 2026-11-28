@@ -6,7 +6,7 @@ using TypeSharp.Syntax;
 
 namespace TypeSharp.IR;
 
-public sealed class IRGenerator
+public sealed partial class IRGenerator
 {
     private FunctionIR? _currentFunction;
     private BasicBlock? _currentBlock;
@@ -428,6 +428,7 @@ public sealed class IRGenerator
         {
             IsAsync = func.Symbol.IsAsync,
             IsGenerator = func.Symbol.IsGenerator,
+            UsesGeneratorRegions = func.Symbol.IsGenerator && !func.Symbol.IsAsync && RequiresGeneratorRegions(func.Body),
             LocalCount = 0
         };
         funcIR.CapturedVariables.AddRange(func.CapturedVariables.Select(s => s.Name));
@@ -485,6 +486,8 @@ public sealed class IRGenerator
             EmitReturnVoid();
         }
 
+        if (funcIR.UsesGeneratorRegions)
+            FinishGeneratorRegions(funcIR);
         return funcIR;
     }
 
@@ -807,6 +810,8 @@ public sealed class IRGenerator
 
     private void GenerateStatement(BoundNode node)
     {
+        if (_currentFunction!.UsesGeneratorRegions && _currentBlock!.EndsInBranch)
+            _currentBlock = _currentFunction.CreateBlock(); // kept only if an explicit edge reaches it
         switch (node)
         {
             case BoundBlockStatement block:
@@ -907,9 +912,16 @@ public sealed class IRGenerator
             _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
             _currentBlock.Instructions.Add(new Instruction(Opcode.CmpStrictEq_Any));
             EmitBranchFalse(nextBlock.Id);
-
+            if (_currentFunction.UsesGeneratorRegions)
+            {
+                var defaultBlock = _currentFunction.CreateBlock();
+                EmitBranch(defaultBlock.Id);
+                _currentBlock = defaultBlock;
+            }
             GenerateExpression(parameter.DefaultExpression);
             EmitStoreLocal(i + argumentOffset);
+            if (_currentFunction.UsesGeneratorRegions)
+                EmitBranch(nextBlock.Id);
             _currentBlock = nextBlock;
         }
     }
@@ -1264,6 +1276,11 @@ public sealed class IRGenerator
     private void GenerateTry(BoundTryStatement tryStmt)
     {
         var func = _currentFunction!;
+        if (func.UsesGeneratorRegions)
+        {
+            GenerateGeneratorTry(tryStmt, func);
+            return;
+        }
         var handlerBlock = func.CreateBlock();
         var finallyBlock = tryStmt.FinallyBlock != null ? func.CreateBlock() : null;
         var afterBlock = func.CreateBlock();
@@ -2071,6 +2088,12 @@ public sealed class IRGenerator
             GenerateOptionalSetReceiverCall(call, optionalSet, hasSpread);
             return;
         }
+        if (!(_currentFunction!.IsGenerator && _currentFunction.IsAsync) &&
+            GetGeneratorReferenceTarget(call, hasSpread) is { } generatorReferenceTarget)
+        {
+            GenerateMemberReferenceCall(call, generatorReferenceTarget, helper: null);
+            return;
+        }
         if (GetSetReferenceTarget(call, hasSpread) is { } setReferenceTarget)
         {
             GenerateMemberReferenceCall(call, setReferenceTarget);
@@ -2237,6 +2260,18 @@ public sealed class IRGenerator
         member.Member is MethodSymbol { DeclaringClassName: "Set" } method
         && IsNativeSetReceiver(member.Object.Type) && IsNativeSetMethodName(method.Name);
 
+    private static bool IsGeneratorSelector(string name) => name is "next" or "return" or "throw";
+
+    private static BoundNode? GetGeneratorReferenceTarget(BoundCallExpression call, bool hasSpread) => call.Callee switch
+    {
+        BoundMemberAccessExpression { IsNullConditional: false } member
+            when (hasSpread || call.IsNullConditional) && member.Object.Type is TsAnyType &&
+                IsGeneratorSelector(member.Member.Name) => member.Object,
+        BoundIndexExpression { IsMapStorage: false, IsNullConditional: false, Index: BoundLiteralExpression { Value: string name } } index
+            when index.Object.Type is TsAnyType && IsGeneratorSelector(name) => index.Object,
+        _ => null
+    };
+
     private static BoundNode? GetSetReferenceTarget(BoundCallExpression call, bool hasSpread)
     {
         if (call.Callee is BoundIndexExpression { IsMapStorage: false, IsNullConditional: false } index
@@ -2282,7 +2317,7 @@ public sealed class IRGenerator
     }
 
     private void GenerateMemberReferenceCall(BoundCallExpression call, BoundNode target,
-        string helper = InvokeSetMemberReference)
+        string? helper = InvokeSetMemberReference)
     {
         // Keep the original receiver under the loaded value. Evaluate the key
         // (if any) and the property lookup before the argument expressions.
@@ -2364,10 +2399,12 @@ public sealed class IRGenerator
         _currentBlock = endBlock;
     }
 
-    private void EmitMemberReferenceInvocation(IReadOnlyList<BoundNode> arguments, string helper)
+    private void EmitMemberReferenceInvocation(IReadOnlyList<BoundNode> arguments, string? helper)
     {
         GenerateArgumentArray(arguments);
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 3, helper));
+        _currentBlock!.Instructions.Add(helper is null
+            ? new Instruction(Opcode.GCallMember)
+            : new Instruction(Opcode.Call, 0, 3, helper));
     }
 
     private void GenerateSpreadCall(BoundCallExpression call)
@@ -2915,13 +2952,40 @@ public sealed class IRGenerator
         EmitStoreLocal(GetLocalIndex(local));
 
     private void EmitReturn() =>
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.Return));
+        _currentBlock!.Instructions.Add(new Instruction(_currentFunction!.UsesGeneratorRegions ? Opcode.GReturn : Opcode.Return));
 
-    private void EmitReturnVoid() =>
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.ReturnVoid));
+    private void EmitReturnVoid()
+    {
+        if (_currentFunction!.UsesGeneratorRegions)
+        {
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Void));
+            EmitReturn();
+        }
+        else
+            _currentBlock!.Instructions.Add(new Instruction(Opcode.ReturnVoid));
+    }
 
-    private void EmitBranch(int targetLabel) =>
-        _currentBlock!.Instructions.Add(new Instruction(Opcode.Branch, targetLabel));
+    private void EmitBranch(int targetLabel)
+    {
+        var function = _currentFunction!;
+        var block = _currentBlock!;
+        if (function.UsesGeneratorRegions)
+        {
+            var from = block.GeneratorOwner;
+            var to = function.Blocks[targetLabel].GeneratorOwner;
+            int exits = 0;
+            for (; !ReferenceEquals(from, to); exits++)
+                from = from is null
+                    ? throw new InvalidOperationException("Branch cannot enter a generator region")
+                    : from.Parent;
+            if (exits > 0)
+            {
+                block.Instructions.Add(new Instruction(Opcode.GTransfer, targetLabel, exits));
+                return;
+            }
+        }
+        block.Instructions.Add(new Instruction(Opcode.Branch, targetLabel));
+    }
 
     private void EmitBranchTrue(int targetLabel) =>
         _currentBlock!.Instructions.Add(new Instruction(Opcode.BranchTrue, targetLabel));

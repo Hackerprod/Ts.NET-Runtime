@@ -7,7 +7,7 @@ public sealed class BytecodeVerificationException : Exception
     public BytecodeVerificationException(string message) : base(message) { }
 }
 
-public static class BytecodeVerifier
+public static partial class BytecodeVerifier
 {
     public static void Verify(BytecodeModule module)
     {
@@ -33,6 +33,8 @@ public static class BytecodeVerifier
         var code = function.Instructions;
         var boundaries = new HashSet<int> { 0 };
         var branches = new List<int>();
+        bool structured = code.Length > 0 && code[0] == Opcodes.GStart;
+        bool generatorCalls = false;
         int ip = 0;
 
         while (ip < code.Length)
@@ -44,6 +46,11 @@ public static class BytecodeVerifier
             if (code.Length - ip < format.OperandBytes)
                 Fail(function, $"truncated operand at {instructionOffset}");
 
+            if (opcode == Opcodes.GStart && (instructionOffset != 0 || !function.IsGenerator || function.IsAsync))
+                Fail(function, "GStart requires a synchronous generator at offset zero");
+            if (opcode is >= Opcodes.GBlock and <= Opcodes.GEndFinally && !structured)
+                Fail(function, "generator region instruction without GStart");
+            generatorCalls |= opcode == Opcodes.GCallMember;
             ValidateOperands(function, opcode, code, ip, branches);
             ip += format.OperandBytes;
             boundaries.Add(ip);
@@ -54,6 +61,24 @@ public static class BytecodeVerifier
             if (!boundaries.Contains(target))
                 Fail(function, $"branch target {target} is not an instruction boundary");
         }
+        if (structured)
+            VerifyStructuredGenerator(function);
+        else if (generatorCalls)
+            VerifyGeneratorMemberStack(function);
+    }
+
+    // Called only after full verification; step by actual instruction width,
+    // never look for magic bytes inside an operand.
+    internal static bool UsesGeneratorExtensions(BytecodeModule module)
+    {
+        foreach (var function in module.Functions)
+        {
+            var code = function.Instructions;
+            for (int offset = 0; offset < code.Length; offset += OpcodeFormats.InstructionSize(code[offset]))
+                if (code[offset] is >= Opcodes.GStart and <= Opcodes.GCallMember)
+                    return true;
+        }
+        return false;
     }
 
     private static void ValidateOperands(BytecodeFunction function, byte opcode, byte[] code, int offset,

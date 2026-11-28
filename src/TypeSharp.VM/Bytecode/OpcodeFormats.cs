@@ -161,6 +161,15 @@ public static class Opcodes
     public const byte ShrU64                   = 0x6F;
     public const byte ShrU32                   = 0xBF;
 
+    // Version 3 extensions. Existing instruction numbers and widths remain stable.
+    public const byte GStart                  = 0xC0;
+    public const byte GBlock                  = 0xC1;
+    public const byte GEnter                  = 0xC2;
+    public const byte GTransfer               = 0xC3;
+    public const byte GReturn                 = 0xC4;
+    public const byte GEndFinally             = 0xC5;
+    public const byte GCallMember             = 0xC6;
+
     public const byte Branch                   = 0x70;
     public const byte BranchTrue               = 0x71;
     public const byte BranchFalse              = 0x72;
@@ -333,6 +342,13 @@ public static class OpcodeFormats
         // U64/BigInt bitwise + shifts
         Reg(0x6A); Reg(0x6B); Reg(0x6C); Reg(0x6D); Reg(0x6E); Reg(0x6F);
         Reg(0xBF); // SHR_U32 (JavaScript >>>)
+        Reg(Opcodes.GStart);
+        Reg(Opcodes.GBlock, OperandKind.Int32x2);
+        Reg(Opcodes.GEnter, OperandKind.Int32x2);
+        Reg(Opcodes.GTransfer, OperandKind.Int32x2);
+        Reg(Opcodes.GReturn);
+        Reg(Opcodes.GEndFinally);
+        Reg(Opcodes.GCallMember);
 
         // ── Control flow ──
         Reg(0x70, OperandKind.Branch);  // BRANCH
