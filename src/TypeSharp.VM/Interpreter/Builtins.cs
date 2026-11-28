@@ -14,6 +14,14 @@ namespace TypeSharp.VM.Interpreter;
 // Instance members receive the receiver as args[0].
 public static class Builtins
 {
+    internal static TsThrownException ArrayScriptError(string name, string message)
+    {
+        var error = new TsObject(name);
+        error.SetField("name", TsValue.FromString(name));
+        error.SetField("message", TsValue.FromString(message));
+        return new TsThrownException(TsValue.FromObject(error));
+    }
+
     private static readonly Dictionary<string, Func<TsValue[], TsValue>> Table = Build();
     private const int JsonCompositeDepthLimit = 1000;
     private static readonly JsonSerializerOptions LegacyJsonDepthOptions = new()
@@ -190,7 +198,14 @@ public static class Builtins
                 // new Array(n) → n empty slots; new Array(a, b, …) → elements.
                 if (args.Length == 1 && args[0] is TsInt32Value or TsInt64Value or TsFloat64Value)
                 {
-                    int size = I(args[0]);
+                    int size = args[0] switch
+                    {
+                        TsInt32Value i when i.Value >= 0 && i.Value <= Array.MaxLength => i.Value,
+                        TsInt64Value i when i.Value >= 0 && i.Value <= Array.MaxLength => checked((int)i.Value),
+                        TsFloat64Value f when double.IsFinite(f.Value) && f.Value >= 0
+                            && f.Value <= Array.MaxLength && Math.Truncate(f.Value) == f.Value => checked((int)f.Value),
+                        _ => throw ArrayScriptError("RangeError", "Invalid array length")
+                    };
                     var sized = new TsArray(Math.Max(size, 4));
                     for (int i = 0; i < size; i++) sized.SetHole(i);
                     return new TsArrayValue(sized);

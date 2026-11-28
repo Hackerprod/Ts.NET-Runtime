@@ -125,6 +125,8 @@ public sealed class Interpreter
     public ExecutionProfile Profile => _profile;
 
     public static IReadOnlySet<string> HigherOrderIntrinsicNames => HigherOrderIntrinsics;
+    internal const string PackedArrayConstructorCall = "Array::<ctor-spread>";
+    internal const string PackedArrayFromCall = "Array::<from-spread>";
     internal IReadOnlyCollection<string> HostFunctionNames => _hostFunctions.Keys;
 
     public Interpreter(VMRuntimeLimits? limits = null)
@@ -1419,6 +1421,18 @@ public sealed class Interpreter
                         frame.Push(InvokeCallable(callable, positional, module, ctx, frame, invocationReceiver,
                             generatorMemberReference: calleeName == NativeSet.InvokeMemberReference));
                     }
+                    else if (calleeName is PackedArrayConstructorCall or PackedArrayFromCall)
+                    {
+                        if (argCount != 1)
+                            throw new InvalidOperationException("Packed native Array call requires one operand");
+                        var positional = ToArgumentArray(frame.Pop());
+                        if (calleeName == PackedArrayFromCall)
+                            frame.Push(ExecuteHigherOrderIntrinsic("Array::from", positional, module, ctx, frame));
+                        else if (Builtins.TryGet("Array::ctor", out var arrayConstructor))
+                            frame.Push(arrayConstructor(positional));
+                        else
+                            throw new InvalidOperationException("Native Array constructor was not registered");
+                    }
                     else if (HigherOrderIntrinsics.Contains(calleeName))
                     {
                         var intrinsicArgs = new TsValue[argCount];
@@ -2266,6 +2280,44 @@ public sealed class Interpreter
 
     // Array members that take callbacks execute here, where the interpreter
     // can re-enter script functions for each element.
+    // Local Array.from coercion. Compare exact integral/decimal carriers before narrowing;
+    // this policy must not change spread, for-of, Number(), or object property defaults.
+    private static int ArrayFromLength(TsValue value)
+    {
+        static TsThrownException TooLong() =>
+            Builtins.ArrayScriptError("RangeError", "Array.from length exceeds the supported range");
+
+        static int FromBinary64(double number)
+        {
+            if (double.IsNaN(number) || number <= 0)
+                return 0;
+            double truncated = Math.Truncate(number);
+            return truncated <= Array.MaxLength ? checked((int)truncated) : throw TooLong();
+        }
+
+        return value switch
+        {
+            TsBoolValue b => b.Value ? 1 : 0,
+            TsInt32Value i => i.Value <= 0 ? 0 : i.Value <= Array.MaxLength ? i.Value : throw TooLong(),
+            TsInt64Value i => i.Value <= 0 ? 0 : i.Value <= Array.MaxLength ? checked((int)i.Value) : throw TooLong(),
+            TsUInt64Value i => i.Value <= (ulong)Array.MaxLength ? checked((int)i.Value) : throw TooLong(),
+            TsDecimalValue d => DecimalLength(d.Value),
+            TsFloat32Value f => FromBinary64(f.Value),
+            TsFloat64Value f => FromBinary64(f.Value),
+            TsStringValue text => FromBinary64(EcmaNumberText.Parse(text.Value)),
+            TsBigIntValue => throw Builtins.ArrayScriptError("TypeError", "Array.from length cannot be BigInt"),
+            _ => 0
+        };
+
+        static int DecimalLength(decimal number)
+        {
+            if (number <= 0)
+                return 0;
+            decimal truncated = decimal.Truncate(number);
+            return truncated <= Array.MaxLength ? checked((int)truncated) : throw TooLong();
+        }
+    }
+
     private TsValue ExecuteHigherOrderIntrinsic(string name, TsValue[] args, BytecodeModule module,
         ExecutionContext ctx, CallFrame frame)
     {
@@ -2274,20 +2326,57 @@ public sealed class Interpreter
 
         if (name == "Array::from")
         {
-            // Array.from(arrayLike [, mapFn]) — supports arrays, strings and
-            // `{ length: n }` shapes.
-            var source = args.Length > 0 ? args[0] : TsValue.Null;
             var mapFn = args.Length > 1 && args[1] is not TsVoid ? args[1] : null;
+            var source = args.Length > 0 ? args[0] : TsValue.Void;
+            // The observed empty native Array case rejects a supplied null eagerly.
+            // Other supplied null routes keep their legacy invoke-time behavior.
+            if (mapFn is not null and not TsNull and not TsFunctionValue
+                || mapFn is TsNull && source is TsArrayValue array && array.Value.Count == 0)
+                throw Builtins.ArrayScriptError("TypeError", "Array.from mapper is not callable");
+
+            if (source is TsNull or TsVoid)
+                throw Builtins.ArrayScriptError("TypeError", "Array.from source is null or undefined");
+
+            var thisArg = args.Length > 2 ? args[2] : TsValue.Void;
             var result = new TsArray();
             void AddMapped(TsValue value, int index)
             {
-                result.Add(mapFn != null ? Invoke(mapFn, value, TsValue.FromInt32(index)) : value);
+                result.Add(mapFn is null ? value :
+                    InvokeCallable(mapFn, [value, TsValue.FromInt32(index)], module, ctx, frame, thisArg));
             }
 
-            // Only the ordinary callable path reads mutable sources between mapper calls.
-            // Omitted and unsupported mappers retain the existing materialization and error behavior.
-            if (mapFn is TsFunctionValue function &&
-                !function.FunctionName.EndsWith("::.ctor", StringComparison.Ordinal))
+            bool hasLiveMapper = mapFn is TsFunctionValue function
+                && !function.FunctionName.EndsWith("::.ctor", StringComparison.Ordinal);
+            if (source is TsObjectValue objectValue)
+            {
+                var fields = objectValue.Value.Fields;
+                int length = fields.TryGetValue("length", out var rawLength) ? ArrayFromLength(rawLength) : 0;
+                TsValue ReadField(int index) =>
+                    fields.TryGetValue(index.ToString(CultureInfo.InvariantCulture), out var item) ? item : TsValue.Void;
+
+                // Only a supported ordinary function uses live indexed reads. Preserve
+                // the historical snapshot before invoking a supplied null or class guard.
+                if (mapFn is null || hasLiveMapper)
+                {
+                    for (int i = 0; i < length; i++)
+                        AddMapped(ReadField(i), i);
+                }
+                else
+                {
+                    var snapshot = new TsArray();
+                    for (int i = 0; i < length; i++)
+                        snapshot.Add(ReadField(i));
+                    for (int i = 0; i < snapshot.Count; i++)
+                        AddMapped(snapshot.Get(i), i);
+                }
+                return new TsArrayValue(result);
+            }
+
+            if (source is TsBoolValue or TsInt32Value or TsInt64Value or TsUInt64Value
+                or TsFloat32Value or TsFloat64Value or TsDecimalValue or TsBigIntValue)
+                return new TsArrayValue(result);
+
+            if (hasLiveMapper)
             {
                 switch (source)
                 {
@@ -2335,15 +2424,6 @@ public sealed class Interpreter
                         {
                             set.EndForEach(cursor);
                         }
-                    }
-                    // The array-like length is fixed, but the mapper can change later fields.
-                    case TsObjectValue objectValue
-                        when objectValue.Value.GetField("length") is var lengthValue and not TsNull and not TsVoid:
-                    {
-                        int length = AsInt32(lengthValue);
-                        for (int i = 0; i < length; i++)
-                            AddMapped(objectValue.Value.GetField(i.ToString(CultureInfo.InvariantCulture)), i);
-                        return new TsArrayValue(result);
                     }
                 }
             }

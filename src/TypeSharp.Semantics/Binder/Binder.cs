@@ -14,6 +14,7 @@ public sealed class Binder
     private readonly SymbolTable _symbolTable;
     private readonly DiagnosticBag _diagnostics;
     private ClassSymbol? _builtinNumberNamespace;
+    private ClassSymbol? _builtinArrayNamespace;
     private FunctionSymbol? _builtinNumberConversion;
     private readonly Dictionary<string, TsClassType> _classTypes = new();
     // Classes for which a circular-inheritance diagnostic was already reported,
@@ -237,7 +238,9 @@ public sealed class Binder
         arrayGlobal.Methods["of"] = new TsMethod("of", new TsArrayType(TsType.Any), new List<TsParameter>());
         arrayGlobal.Methods["isArray"] = new TsMethod("isArray", TsType.Bool, new List<TsParameter>());
         _classTypes["Array"] = arrayGlobal;
-        _symbolTable.Define(new ClassSymbol("Array", arrayGlobal, default));
+        var arrayNamespace = new ClassSymbol("Array", arrayGlobal, default);
+        _builtinArrayNamespace = arrayNamespace;
+        _symbolTable.Define(arrayNamespace);
 
         var uint8ArrayGlobal = new TsClassType("Uint8Array");
         uint8ArrayGlobal.Fields["length"] = new TsField("length", TsType.Number) { IsReadonly = true };
@@ -3524,10 +3527,14 @@ public sealed class Binder
         IReadOnlyList<TsTypeParameter> genericParameters = Array.Empty<TsTypeParameter>();
         IReadOnlyList<TsFunctionType> overloads = Array.Empty<TsFunctionType>();
 
-        if (callee is BoundVariableExpression { Symbol: ClassSymbol { Name: "Array" } })
+        if (callee is BoundVariableExpression { Symbol: ClassSymbol { Name: "Array" } arrayClass })
         {
             var args = BindCallArguments(call.Arguments, null);
-            return new BoundArrayConstructionExpression(args, new TsArrayType(TsType.Any));
+            return new BoundArrayConstructionExpression(args, new TsArrayType(TsType.Any))
+            {
+                PacksNativeSpread = !call.IsNullConditional && ReferenceEquals(arrayClass, _builtinArrayNamespace)
+                    && args.Any(arg => arg is BoundSpreadExpression)
+            };
         }
 
         // Ciclo 10 (W, W-6): llamar a una clase sin `new` es un error de
@@ -3633,7 +3640,19 @@ public sealed class Binder
         var boundReturnType = TsType.Substitute(returnType, genericArguments);
         if (call.IsNullConditional && boundReturnType is not TsNullableType)
             boundReturnType = new TsNullableType(boundReturnType);
-        return new BoundCallExpression(callee, boundArgs, boundReturnType, call.IsNullConditional);
+        return new BoundCallExpression(callee, boundArgs, boundReturnType, call.IsNullConditional)
+        {
+            PacksArrayFromSpread = !call.IsNullConditional
+                && callee is BoundMemberAccessExpression
+                {
+                    IsNullConditional: false,
+                    Object: BoundVariableExpression { Symbol: ClassSymbol owner },
+                    Member: MethodSymbol { DeclaringClassName: "Array", Name: "from" } method
+                }
+                && ReferenceEquals(owner, _builtinArrayNamespace)
+                && (method.RuntimeName ?? method.Name) == "from"
+                && boundArgs.Any(arg => arg is BoundSpreadExpression)
+        };
     }
 
     private static bool TrySelectOverload(
@@ -4656,7 +4675,10 @@ public sealed class Binder
 
     private BoundNode BindNew(NewExpressionSyntax newExpr)
     {
-        var type = ResolveType(newExpr.Type);
+        bool intrinsicArray = false;
+        var type = newExpr.Type is NamedTypeSyntax { Name: "Array" } named
+            ? ResolveNamedType(named, out intrinsicArray)
+            : ResolveType(newExpr.Type);
         var args = newExpr.Arguments.Select((argument, i) =>
             i == 0 && type is TsMapType map && argument is ArrayLiteralExpressionSyntax outer
                 ? BindMapEntryLiteral(outer, map)
@@ -4664,7 +4686,10 @@ public sealed class Binder
 
         // `new Array(n)` builds a real array value, not a class instance.
         if (type is TsArrayType arrayNew)
-            return new BoundArrayConstructionExpression(args, arrayNew);
+            return new BoundArrayConstructionExpression(args, arrayNew)
+            {
+                PacksNativeSpread = intrinsicArray && args.Any(arg => arg is BoundSpreadExpression)
+            };
 
         if (type is TsClassType { IsAbstract: true } abstractClass)
             _diagnostics.Error($"Cannot create an instance of abstract class '{abstractClass.Name}'", newExpr.Range.Start);
@@ -6007,8 +6032,11 @@ public sealed class Binder
         }
     }
 
-    private TsType ResolveNamedType(NamedTypeSyntax named)
+    private TsType ResolveNamedType(NamedTypeSyntax named) => ResolveNamedType(named, out _);
+
+    private TsType ResolveNamedType(NamedTypeSyntax named, out bool intrinsicArray)
     {
+        intrinsicArray = false;
         if (named.Name == "null")
             return TsType.Null;
         if (named.Name == "undefined")
@@ -6031,6 +6059,7 @@ public sealed class Binder
 
         if (named.Name == "Array")
         {
+            intrinsicArray = true;
             return new TsArrayType(named.TypeArguments.Count > 0
                 ? ResolveType(named.TypeArguments[0])
                 : TsType.Any);

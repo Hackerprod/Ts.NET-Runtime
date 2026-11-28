@@ -240,6 +240,8 @@ public sealed class TypeSharpRuntime : IAsyncDisposable
         _valueReservedNames = valueReserved;
         var callReserved = new HashSet<string>(valueReserved, StringComparer.Ordinal);
         callReserved.UnionWith(_interpreter.HostFunctionNames);
+        callReserved.Add(Interpreter.PackedArrayConstructorCall);
+        callReserved.Add(Interpreter.PackedArrayFromCall);
         _callReservedNames = callReserved;
 
         if (_hotReloadManager != null)

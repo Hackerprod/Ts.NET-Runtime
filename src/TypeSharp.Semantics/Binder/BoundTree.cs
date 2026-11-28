@@ -138,6 +138,7 @@ public sealed class BoundUnaryExpression : BoundNode
 
 public sealed class BoundCallExpression : BoundNode
 {
+    public bool PacksArrayFromSpread { get; internal init; }
     public BoundNode Callee { get; }
     public List<BoundNode> Arguments { get; }
     public bool IsNullConditional { get; }
@@ -305,6 +306,7 @@ public sealed class BoundCastExpression : BoundNode
 // `new Array(n)` / `Array(n)` — sized array construction.
 public sealed class BoundArrayConstructionExpression : BoundNode
 {
+    public bool PacksNativeSpread { get; internal init; }
     public List<BoundNode> Arguments { get; }
 
     public BoundArrayConstructionExpression(List<BoundNode> arguments, TsType type)

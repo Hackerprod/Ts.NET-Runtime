@@ -1558,9 +1558,17 @@ public sealed partial class IRGenerator
                 _currentBlock!.Instructions.Add(new Instruction(Opcode.LoadConst_Bool, 0));
                 break;
             case BoundArrayConstructionExpression arrCtor:
-                foreach (var arg in arrCtor.Arguments)
-                    GenerateExpression(arg);
-                _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, arrCtor.Arguments.Count, "Array::ctor"));
+                if (arrCtor.PacksNativeSpread)
+                {
+                    GenerateArgumentArray(arrCtor.Arguments);
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 1, "Array::<ctor-spread>"));
+                }
+                else
+                {
+                    foreach (var arg in arrCtor.Arguments)
+                        GenerateExpression(arg);
+                    _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, arrCtor.Arguments.Count, "Array::ctor"));
+                }
                 break;
             case BoundAwaitExpression awaitExpr:
                 GenerateExpression(awaitExpr.Expression);
@@ -2175,7 +2183,15 @@ public sealed partial class IRGenerator
         }
         if (hasSpread)
         {
-            GenerateSpreadCall(call);
+            if (call.PacksArrayFromSpread)
+            {
+                GenerateArgumentArray(call.Arguments);
+                _currentBlock!.Instructions.Add(new Instruction(Opcode.Call, 0, 1, "Array::<from-spread>"));
+            }
+            else
+            {
+                GenerateSpreadCall(call);
+            }
             return;
         }
         if (call.Callee is BoundMemberAccessExpression memberAccess)
