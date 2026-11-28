@@ -179,7 +179,7 @@ public sealed class NumberIsIntegerBindingTests(ITestOutputHelper output)
             argumentSymbol.Name, argument.Type.ToString(), ReferenceEquals(parameter, argumentSymbol));
     }
 
-    private static string Signature(string method) => $"{method}(value: unknown): boolean;";
+    private static string Signature(string method) => $"{method}(value?: unknown, ...ignored: unknown[]): boolean;";
 
     private static string[] ReadNumberMembers()
     {

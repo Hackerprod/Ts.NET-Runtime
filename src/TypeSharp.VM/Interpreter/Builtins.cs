@@ -133,25 +133,32 @@ public static class Builtins
             ["Math::hypot"] = Hypot,
 
             // ── Number ──
-            ["Number::isInteger"] = args => Bool(args[0] switch
+            ["Number::isInteger"] = args => Bool(NumberSlot(args) switch
             {
                 TsInt32Value => true,
                 TsFloat32Value f => float.IsFinite(f.Value) && f.Value == MathF.Truncate(f.Value),
                 TsFloat64Value d => double.IsFinite(d.Value) && d.Value == Math.Truncate(d.Value),
                 _ => false
             }),
-            ["Number::isFinite"] = args => Bool(args[0] is TsInt32Value or TsDecimalValue ||
-                (args[0] is TsFloat64Value fd && double.IsFinite(fd.Value)) ||
-                (args[0] is TsFloat32Value ff && float.IsFinite(ff.Value))),
-            ["Number::isNaN"] = args => Bool(
-                (args[0] is TsFloat64Value fd && double.IsNaN(fd.Value)) ||
-                (args[0] is TsFloat32Value ff && float.IsNaN(ff.Value))),
+            ["Number::isFinite"] = args => Bool(NumberSlot(args) switch
+            {
+                TsInt32Value or TsDecimalValue => true,
+                TsFloat64Value d => double.IsFinite(d.Value),
+                TsFloat32Value f => float.IsFinite(f.Value),
+                _ => false
+            }),
+            ["Number::isNaN"] = args => Bool(NumberSlot(args) switch
+            {
+                TsFloat64Value d => double.IsNaN(d.Value),
+                TsFloat32Value f => float.IsNaN(f.Value),
+                _ => false
+            }),
             ["Number::isSafeInteger"] = args =>
             {
                 static bool IsSafeBinary64(double value) =>
                     value >= -9007199254740991d && value <= 9007199254740991d && value == Math.Truncate(value);
 
-                return Bool(args[0] switch
+                return Bool(NumberSlot(args) switch
                 {
                     TsInt32Value => true,
                     TsFloat32Value f => IsSafeBinary64((double)f.Value),
@@ -161,13 +168,9 @@ public static class Builtins
                     _ => false
                 });
             },
-            ["Number::parseFloat"] = args => Num(ParseFloatPrefix(S(args[0]))),
-            ["Number::parseInt"] = ParseIntBuiltin,
-            ["Number"] = args => Num(
-                args.Length == 0 || args[0] is TsNull ||
-                (args[0] is TsStringValue text && TrimEcmaWhitespace(text.Value).Length == 0)
-                    ? 0d
-                    : D(args[0])),
+            ["Number::parseFloat"] = args => Num(ParseFloatPrefix(NumberPrimitiveText(NumberSlot(args)))),
+            ["Number::parseInt"] = NumberParseInt,
+            ["Number"] = args => Num(args.Length == 0 ? 0d : NumberPrimitiveValue(NumberSlot(args))),
 
             // ── console ──
             ["console::log"] = args => { Console.WriteLine(string.Join(" ", args.Select(a => a.ToString()))); return TsValue.Void; },
@@ -1317,6 +1320,45 @@ public static class Builtins
         while (end > 0 && IsEcmaTrimWhitespace(text[end - 1]))
             end--;
         return end == text.Length ? text : text[..end];
+    }
+
+    private static TsValue NumberSlot(TsValue[] args, int index = 0) =>
+        index < args.Length ? args[index] : TsValue.Void;
+
+    private static double NumberPrimitiveValue(TsValue value) => value switch
+    {
+        TsNull => 0d,
+        TsStringValue text => EcmaNumberText.Parse(text.Value),
+        TsBigIntValue big => EcmaNumberText.BoundedIntegerToDouble(big.Value),
+        _ => D(value)
+    };
+
+    private static string NumberPrimitiveText(TsValue value) => value switch
+    {
+        TsFloat64Value number => Uint8ArrayOperations.CanonicalNumberText(number.Value),
+        // A Float32 supplied by CLR is a Number with its exact widened value.
+        TsFloat32Value number => Uint8ArrayOperations.CanonicalNumberText(number.Value),
+        TsInt32Value n => n.Value.ToString(CultureInfo.InvariantCulture),
+        TsInt64Value n => n.Value.ToString(CultureInfo.InvariantCulture),
+        TsUInt64Value n => n.Value.ToString(CultureInfo.InvariantCulture),
+        TsDecimalValue n => n.Value.ToString(CultureInfo.InvariantCulture),
+        TsBigIntValue n => n.Value.ToString(CultureInfo.InvariantCulture),
+        TsStringValue text => text.Value,
+        TsBoolValue boolean => boolean.Value ? "true" : "false",
+        TsNull => "null",
+        TsVoid => "undefined",
+        // This is not an object/array ToPrimitive implementation.
+        _ => S(value)
+    };
+
+    private static TsValue NumberParseInt(TsValue[] args)
+    {
+        string text = NumberPrimitiveText(NumberSlot(args));
+        var radix = NumberSlot(args, 1);
+        if (radix is TsBigIntValue)
+            throw MathBigIntTypeError(); // Both native ToNumber sites reject the explicit BigInt carrier.
+        int radix32 = unchecked((int)ToUInt32(NumberPrimitiveValue(radix)));
+        return Num(ParseIntExplicitRadix(text, radix32));
     }
 
     private static TsValue ParseIntBuiltin(TsValue[] args)

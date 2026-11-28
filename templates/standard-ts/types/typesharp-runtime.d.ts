@@ -129,15 +129,20 @@ interface Math {
 declare const Math: Math;
 
 interface NumberConstructor {
-    (value?: unknown): number;
+    (value?: unknown, ...ignored: unknown[]): number;
     readonly MAX_SAFE_INTEGER: number;
     readonly MIN_SAFE_INTEGER: number;
-    isFinite(value: unknown): boolean;
-    isNaN(value: unknown): boolean;
-    isInteger(value: unknown): boolean;
-    isSafeInteger(value: unknown): boolean;
-    parseInt(value: string, radix?: number): number;
-    parseFloat(value: string): number;
+    readonly MAX_VALUE: number;
+    readonly MIN_VALUE: number;
+    readonly EPSILON: number;
+    readonly POSITIVE_INFINITY: number;
+    readonly NEGATIVE_INFINITY: number;
+    isFinite(value?: unknown, ...ignored: unknown[]): boolean;
+    isNaN(value?: unknown, ...ignored: unknown[]): boolean;
+    isInteger(value?: unknown, ...ignored: unknown[]): boolean;
+    isSafeInteger(value?: unknown, ...ignored: unknown[]): boolean;
+    parseInt(value?: unknown, radix?: unknown, ...ignored: unknown[]): number;
+    parseFloat(value?: unknown, ...ignored: unknown[]): number;
 }
 declare const Number: NumberConstructor;
 

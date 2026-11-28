@@ -137,7 +137,7 @@ public sealed class Binder
         [("Number", "MIN_SAFE_INTEGER")] = -9007199254740991d,
         [("Number", "MAX_VALUE")] = double.MaxValue,
         [("Number", "MIN_VALUE")] = double.Epsilon,
-        [("Number", "EPSILON")] = double.Epsilon,
+        [("Number", "EPSILON")] = 2.2204460492503131e-16,
         [("Number", "POSITIVE_INFINITY")] = double.PositiveInfinity,
         [("Number", "NEGATIVE_INFINITY")] = double.NegativeInfinity,
     };
@@ -3417,8 +3417,11 @@ public sealed class Binder
 
     private BoundUnaryExpression BindUnary(UnaryExpressionSyntax unary)
     {
-        var operand = BindExpression(unary.Operand);
-        if (unary.OperatorToken.Kind is TokenKind.PlusPlus or TokenKind.MinusMinus)
+        bool writesOperand = unary.OperatorToken.Kind is TokenKind.PlusPlus or TokenKind.MinusMinus;
+        var operand = writesOperand && unary.Operand is MemberAccessExpressionSyntax member
+            ? BindMemberAccess(member, constantUse: NumberConstantUse.Write)
+            : BindExpression(unary.Operand);
+        if (writesOperand)
             ReportUnsupportedIncrementTarget(unary, operand);
         var resultType = InferUnaryResultType(operand.Type, unary.OperatorToken.Kind);
 
@@ -3498,15 +3501,13 @@ public sealed class Binder
 
     private BoundNode BindCall(CallExpressionSyntax call)
     {
-        var callee = !call.IsNullConditional && call.TypeArguments.Count == 0
-            && call.Callee is MemberAccessExpressionSyntax { IsNullConditional: false } member
-            && (member.MemberName == "parseInt"
-                ? call.Arguments.Count is 1 or 2
-                    && call.Arguments[0] is not SpreadExpressionSyntax
-                    && (call.Arguments.Count == 1 || call.Arguments[1] is not SpreadExpressionSyntax)
-                : call.Arguments.Count == 1 && call.Arguments[0] is not SpreadExpressionSyntax
-                    && member.MemberName is "parseFloat" or "isFinite" or "isNaN" or "isSafeInteger" or "isInteger")
-            ? BindMemberAccess(member, allowBuiltinNumberStaticCall: true)
+        var callee = call.Callee is MemberAccessExpressionSyntax member
+            ? BindMemberAccess(member,
+                allowBuiltinNumberStaticCall: !call.IsNullConditional && !member.IsNullConditional
+                    && call.TypeArguments.Count == 0
+                    && member.MemberName is ("parseInt" or "parseFloat" or "isFinite" or "isNaN" or "isSafeInteger" or "isInteger")
+                    && call.Arguments.All(arg => arg is not SpreadExpressionSyntax),
+                constantUse: NumberConstantUse.Call)
             : BindExpression(call.Callee);
 
         TsType returnType = TsType.Void;
@@ -3925,7 +3926,10 @@ public sealed class Binder
         return TsType.IsCompatibleWith(argumentType, parameter.Type);
     }
 
-    private BoundNode BindMemberAccess(MemberAccessExpressionSyntax member, bool allowBuiltinNumberStaticCall = false)
+    private enum NumberConstantUse { Read, Write, Call }
+
+    private BoundNode BindMemberAccess(MemberAccessExpressionSyntax member, bool allowBuiltinNumberStaticCall = false,
+        NumberConstantUse constantUse = NumberConstantUse.Read)
     {
         var obj = BindExpression(member.Object);
 
@@ -3938,9 +3942,28 @@ public sealed class Binder
             obj = new BoundVariableExpression(numberNamespace);
         }
 
-        // Known static numeric constants (Math.PI, Number.MAX_SAFE_INTEGER, …)
-        // fold to literals so no runtime lookup is needed.
-        if (obj is BoundVariableExpression { Symbol: ClassSymbol staticOwner } &&
+        // Only the original visible conversion owns these direct constant reads.
+        // A user class named Number has ordinary static storage instead.
+        if (!member.IsNullConditional && _builtinNumberConversion != null
+            && obj is BoundVariableExpression numberValue && ReferenceEquals(numberValue.Symbol, _builtinNumberConversion)
+            && StaticNumericConstants.TryGetValue(("Number", member.MemberName), out double numberConstant))
+        {
+            if (constantUse == NumberConstantUse.Write)
+            {
+                // Keep readonly member identity long enough for assignment/update diagnostics.
+                var field = new FieldSymbol(member.MemberName, TsType.Number, member.Range)
+                {
+                    IsReadonly = true,
+                    IsStatic = true
+                };
+                return new BoundMemberAccessExpression(obj, field);
+            }
+            if (constantUse == NumberConstantUse.Call)
+                _diagnostics.Error($"Number constant '{member.MemberName}' is not callable", member.Range.Start);
+            return new BoundLiteralExpression(numberConstant, TsType.Number);
+        }
+
+        if (obj is BoundVariableExpression { Symbol: ClassSymbol staticOwner } && staticOwner.Name != "Number" &&
             StaticNumericConstants.TryGetValue((staticOwner.Name, member.MemberName), out double constant))
         {
             return new BoundLiteralExpression(constant, TsType.Number);
@@ -4289,7 +4312,9 @@ public sealed class Binder
 
         var previousBindingAssignmentTarget = _bindingAssignmentTarget;
         _bindingAssignmentTarget = true;
-        var target = BindExpression(assign.Target);
+        var target = assign.Target is MemberAccessExpressionSyntax member
+            ? BindMemberAccess(member, constantUse: NumberConstantUse.Write)
+            : BindExpression(assign.Target);
         _bindingAssignmentTarget = previousBindingAssignmentTarget;
         var value = BindExpression(assign.Value);
 

@@ -10,7 +10,7 @@ namespace TypeSharp.VM.Tests;
 
 internal static class NumberParseIntChecks
 {
-    private sealed record Row(string Text, TsValue[] Radix, double Expected);
+    private sealed record Row(string Text, TsValue[] Radix, double ExpectedGlobal, double? ExpectedNative = null);
     private static readonly Row[] Rows =
     [
         new("12px", [], 12),
@@ -25,8 +25,8 @@ internal static class NumberParseIntChecks
         new("321", [TsValue.FromInt32(3)], double.NaN),
         new("42", [TsValue.FromInt32(37)], double.NaN),
         new("0x10", [TsValue.Void], 16),
-        new("123", [TsValue.FromFloat64(2.5)], 123),
-        new("123", [TsValue.FromString("2")], 123)
+        new("123", [TsValue.FromFloat64(2.5)], 123, 1),
+        new("123", [TsValue.FromString("2")], 123, 1)
     ];
 
     internal static void CheckOrdinarySource()
@@ -78,7 +78,10 @@ internal static class NumberParseIntChecks
         var result = new Vm().Execute(module, "main", [TsValue.FromString(row.Text), .. row.Radix]);
         if (result is not TsFloat64Value number)
             throw new InvalidOperationException($"Expected Float64 for {syntax}({row.Text}).");
-        double expected = row.Expected;
+        // Only the namespace applies ToInt32 to these fractional/string radices;
+        // the two legacy global cases deliberately retain their previous 123 fallback.
+        bool native = retargetToNumber || target == "Number::parseInt";
+        double expected = native ? row.ExpectedNative ?? row.ExpectedGlobal : row.ExpectedGlobal;
         double actual = number.Value;
         Require(double.IsNaN(expected) ? double.IsNaN(actual)
             : BitConverter.DoubleToInt64Bits(expected) == BitConverter.DoubleToInt64Bits(actual),

@@ -334,7 +334,7 @@ internal static class Uint8ArrayOperations
         return KeyKind.Element;
     }
 
-    private static string CanonicalNumberText(double value)
+    internal static string CanonicalNumberText(double value)
     {
         if (double.IsNaN(value)) return "NaN";
         if (double.IsPositiveInfinity(value)) return "Infinity";

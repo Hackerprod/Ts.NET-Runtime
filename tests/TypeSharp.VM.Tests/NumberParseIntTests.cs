@@ -5,8 +5,8 @@ namespace TypeSharp.VM.Tests;
 public sealed class NumberParseIntTests
 {
     [Fact]
-    public void DirectNumberParseIntUsesGlobalSemantics() => NumberParseIntChecks.CheckOrdinarySource();
+    public void DirectNumberAndGlobalParseIntKeepDistinctRadixSemantics() => NumberParseIntChecks.CheckOrdinarySource();
 
     [Fact]
-    public void NumberParseIntVmEntryUsesGlobalSemantics() => NumberParseIntChecks.CheckDormantEntry();
+    public void NumberParseIntVmEntryUsesNativeRadixSemantics() => NumberParseIntChecks.CheckDormantEntry();
 }
